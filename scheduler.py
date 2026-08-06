@@ -249,7 +249,11 @@ def _clear_approval(name):
 
 
 def notify_pending(fresh_entries):
-    """Push WeCom notification for newly detected pending items."""
+    """Push WeCom notification for newly detected pending items.
+
+    Uses group-bot webhook when configured (no domain/token needed);
+    falls back to the self-built app API for setups with a verified domain.
+    """
     if not fresh_entries:
         return
     wecom_config_path = os.path.join(DATA_DIR, "wecom.json")
@@ -257,9 +261,31 @@ def notify_pending(fresh_entries):
         return  # WeCom not configured, skip notification
     with open(wecom_config_path) as f:
         config = json.load(f)
+    # Build message
+    lines = ["[调度] 检测到待处理项："]
+    for entry in fresh_entries:
+        trigger = entry.get("trigger", "UNKNOWN")
+        modules = entry.get("modules", [])
+        names = ", ".join(m.get("key", "?") for m in modules)
+        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
+    lines.append("终端执行 'loop_engine approve <name>' 确认后调度器开始执行。")
+    msg_content = "\n".join(lines)
+    # Group bot webhook path (preferred)
+    webhook_url = config.get("webhook_url")
+    if webhook_url:
+        r = requests.post(
+            webhook_url,
+            json={"msgtype": "text", "text": {"content": msg_content}},
+            timeout=10)
+        result = r.json()
+        if result.get("errcode", -1) != 0:
+            _log(f"notify: webhook send failed: {result.get('errmsg')}")
+        else:
+            _log(f"notify: sent {len(fresh_entries)} pending item(s) to WeCom group")
+        return
+    # Self-built app API path (requires verified domain in WeCom console)
     if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
         return
-    # Get access token
     r = requests.get(
         "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
         params={"corpid": config["corp_id"], "corpsecret": config["secret"]},
@@ -269,16 +295,6 @@ def notify_pending(fresh_entries):
         _log(f"notify: gettoken failed: {token_data.get('errmsg')}")
         return
     access_token = token_data["access_token"]
-    # Build message
-    lines = ["[调度] 检测到待处理项："]
-    for entry in fresh_entries:
-        trigger = entry.get("trigger", "UNKNOWN")
-        modules = entry.get("modules", [])
-        names = ", ".join(m.get("key", "?") for m in modules)
-        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
-    lines.append("回复'批准'确认执行，或'查状态'查看详情。")
-    msg_content = "\n".join(lines)
-    # Send to all users in the app's visible range
     r2 = requests.post(
         f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
         json={

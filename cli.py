@@ -419,6 +419,86 @@ def cmd_self_check(args):
         sys.exit(1)
 
 
+def cmd_wecom_start(args):
+    from wecom_server.server import start
+    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    config_path = os.path.join(data_dir, "wecom.json")
+    if not os.path.exists(config_path):
+        print("WeCom not configured. Run 'loop_engine wecom config' first.")
+        sys.exit(1)
+    print(f"Starting WeCom webhook on port {args.port}...")
+    if args.ngrok:
+        import subprocess
+        ngrok = subprocess.Popen(
+            ["ngrok", "http", str(args.port), "--log=stdout"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"ngrok started (pid {ngrok.pid}).")
+        print("Callback URL: https://<ngrok-id>.ngrok.io/callback")
+    start(port=args.port)
+
+
+def cmd_wecom_stop(args):
+    import requests
+    port = 5000
+    try:
+        requests.post(f"http://127.0.0.1:{port}/shutdown", timeout=2)
+        print("WeCom webhook stopped.")
+    except Exception:
+        print("WeCom webhook is not running.")
+
+
+def cmd_wecom_status(args):
+    import socket
+    port = args.port or 5000
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = s.connect_ex(("127.0.0.1", port))
+    s.close()
+    if result == 0:
+        print(f"WeCom webhook is running on port {port}")
+    else:
+        print("WeCom webhook is not running.")
+
+
+def cmd_wecom_config(args):
+    import json
+    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    config_path = os.path.join(data_dir, "wecom.json")
+    if args.show:
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                print(f.read())
+        else:
+            print("Not configured.")
+        return
+    if args.set:
+        parts = args.set.split("=", 1)
+        if len(parts) != 2:
+            print("Usage: --set key=value")
+            sys.exit(1)
+        config = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                config = json.load(f)
+        config[parts[0]] = parts[1]
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"Set {parts[0]} = {parts[1]}")
+        return
+    print("Enter WeCom configuration (press Enter to skip):")
+    config = {}
+    for key in ["corp_id", "agent_id", "secret", "token", "encoding_aes_key"]:
+        val = input(f"  {key}: ").strip()
+        if val:
+            config[key] = val
+    if config:
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"Saved to {config_path}")
+    else:
+        print("No values entered, config not saved.")
+
+
 def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--root", "-r", default=".", help="Root directory")
@@ -533,6 +613,26 @@ def main():
     p_maxc = ssub.add_parser("max-concurrency", help="Set max parallel runs")
     p_maxc.add_argument("n", type=int)
     p_maxc.set_defaults(func=cmd_schedule_max_concurrency)
+
+    p = sub.add_parser("wecom", help="WeCom integration (webhook server)")
+    wsub = p.add_subparsers(dest="wecom_command", required=True)
+
+    ws = wsub.add_parser("start", help="Start webhook server")
+    ws.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
+    ws.add_argument("--ngrok", action="store_true", help="Auto-start ngrok")
+    ws.set_defaults(func=cmd_wecom_start)
+
+    ws = wsub.add_parser("stop", help="Stop webhook server")
+    ws.set_defaults(func=cmd_wecom_stop)
+
+    ws = wsub.add_parser("status", help="Check webhook server status")
+    ws.add_argument("--port", type=int, default=5000)
+    ws.set_defaults(func=cmd_wecom_status)
+
+    ws = wsub.add_parser("config", help="Configure WeCom settings")
+    ws.add_argument("--show", action="store_true", help="Show current config")
+    ws.add_argument("--set", help="Set a config value (key=value)")
+    ws.set_defaults(func=cmd_wecom_config)
 
     p = sub.add_parser("self-install", help="Install skill and verify setup")
     p.set_defaults(func=cmd_self_install)

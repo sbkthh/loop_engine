@@ -1,0 +1,103 @@
+"""Spec utilities: discovery, hashing, path derivation."""
+
+import glob
+import hashlib
+import os
+import re
+
+from constants import (
+    SPEC_PATH_TEMPLATE,
+    PLAN_PATH_TEMPLATE,
+    REPORT_PATH_TEMPLATE,
+    SPEC_GLOB,
+)
+
+
+def parse_prd_sections(prd_path):
+    """Parse a PRD markdown file into (heading, content) sections by ## headings."""
+    with open(prd_path, "r") as f:
+        content = f.read()
+    sections = []
+    lines = content.split("\n")
+    current_heading = None
+    current_content = []
+    for line in lines:
+        if line.startswith("## "):
+            if current_heading:
+                sections.append((current_heading, "\n".join(current_content).strip()))
+            current_heading = line[3:].strip()
+            current_content = []
+        else:
+            current_content.append(line)
+    if current_heading:
+        sections.append((current_heading, "\n".join(current_content).strip()))
+    return sections
+
+
+def generate_spec_from_prd(module_name, section_content):
+    """Generate an initial spec.md from PRD section content."""
+    return f"""## ADDED Requirements
+
+### Requirement: {module_name}
+
+{section_content.strip()}
+
+#### Scenario: Basic flow
+
+- **WHEN** the system processes {module_name}
+- **THEN** it performs the expected behavior
+
+"""
+
+
+def derive_spec_path(change_id, module_name, root="."):
+    return os.path.join(root, SPEC_PATH_TEMPLATE.format(
+        change_id=change_id, module_name=module_name))
+
+
+def derive_plan_path(change_id, module_name, root="."):
+    return os.path.join(root, PLAN_PATH_TEMPLATE.format(
+        change_id=change_id, module_name=module_name))
+
+
+def derive_report_path(change_id, root="."):
+    return os.path.join(root, REPORT_PATH_TEMPLATE.format(change_id=change_id))
+
+
+def compute_spec_hash(spec_path):
+    if not os.path.exists(spec_path):
+        return None
+    with open(spec_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def discover_modules(root="."):
+    pattern = os.path.join(root, SPEC_GLOB)
+    results = []
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        parts = path.replace("\\", "/").split("/")
+        try:
+            ci = parts.index("changes") + 1
+            si = parts.index("specs", ci) + 1
+            change_id = parts[ci]
+            module_name = parts[si]
+        except (ValueError, IndexError):
+            continue
+        results.append((change_id, module_name, path))
+    return results
+
+
+def read_test_command(project_root):
+    agents_path = os.path.join(project_root, ".qoder", "AGENTS.md")
+    cmd = "mvn test"
+    if os.path.exists(agents_path):
+        with open(agents_path) as f:
+            content = f.read()
+        m = re.search(r"mvn\s+(?:clean\s+)?test\b[^\n]*", content)
+        if m:
+            cmd = m.group(0).strip()
+    # 铁律 (strict-development-workflow): 编译/测试前必须先 mvn clean。
+    # 命令本身带上 clean，防止执行层直接照用裸 test_cmd 跳过清理。
+    if not re.search(r"\bclean\b", cmd):
+        cmd = cmd.replace("mvn", "mvn clean", 1)
+    return cmd

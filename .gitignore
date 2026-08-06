@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.loop/
+pending.json
+requirements.json
+schedule.json

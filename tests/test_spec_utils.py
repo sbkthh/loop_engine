@@ -1,0 +1,43 @@
+"""Tests for spec_utils.py — test command normalization (clean-first 铁律)."""
+
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from spec_utils import read_test_command
+
+
+class TestReadTestCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        os.makedirs(os.path.join(self.root, ".qoder"), exist_ok=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_agents(self, content):
+        with open(os.path.join(self.root, ".qoder", "AGENTS.md"), "w") as f:
+            f.write(content)
+
+    def test_fallback_includes_clean(self):
+        self.assertEqual(read_test_command(self.root), "mvn clean test")
+
+    def test_plain_test_command_gets_clean(self):
+        self._write_agents("Run all tests: mvn test")
+        self.assertEqual(read_test_command(self.root), "mvn clean test")
+
+    def test_clean_test_command_kept(self):
+        self._write_agents("Run all tests: mvn clean test")
+        self.assertEqual(read_test_command(self.root), "mvn clean test")
+
+    def test_custom_flags_preserved(self):
+        self._write_agents("Run all tests: mvn test -DskipITs")
+        self.assertEqual(read_test_command(self.root), "mvn clean test -DskipITs")
+
+
+if __name__ == '__main__':
+    unittest.main()

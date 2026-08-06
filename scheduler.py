@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 
+import requests  # noqa: E402 — used by notify_pending()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 REGISTRY_PATH = os.path.join(DATA_DIR, "requirements.json")
@@ -196,12 +198,17 @@ def poll():
         if entry:
             fresh.append(entry)
     prev = load_pending()
+    newly_detected = []
     for entry in fresh:
         old = _find_entry(prev, entry["requirement"])
         if old and old.get("approved"):
             entry["approved"] = True
             entry["detected_at"] = old.get("detected_at", entry["detected_at"])
+        elif not old:
+            newly_detected.append(entry)
     _save_pending({"pending": fresh})
+    if newly_detected:
+        notify_pending(newly_detected)
     return fresh
 
 
@@ -239,6 +246,54 @@ def _clear_approval(name):
                        if e.get("requirement") != name]
     if len(data["pending"]) < before:
         _save_pending(data)
+
+
+def notify_pending(fresh_entries):
+    """Push WeCom notification for newly detected pending items."""
+    if not fresh_entries:
+        return
+    wecom_config_path = os.path.join(DATA_DIR, "wecom.json")
+    if not os.path.exists(wecom_config_path):
+        return  # WeCom not configured, skip notification
+    with open(wecom_config_path) as f:
+        config = json.load(f)
+    if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
+        return
+    # Get access token
+    r = requests.get(
+        "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+        params={"corpid": config["corp_id"], "corpsecret": config["secret"]},
+        timeout=10)
+    token_data = r.json()
+    if token_data.get("errcode", -1) != 0:
+        _log(f"notify: gettoken failed: {token_data.get('errmsg')}")
+        return
+    access_token = token_data["access_token"]
+    # Build message
+    lines = ["[调度] 检测到待处理项："]
+    for entry in fresh_entries:
+        trigger = entry.get("trigger", "UNKNOWN")
+        modules = entry.get("modules", [])
+        names = ", ".join(m.get("key", "?") for m in modules)
+        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
+    lines.append("回复'批准'确认执行，或'查状态'查看详情。")
+    msg_content = "\n".join(lines)
+    # Send to all users in the app's visible range
+    r2 = requests.post(
+        f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
+        json={
+            "touser": "@all",
+            "msgtype": "text",
+            "agentid": int(config["agent_id"]),
+            "text": {"content": msg_content},
+            "safe": 0,
+        },
+        timeout=10)
+    result = r2.json()
+    if result.get("errcode", -1) != 0:
+        _log(f"notify: send failed: {result.get('errmsg')}")
+    else:
+        _log(f"notify: sent {len(fresh_entries)} pending item(s) to WeCom")
 
 
 # ---------- schedule config ----------

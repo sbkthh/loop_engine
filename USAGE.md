@@ -395,9 +395,79 @@ loop_engine run strategic-stockup-system-upgrade
 
 ---
 
-## 九、架构说明
+## 十、WeCom 企业微信 Bot
+
+WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
+
+### 架构
 
 ```
+用户发消息 → WeCom → POST /callback → 服务器解密 → 返回"success"
+  → 后台 qodercli 处理 → API 推送结果
+```
+
+所有消息走异步 LLM 路径：服务器立即返回 `"success"`（WeCom 不重试），后台调 qodercli 处理，完成后通过 API 推送结果。没有关键词匹配，LLM 处理全部意图。
+
+### 可用命令
+
+- `查状态` — 查看所有需求状态
+- `批准执行` — 批准待执行的需求
+- 其他自然语言问题 — LLM 自动理解并回答
+
+### 配置
+
+WeCom 配置存储在 `~/.qoder/loop_engine/wecom.json`：
+
+| 字段 | 说明 |
+|------|------|
+| `corp_id` | 企业 ID |
+| `agent_id` | 应用 Agent ID |
+| `secret` | 应用 Secret |
+| `token` | 回调 Token |
+| `encoding_aes_key` | 回调加密密钥 |
+
+### 启动
+
+```bash
+# 启动服务器（默认端口 5000）
+loop_engine wecom start --port 5000
+
+# 查看状态
+loop_engine wecom status
+
+# 停止服务器
+loop_engine wecom stop
+
+# 配置
+loop_engine wecom config --show
+loop_engine wecom config --set key=value
+```
+
+### 隧道
+
+企业微信回调 URL 需要公网可达。使用 autossh 建立反向隧道：
+
+```bash
+autossh -M 0 -N -o ServerAliveInterval=30 \
+  -R 0.0.0.0:5000:localhost:5000 root@<server-ip>
+```
+
+### 异步推送
+
+慢操作（如查询复杂状态、执行 LLM 推理）走异步路径：
+1. 服务器立即返回 `"success"`（WeCom 不重试）
+2. 后台线程调 qodercli 处理
+3. 完成后通过 WeCom API 主动推送结果
+
+异步推送需要将服务器公网 IP 加入企业微信应用管理的"企业可信IP"列表。
+
+### 模型
+
+后台 qodercli 子进程自动使用 `~/.qoder/settings.json` 中配置的默认模型，可通过 `/model` 命令切换。
+
+---
+
+## 十一、架构说明
 ~/.qoder/loop_engine/           # 代码目录
 ├── cli.py                      # CLI 入口 + 命令处理
 ├── machine.py                  # 状态机路由

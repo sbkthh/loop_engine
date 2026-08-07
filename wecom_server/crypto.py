@@ -6,7 +6,6 @@ import random
 import string
 import struct
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
 
 
 def verify_signature(token, timestamp, nonce, msg, signature):
@@ -25,13 +24,17 @@ def decrypt_message(encrypted_b64, aes_key):
     cipher = _create_aes_cipher(aes_key)
     decryptor = cipher.decryptor()
     padded = decryptor.update(raw) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    return unpadder.update(padded) + unpadder.finalize()
+    pad_len = padded[-1]
+    return padded[:-pad_len]
 
 
 def encrypt_message(plaintext, aes_key):
-    padder = padding.PKCS7(128).padder()
-    padded = padder.update(plaintext) + padder.finalize()
+    # WeCom uses non-standard PKCS7 with block size 32 (not 16)
+    block_size = 32
+    pad_len = block_size - (len(plaintext) % block_size)
+    if pad_len == 0:
+        pad_len = block_size
+    padded = plaintext + bytes([pad_len] * pad_len)
     cipher = _create_aes_cipher(aes_key)
     encryptor = cipher.encryptor()
     return encryptor.update(padded) + encryptor.finalize()
@@ -43,18 +46,16 @@ def decrypt_callback(encrypted_b64, msg_signature, timestamp, nonce, token, aes_
     raw = base64.b64decode(encrypted_b64)
     cipher = _create_aes_cipher(aes_key)
     decryptor = cipher.decryptor()
-    padded = decryptor.update(raw) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    decrypted = unpadder.update(padded) + unpadder.finalize()
-    # WeCom format: 16-byte random + 4-byte network byte order length + plaintext + corpid
+    decrypted = decryptor.update(raw) + decryptor.finalize()
+    # WeCom format: 16-byte random + 4-byte network byte order length + plaintext + corpid + padding
     msg_len = int.from_bytes(decrypted[16:20], "big")
     return decrypted[20:20 + msg_len].decode("utf-8")
 
 
-def encrypt_callback(plaintext, token, aes_key):
+def encrypt_callback(plaintext, token, aes_key, corpid="corpid"):
     random_bytes = "".join(random.choices(string.ascii_letters, k=16)).encode()
     msg_len = struct.pack(">I", len(plaintext.encode()))
-    content = random_bytes + msg_len + plaintext.encode() + b"corpid"
+    content = random_bytes + msg_len + plaintext.encode() + corpid.encode()
     encrypted = encrypt_message(content, aes_key)
     encrypted_b64 = base64.b64encode(encrypted).decode()
     timestamp = str(int(time.time()))

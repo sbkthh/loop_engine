@@ -27,15 +27,21 @@ AI Native 是一套 spec 驱动的开发编排系统，由三层组成：
 - Node.js (qodercli 依赖)
 - Git
 
+### 平台支持
+
+- **macOS / Linux**：原生支持
+- **Windows**：未验证。核心逻辑是纯 Python，但 audit hook 与命令行 shim 是 shell 脚本、定时轮询依赖 crontab，均属 Unix 机制——需在 WSL 或 Git Bash 下运行，并用任务计划程序替代 crontab。
+
 ### 安装
 
 ```bash
-# 1. 克隆 loop engine
-git clone <repo-url> ~/.qoder/loop_engine
-cd ~/.qoder/loop_engine
+# 1. 克隆代码到 ~/loop_engine（位置可自选，self-install 会自适应）
+git clone <repo-url> ~/loop_engine
+cd ~/loop_engine
 
-# 2. 安装（macOS 推荐 shim 方式）
-python3 cli.py self-install
+# 2. 安装：生成 shim（~/.local/bin/loop_engine，指向当前代码目录）
+#    + spec-session skill + 数据目录（~/.qoder/loop_engine）
+python3 __main__.py self-install
 
 # 3. 验证
 loop_engine self-check
@@ -50,10 +56,22 @@ CLI          OK       available
 Skill        OK       /Users/.../spec-session/SKILL.md
 Data dir     OK       /Users/.../.qoder/loop_engine
 Registry     OK       0 requirement(s) registered
-Tests        OK       98 passed in 3.76s
+Tests        OK       176 passed in 6.57s
 
 System ready.
 ```
+
+### 定时轮询（crontab，每台机器手动配置）
+
+```bash
+crontab -e
+*/10 * * * * ~/.local/bin/loop_engine poll
+0 3 * * 1 ~/.local/bin/loop_engine session-clean
+```
+
+### WeCom Bot（可选）
+
+需要微信交互时再配置，见「十、WeCom 企业微信 Bot」。
 
 ---
 
@@ -280,9 +298,10 @@ loop_engine schedule max-concurrency 2
 ### 定时自动轮询（crontab）
 
 ```bash
-# 每 5 分钟轮询一次（shim 路径，不依赖 cd）
+# 每 10 分钟轮询一次 + 每周一 3 点清理旧 qodercli 会话（shim 路径，不依赖 cd）
 crontab -e
-*/5 * * * * /Users/chuan.li/.local/bin/loop_engine poll
+*/10 * * * * ~/.local/bin/loop_engine poll
+0 3 * * 1 ~/.local/bin/loop_engine session-clean
 ```
 
 ---

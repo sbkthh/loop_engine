@@ -3,12 +3,14 @@
 All messages go through async LLM path (qodercli subprocess, result pushed
 via WeCom API). No keyword matching — LLM handles everything.
 """
+import datetime
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 
 logger = logging.getLogger("wecom")
@@ -66,8 +68,13 @@ _LLM_SYSTEM_PROMPT = (
     "- openspec-new-change/openspec-propose create a NEW change proposal only; "
     "they do NOT support appending to or modifying an existing change/spec — "
     "modify an existing spec by editing its spec.md in place\n"
-    "- After editing a spec, run 'loop_engine next --root <path>' to start the "
-    "loop (SCORE/CLASSIFY_CHANGE) — never implement code directly\n\n"
+    "- After editing a spec, your reply MUST start with exactly "
+    "'__SPEC_RESULT__ <requirement name> <module key>' on the first line "
+    "(module key is change_id/module_name, e.g. "
+    "cross-dock-v2-backend/cross-dock-persistence), then a short summary of "
+    "what changed. Do NOT run 'loop_engine next' or 'commit' — the prefix "
+    "registers the change (hash update + backup) and the user then approves "
+    "execution\n\n"
     "Manual execution rules (when driving a next/commit loop manually, e.g. "
     "user says '主动执行' or asks you to run the loop step by step):\n"
     "- ALWAYS run 'loop_engine manual-begin --root <path>' BEFORE the first "
@@ -179,6 +186,80 @@ def _execute_approve(name, registry, data_dir):
     return f"已批准 {name}，等待调度（并发上限或正在运行）"
 
 
+def _audit_line(text):
+    """Append a line to the shared audit log (same file as audit_hook.sh)."""
+    try:
+        log_path = os.path.expanduser("~/.qoder/loop_engine/audit.log")
+        ts = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(log_path, "a") as f:
+            f.write(f"[{ts}] {text}\n")
+    except Exception:
+        logger.exception("[wecom] audit log write failed")
+
+
+def _execute_spec_result(name, module_key, registry, data_dir):
+    """Register a G-edited spec change: verify hash changed, backup, PARTIAL.
+
+    The spec file itself is edited by the assistant (audited by the hook);
+    this function only controls the registration gate so the scheduler picks
+    the change up only after the user approves execution.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from constants import SPEC_PATH_TEMPLATE, PARTIAL
+    import spec_utils
+    from state import StateManager
+
+    req = next((r for r in registry if r.get("name") == name), None)
+    if not req:
+        available = ", ".join(r.get("name", "?") for r in registry) or "无"
+        return f"没有找到需求：{name}（可用：{available}）"
+    if "/" not in module_key:
+        return (f"模块格式应为 change_id/module_name，收到：{module_key}。"
+                f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+    change_id, module_name = module_key.split("/", 1)
+    root = req["root"]
+    spec_path = os.path.join(root, SPEC_PATH_TEMPLATE.format(
+        change_id=change_id, module_name=module_name))
+    if not os.path.exists(spec_path):
+        return (f"找不到 spec 文件：{spec_path}。"
+                f"请先编辑 spec 再输出 __SPEC_RESULT__。")
+    new_hash = spec_utils.compute_spec_hash(spec_path)
+    sm = StateManager(root)
+    st = sm.load()
+    module = sm.get_module(st, module_key)
+    if not module:
+        available = ", ".join(st["modules"].keys()) or "无"
+        return f"模块 {module_key} 不在状态机中（可用模块：{available}）"
+    old_hash = module.get("spec_hash")
+    if old_hash == new_hash:
+        return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
+    backup_dir = os.path.join(root, ".loop", "backup")
+    os.makedirs(backup_dir, exist_ok=True)
+    backup_path = os.path.join(
+        backup_dir, f"spec-{module_name}-{int(time.time())}.md")
+    rel = os.path.relpath(spec_path, root)
+    old = subprocess.run(["git", "-C", root, "show", f"HEAD:{rel}"],
+                         capture_output=True, text=True)
+    if old.returncode == 0:
+        with open(backup_path, "w") as f:
+            f.write(old.stdout)
+        backup_note = backup_path + " (HEAD)"
+    else:
+        # no git HEAD for this spec — snapshot current content so there is
+        # at least a registration-time rollback point
+        shutil.copy2(spec_path, backup_path)
+        backup_note = backup_path + " (pre-edit snapshot, no git HEAD)"
+    sm.set_module_field(st, module_key, "spec_hash", new_hash)
+    sm.set_module_field(st, module_key, "status", PARTIAL)
+    sm.save(st)
+    _audit_line(f"SPEC {name} {module_key} {old_hash}->{new_hash} "
+                f"backup={backup_note}")
+    return (f"spec 变更已登记：{module_key}\n"
+            f"旧 hash: {old_hash[:8]}  新 hash: {new_hash[:8]}\n"
+            f"备份: {backup_note}\n"
+            f"请回复『批准执行 {name}』开始实现")
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user session context."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
@@ -221,6 +302,13 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     if reply.startswith("__HISTORY__"):
         name = reply[len("__HISTORY__"):].strip().splitlines()[0].strip() or "ALL"
         return _execute_history(name, registry, data_dir)
+    if reply.startswith("__SPEC_RESULT__"):
+        rest = reply[len("__SPEC_RESULT__"):].strip().splitlines()[0].strip()
+        parts = rest.split(None, 1)
+        if len(parts) != 2:
+            return ("格式错误：__SPEC_RESULT__ <需求名> "
+                    "<change_id>/<module_name>")
+        return _execute_spec_result(parts[0], parts[1], registry, data_dir)
     return reply
 
 

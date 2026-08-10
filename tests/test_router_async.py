@@ -1,6 +1,6 @@
 """Tests for router async dispatch (all messages go through LLM)."""
-import sys
 import os
+import sys
 import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -18,7 +18,9 @@ def test_dispatch_always_returns_callable():
 
 def _fake_llm_reply(stdout):
     def fake_run(cmd, **kwargs):
-        return types.SimpleNamespace(stdout=stdout, returncode=0)
+        if any("qodercli" in part for part in cmd):
+            return types.SimpleNamespace(stdout=stdout, returncode=0)
+        return types.SimpleNamespace(stdout="", stderr="", returncode=1)
     return fake_run
 
 
@@ -146,3 +148,155 @@ def test_normal_reply_untouched(monkeypatch):
     reply = fn()
 
     assert reply.startswith("两个需求")
+
+
+def _make_spec_root(tmp_path, git=True):
+    """Build a requirement root: one module in state.json + a spec.md.
+    With git=True (default) the spec is committed so backup can fetch HEAD."""
+    import subprocess
+    from state import StateManager
+    import spec_utils
+    root = str(tmp_path)
+    spec_dir = os.path.join(root, "openspec", "changes", "chg1", "specs", "m1")
+    os.makedirs(spec_dir, exist_ok=True)
+    spec_path = os.path.join(spec_dir, "spec.md")
+    with open(spec_path, "w") as f:
+        f.write("# v1")
+    sm = StateManager(root)
+    sm.init_state()
+    st = sm.load()
+    sm.add_module(st, "chg1/m1", "chg1", "m1",
+                  spec_hash=spec_utils.compute_spec_hash(spec_path))
+    sm.save(st)
+    if git:
+        # -c core.excludesfile=/dev/null: the user's global gitignore
+        # excludes openspec/, which would otherwise untrack the spec
+        subprocess.run(["git", "init", "-q", root], check=True)
+        subprocess.run(["git", "-C", root, "-c", "core.excludesfile=/dev/null",
+                        "add", "-A"], check=True)
+        subprocess.run(["git", "-C", root, "-c", "core.excludesfile=/dev/null",
+                        "-c", "user.email=t@t",
+                        "-c", "user.name=t", "commit", "-qm", "v1"],
+                       check=True)
+    return root, spec_path
+
+
+def test_spec_result_registers_change(monkeypatch, tmp_path):
+    """__SPEC_RESULT__ verifies + backs up + updates hash/status to PARTIAL."""
+    import subprocess as sp
+    from wecom_server import router
+    from state import StateManager
+    import spec_utils
+
+    root, spec_path = _make_spec_root(tmp_path)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    real_run = sp.run
+
+    def fake_run(cmd, **kwargs):
+        if any("qodercli" in part for part in cmd):
+            return types.SimpleNamespace(
+                stdout="__SPEC_RESULT__ req chg1/m1\n已修改", returncode=0)
+        return real_run(cmd, **kwargs)  # git show must run for real
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("修改一下 chg1/m1 的 spec", [{"name": "req", "root": root}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply and "批准执行" in reply
+    st = StateManager(root).load()
+    mod = st["modules"]["chg1/m1"]
+    assert mod["status"] == "PARTIAL"
+    assert mod["spec_hash"] == spec_utils.compute_spec_hash(spec_path)
+    backups = os.listdir(os.path.join(root, ".loop", "backup"))
+    assert len(backups) == 1
+    with open(os.path.join(root, ".loop", "backup", backups[0])) as f:
+        assert f.read() == "# v1"  # HEAD version, not the edited one
+
+
+def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):
+    """No git HEAD → still registers with a snapshot backup."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, spec_path = _make_spec_root(tmp_path, git=False)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "PARTIAL"
+    assert len(os.listdir(os.path.join(root, ".loop", "backup"))) == 1
+
+
+def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ ghost chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "没有找到需求" in reply
+
+
+def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
+    """Same hash → no registration, tells G to actually edit the spec."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "没有变化" in reply
+
+
+def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
+    from wecom_server import router
+
+    root = str(tmp_path)  # no spec dir at all
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "找不到 spec" in reply
+
+
+def test_spec_result_bad_format(monkeypatch, tmp_path):
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ onlyname"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "格式错误" in reply

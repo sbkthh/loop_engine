@@ -3,8 +3,10 @@
 import argparse
 import datetime
 import json
+import shutil
 import sys
 import os
+import time
 
 from state import StateManager
 from machine import StateMachine
@@ -310,6 +312,40 @@ def cmd_manual_end(args):
         print(f"No manual session or lock replaced for {args.root}")
         sys.exit(1)
     print(f"Manual session ended for {args.root} (lock released)")
+
+
+def session_clean(projects_dir, older_than_days, dry_run=False):
+    """Delete qodercli session files (<project>/<uuid>.jsonl + sibling dir)
+    older than N days, for every project dir under ~/.qoder/projects."""
+    cutoff = time.time() - older_than_days * 86400
+    removed = 0
+    if not os.path.isdir(projects_dir):
+        return removed
+    for project in os.listdir(projects_dir):
+        pdir = os.path.join(projects_dir, project)
+        if not os.path.isdir(pdir):
+            continue
+        for entry in os.listdir(pdir):
+            jsonl = os.path.join(pdir, entry)
+            if not jsonl.endswith(".jsonl"):
+                continue
+            if os.path.getmtime(jsonl) >= cutoff:
+                continue
+            if not dry_run:
+                os.unlink(jsonl)
+                sibling = jsonl[:-6]  # strip ".jsonl" → session dir (attachments)
+                if os.path.isdir(sibling):
+                    shutil.rmtree(sibling)
+            removed += 1
+    return removed
+
+
+def cmd_session_clean(args):
+    projects_dir = os.path.expanduser("~/.qoder/projects")
+    removed = session_clean(projects_dir, args.older_than, dry_run=args.dry_run)
+    prefix = "[dry-run] " if args.dry_run else ""
+    print(f"{prefix}Removed {removed} session(s) older than "
+          f"{args.older_than}d from {projects_dir}")
 
 
 def cmd_schedule_status(args):
@@ -672,6 +708,14 @@ def main():
                        help="(internal) Release a manual-session lock")
     p.add_argument("root", help="Requirement root dir")
     p.set_defaults(func=cmd_manual_end)
+
+    p = sub.add_parser("session-clean", parents=[common],
+                       help="Delete old qodercli session files (~/.qoder/projects)")
+    p.add_argument("--older-than", type=int, default=30,
+                   help="Delete sessions older than N days (default: 30)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Report without deleting")
+    p.set_defaults(func=cmd_session_clean)
 
     p = sub.add_parser("schedule", parents=[common],
                        help="Scheduler config (max concurrency)")

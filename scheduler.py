@@ -598,6 +598,7 @@ def run_requirement(name):
                                  f"{root}:{action}:{retries}"))
             q = subprocess.run(
                 [_QODERCLI, "--print", "--session-id", sid,
+                 "--no-session-persistence",
                  "--dangerously-skip-permissions",
                  "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
                  json.dumps(payload)],

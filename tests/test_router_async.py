@@ -275,7 +275,8 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
 def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
     from wecom_server import router
 
-    root = str(tmp_path)  # no spec dir at all
+    root, spec_path = _make_spec_root(tmp_path)
+    os.remove(spec_path)  # module registered but spec file gone
     monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
@@ -287,16 +288,73 @@ def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
     assert "找不到 spec" in reply
 
 
-def test_spec_result_bad_format(monkeypatch, tmp_path):
+def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
+    """No matching module → helpful error, no registration."""
     from wecom_server import router
+    from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
     monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ onlyname"))
+                        _fake_llm_reply("__SPEC_RESULT__ req onlyname"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
     reply = fn()
 
-    assert "格式错误" in reply
+    assert "找不到模块" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
+
+
+def test_spec_result_autocompletes_module_name(monkeypatch, tmp_path):
+    """Bare module name resolves to the unique change_id/module_name."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, spec_path = _make_spec_root(tmp_path)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply and "chg1/m1" in reply
+    st = StateManager(root).load()
+    assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"
+
+
+def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
+    """Module name matching multiple keys → asks for full key."""
+    from wecom_server import router
+    from state import StateManager
+    import spec_utils
+
+    root, spec_path = _make_spec_root(tmp_path)
+    spec2_dir = os.path.join(root, "openspec", "changes", "chg2", "specs", "m1")
+    os.makedirs(spec2_dir, exist_ok=True)
+    spec2_path = os.path.join(spec2_dir, "spec.md")
+    with open(spec2_path, "w") as f:
+        f.write("# v1")
+    sm = StateManager(root)
+    st = sm.load()
+    sm.add_module(st, "chg2/m1", "chg2", "m1",
+                  spec_hash=spec_utils.compute_spec_hash(spec2_path))
+    sm.save(st)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "对应多个模块" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"

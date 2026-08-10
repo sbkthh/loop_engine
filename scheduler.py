@@ -202,6 +202,8 @@ def _poll_requirement(root, name):
 
 def poll():
     """Run one detection cycle and merge into pending.json."""
+    for req in _read_registry():
+        _cleanup_stale_manual(req.get("root", ""))
     fresh = []
     for req in _read_registry():
         entry = _poll_requirement(req.get("root"), req.get("name"))
@@ -222,6 +224,24 @@ def poll():
     return fresh
 
 
+def _no_pending_message(name):
+    """Friendly reason for a requirement that has no pending work."""
+    req = next((r for r in _read_registry() if r.get("name") == name), None)
+    if not req:
+        return f"没有找到需求：{name}"
+    try:
+        with open(os.path.join(req["root"], STATE_FILE)) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return f"{name} 当前没有待执行工作（等待下次 poll 检测）"
+    if state.get("current", {}).get("action"):
+        return f"{name} 正在执行中，无需重复批准"
+    if all(m.get("status") == SYNCED
+           for m in state.get("modules", {}).values()):
+        return f"{name} 已执行完成（SYNCED），无需批准"
+    return f"{name} 当前没有待执行工作（等待下次 poll 检测）"
+
+
 def approve(name=None, all_=False):
     data = load_pending()
     entries = data.get("pending", [])
@@ -237,7 +257,7 @@ def approve(name=None, all_=False):
         raise ValueError("Specify a requirement name or --all")
     entry = _find_entry(data, name)
     if not entry:
-        raise ValueError(f"No pending work for requirement: {name}")
+        raise ValueError(_no_pending_message(name))
     if entry.get("trigger") not in AUTO_EXECUTABLE:
         raise ValueError(
             f"{name} ({entry.get('trigger')}) is report-only — "
@@ -513,6 +533,31 @@ def _record_manual_run(root, session):
         pass
     _record_run(name, end, int(session.get("steps", 0)),
                 started_at, time.time())
+
+
+def _cleanup_stale_manual(root):
+    """Auto-end manual sessions whose owner process died."""
+    session_path = os.path.join(root, MANUAL_FILE)
+    if not os.path.exists(session_path):
+        return
+    try:
+        with open(session_path) as f:
+            session = json.load(f)
+    except (ValueError, OSError):
+        return
+    try:
+        pid = int(session.get("pid", 0) or 0)
+    except ValueError:
+        return
+    if _pid_alive(pid):
+        return
+    if manual_end(root):
+        return
+    # lock was replaced by a scheduler run — session file is stale
+    try:
+        os.unlink(session_path)
+    except OSError:
+        pass
 
 
 def running_count(registry_entries=None):

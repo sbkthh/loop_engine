@@ -253,6 +253,24 @@ class TestApprove(SchedulerBase):
         self.assertTrue(by_name["req-a"]["approved"])
         self.assertFalse(by_name["req-b"]["approved"])
 
+    def test_approve_no_pending_synced_friendly(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
+
+        with self.assertRaises(ValueError) as ctx:
+            scheduler.approve("req")
+        self.assertIn("已执行完成", str(ctx.exception))
+
+    def test_approve_no_pending_mid_progress_friendly(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    current={"module": "c/m", "action": "MAKER_STEP0",
+                             "attempt": 0})
+
+        with self.assertRaises(ValueError) as ctx:
+            scheduler.approve("req")
+        self.assertIn("正在执行中", str(ctx.exception))
+
 
 class TestLock(SchedulerBase):
     def test_acquire_release(self):
@@ -382,6 +400,59 @@ class TestLock(SchedulerBase):
         root = os.path.join(self.tmp.name, "req")
         os.makedirs(root, exist_ok=True)
         scheduler.manual_step(root)  # must not raise
+        self.assertEqual(scheduler.load_runs()["runs"], [])
+
+    def test_poll_auto_ends_dead_manual_session(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
+        scheduler.manual_begin(root)
+        # simulate the manual session dying
+        with open(os.path.join(root, ".loop", "lock"), "w") as f:
+            f.write("999999999")
+        with open(os.path.join(root, scheduler.MANUAL_FILE), "w") as f:
+            json.dump({"pid": 999999999, "started_at": time.time(),
+                       "steps": 4}, f)
+
+        scheduler.poll()
+
+        self.assertFalse(os.path.exists(os.path.join(root, ".loop", "lock")))
+        self.assertFalse(
+            os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
+        runs = scheduler.load_runs()["runs"]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["requirement"], "req")
+        self.assertEqual(runs[0]["steps"], 4)
+
+    def test_poll_removes_stale_manual_but_keeps_replaced_lock(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
+        import subprocess as sp
+        proc = sp.Popen(["sleep", "60"])
+        try:
+            with open(os.path.join(root, ".loop", "lock"), "w") as f:
+                f.write(str(proc.pid))
+            with open(os.path.join(root, scheduler.MANUAL_FILE), "w") as f:
+                json.dump({"pid": 999999999, "started_at": time.time(),
+                           "steps": 2}, f)
+
+            scheduler.poll()
+
+            self.assertTrue(scheduler.is_locked(root))
+            self.assertFalse(
+                os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
+            self.assertEqual(scheduler.load_runs()["runs"], [])
+        finally:
+            proc.kill()
+
+    def test_poll_keeps_live_manual_session(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
+        scheduler.manual_begin(root)
+
+        scheduler.poll()
+
+        self.assertTrue(
+            os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
         self.assertEqual(scheduler.load_runs()["runs"], [])
 
 

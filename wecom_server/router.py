@@ -82,8 +82,10 @@ _LLM_SYSTEM_PROMPT = (
     "manual loop and a scheduled run never touch the same requirement "
     "concurrently. If manual-begin fails (lock held), do NOT proceed — tell "
     "the user the requirement is locked\n"
-    "- Run 'loop_engine manual-end --root <path>' when the loop finishes "
-    "(machine reports IDLE/SYNCED) or the user stops it\n\n"
+    "- Run 'loop_engine manual-end --root <path>' IMMEDIATELY when the loop "
+    "finishes (machine reports IDLE/SYNCED) or the user stops it — never "
+    "leave a manual loop without manual-end: it writes the run record and "
+    "releases the lock\n\n"
     "Answer the user's question concisely in Chinese. "
     "If asked about specific project status, run the command. "
     "If you don't know, say so.\n\n"
@@ -197,6 +199,24 @@ def _audit_line(text):
         logger.exception("[wecom] audit log write failed")
 
 
+def _resolve_module_key(st, key):
+    """Resolve a user-supplied module key, auto-completing bare names."""
+    modules = st.get("modules", {})
+    if key in modules:
+        return key
+    if "/" in key:
+        raise ValueError(
+            f"模块 {key} 不在状态机中（可用：{', '.join(modules) or '无'}）")
+    matches = [k for k in modules if k.rsplit("/", 1)[-1] == key]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"模块名 {key} 对应多个模块（{'、'.join(sorted(matches))}），"
+            f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+    raise ValueError(f"找不到模块 {key}（可用：{', '.join(modules) or '无'}）")
+
+
 def _execute_spec_result(name, module_key, registry, data_dir):
     """Register a G-edited spec change: verify hash changed, backup, PARTIAL.
 
@@ -213,23 +233,21 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     if not req:
         available = ", ".join(r.get("name", "?") for r in registry) or "无"
         return f"没有找到需求：{name}（可用：{available}）"
-    if "/" not in module_key:
-        return (f"模块格式应为 change_id/module_name，收到：{module_key}。"
-                f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
-    change_id, module_name = module_key.split("/", 1)
     root = req["root"]
+    sm = StateManager(root)
+    st = sm.load()
+    try:
+        module_key = _resolve_module_key(st, module_key)
+    except ValueError as e:
+        return str(e)
+    change_id, module_name = module_key.split("/", 1)
     spec_path = os.path.join(root, SPEC_PATH_TEMPLATE.format(
         change_id=change_id, module_name=module_name))
     if not os.path.exists(spec_path):
         return (f"找不到 spec 文件：{spec_path}。"
                 f"请先编辑 spec 再输出 __SPEC_RESULT__。")
     new_hash = spec_utils.compute_spec_hash(spec_path)
-    sm = StateManager(root)
-    st = sm.load()
-    module = sm.get_module(st, module_key)
-    if not module:
-        available = ", ".join(st["modules"].keys()) or "无"
-        return f"模块 {module_key} 不在状态机中（可用模块：{available}）"
+    module = st["modules"][module_key]
     old_hash = module.get("spec_hash")
     if old_hash == new_hash:
         return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"

@@ -547,7 +547,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 | F | wecom_server | A (wecom start) | 常驻 :5000；同步返回 success |
 | G | qodercli | F（每消息） | 按用户共用会话；audit hook 审计；特殊前缀回 A |
 
-~/.qoder/loop_engine/           # 代码目录
+~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）
 ├── cli.py                      # CLI 入口 + 命令处理
 ├── machine.py                  # 状态机路由
 ├── state.py                    # StateManager
@@ -561,6 +561,8 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── constants.py                # 常量
 ├── __main__.py                 # Python -m 入口
 ├── pyproject.toml              # 构建配置
+├── USAGE.md                    # 使用指南
+├── wecom_server/               # WeCom 机器人（F/G）
 └── tests/
     ├── test_machine.py
     ├── test_state.py
@@ -568,11 +570,17 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
     ├── test_directives.py
     ├── test_spec_utils.py
     ├── test_setup.py
-    └── test_scheduler.py       # 调度器 29 个测试
+    ├── test_scheduler.py       # 调度器 29 个测试
+    └── test_session_clean.py
 
-~/.qoder/loop_engine/           # 数据目录
+~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
 ├── requirements.json           # 需求注册表
-└── schedule.json               # 调度器配置
+├── pending.json                # poll 待执行清单
+├── schedule.json               # 调度器配置
+├── wecom.json                  # WeCom 应用配置（密钥）
+├── audit.log                   # 敏感命令审计日志
+├── sessions/                   # 微信用户会话状态
+└── .loop/                      # 本地循环状态
 
 ~/.qoder/skills/spec-session/   # Layer 1 Skill
 └── SKILL.md

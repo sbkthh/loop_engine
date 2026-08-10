@@ -11,17 +11,13 @@ HOOK = os.path.join(os.path.dirname(__file__), "..", "wecom_server",
 def _run_hook(tool_input, session_id="sid-1"):
     tmp = tempfile.mkdtemp()
     audit_log = os.path.join(tmp, "audit.log")
-    script = open(HOOK).read().replace(
-        "/Users/chuan.li/.qoder/loop_engine/audit.log", audit_log)
-    tmp_script = os.path.join(tmp, "hook.sh")
-    with open(tmp_script, "w") as f:
-        f.write(script)
     payload = json.dumps({
         "session_id": session_id,
         "tool_name": "Bash",
         "tool_input": tool_input,
     })
-    r = subprocess.run(["bash", tmp_script], input=payload,
+    env = {**os.environ, "AUDIT_LOG": audit_log}
+    r = subprocess.run(["bash", HOOK], input=payload, env=env,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return audit_log

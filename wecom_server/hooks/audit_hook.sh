@@ -4,6 +4,8 @@
 # to the loop_engine audit log. Never blocks — exit 0 always.
 input=$(cat)
 
+AUDIT_LOG="${AUDIT_LOG:-$HOME/.qoder/loop_engine/audit.log}"
+
 cmd=$(printf '%s' "$input" | /usr/bin/python3 -c '
 import json, sys
 try:
@@ -28,7 +30,8 @@ except Exception:
     print("")
 ')
     flat=$(printf '%s' "$cmd" | tr '\n' ' ')
-    echo "[$ts] session=$sid cmd=$flat" >> /Users/chuan.li/.qoder/loop_engine/audit.log
+    mkdir -p "$(dirname "$AUDIT_LOG")"
+    echo "[$ts] session=$sid cmd=$flat" >> "$AUDIT_LOG"
 fi
 
 exit 0

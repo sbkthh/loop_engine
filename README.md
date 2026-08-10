@@ -580,7 +580,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── constants.py                # 常量
 ├── __main__.py                 # Python -m 入口
 ├── pyproject.toml              # 构建配置
-├── USAGE.md                    # 使用指南
+├── README.md                   # 使用指南
 ├── wecom_server/               # WeCom 机器人（F/G）
 └── tests/
     ├── test_machine.py

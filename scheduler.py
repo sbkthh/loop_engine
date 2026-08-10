@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 import requests  # noqa: E402 — used by notify_pending()
 
@@ -590,8 +591,14 @@ def run_requirement(name):
                     **inner.get("context", {}),
                     "previous_result": prev_result}}
                 payload["directives"] = inner
+            # deterministic session id: same root+action+attempt maps to the
+            # same qodercli session (audit/trace back to the step); a retry
+            # increments retries and gets a fresh id, keeping replay clean
+            sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                 f"{root}:{action}:{retries}"))
             q = subprocess.run(
-                [_QODERCLI, "--print", "--dangerously-skip-permissions",
+                [_QODERCLI, "--print", "--session-id", sid,
+                 "--dangerously-skip-permissions",
                  "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
                  json.dumps(payload)],
                 capture_output=True, text=True)

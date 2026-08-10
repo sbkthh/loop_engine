@@ -8,6 +8,7 @@ import tempfile
 import time
 import types
 import unittest
+import uuid
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -470,6 +471,83 @@ class TestRun(SchedulerBase):
             .get("previous_result"))
         self.assertEqual(
             captured[1]["directives"]["context"]["previous_result"], result_body)
+
+    def test_run_derives_session_id_from_root_action(self):
+        """qodercli calls carry a deterministic session ID: same root+action
+        +attempt reuses it, so audit/session files map back to the step."""
+        root = self._register_pending("req")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(cmd)
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            scheduler.run_requirement("req")
+
+        self.assertEqual(len(captured), 2)
+        sids = []
+        for cmd in captured:
+            i = cmd.index("--session-id")
+            sids.append(cmd[i + 1])
+        self.assertEqual(sids[0], sids[1])  # same step, same attempt → same ID
+        self.assertEqual(
+            sids[0],
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root}:SCORE:0")))
+
+    def test_run_retry_gets_new_session_id(self):
+        """A retried step (same action, retries incremented) gets a fresh ID,
+        keeping the replay session clean of the failed attempt's context."""
+        root = self._register_pending("req")
+        captured = []
+        fail = [1]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(cmd)
+                if fail[0] > 0:
+                    fail[0] -= 1
+                    return types.SimpleNamespace(stdout="", stderr="boom",
+                                                 returncode=1)
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            scheduler.run_requirement("req")
+
+        self.assertEqual(len(captured), 2)
+        sids = [cmd[cmd.index("--session-id") + 1] for cmd in captured]
+        self.assertNotEqual(sids[0], sids[1])
+        self.assertEqual(sids[0], str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                 f"{root}:SCORE:0")))
+        self.assertEqual(sids[1], str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                 f"{root}:SCORE:1")))
 
     def test_run_retries_qodercli_failure_once(self):
         root = self._register_pending("req")

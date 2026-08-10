@@ -490,6 +490,63 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ---
 
 ## 十一、架构说明
+
+### 进程调用关系
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  crontab  (*/10 * * * * loop_engine poll)  ← 唯一的轮询触发器       │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  A: loop_engine CLI 主进程                                          │
+│     poll / pending / approve / run / schedule / session-clean /    │
+│     manual-begin|end / wecom ...（argparse 分发）                   │
+└──────┬──────────────────────────────────────┬──────────────────────┘
+       │ approve 批准后 dispatch                │ manual-begin/end
+       ▼                                       ▼（手动循环接管锁）
+┌────────────────────────────────────────────────────────────────────┐
+│  B: run_requirement 子进程（A fork，start_new_session）             │
+│     循环: next → qodercli → commit → next → ... → IDLE             │
+│     持有 .loop/lock 锁；心跳推送；重试 1 次；步数/重复上限           │
+└──────┬──────────────────────────────────────┬──────────────────────┘
+       │ 每步 fork 一次性子进程                 │
+       ▼                                       │
+┌──────────────────────────────────────────────┐
+│  C: next 子进程    读 state.json → 输出 directives
+│  D: qodercli 子进程  --print --session-id <uuid5(root:action:retries)>
+│                     --no-session-persistence --cwd <root>
+│                     --append-system-prompt LOOP_AGENT_PROMPT
+│                     输入 = directives + context.previous_result
+│                     输出 → .loop/result.md（无会话记忆，外部记忆）
+│  E: commit 子进程  解析 result.md → 状态机推进 → 清空 result.md
+└──────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────────┐
+│  F: wecom_server 守护进程（端口 5000，A fork 常驻）                  │
+│     微信回调 → 立即返回 "success" → 后台处理 → API 推送结果          │
+└──────┬─────────────────────────────────────────────────────────────┘
+       │ 每个消息派生一个
+       ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  G: qodercli 子进程（每个微信消息一次）                              │
+│     --session-id/--resume <按用户稳定的会话>（对话记忆）             │
+│     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
+│     特殊前缀: __APPROVE__ / __HISTORY__ / __SPEC_RESULT__           │
+│     __APPROVE__ → 回到 A（approve + dispatch → B 调度链）           │
+│     __SPEC_RESULT__ → 校验/备份/置 PARTIAL → 等待用户批准           │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+| 进程 | 身份 | 触发者 | 关键特征 |
+|------|------|--------|----------|
+| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end 锁 |
+| B | run_requirement | A (approve) | 循环驱动；锁 + 心跳 + 重试 |
+| C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
+| F | wecom_server | A (wecom start) | 常驻 :5000；同步返回 success |
+| G | qodercli | F（每消息） | 按用户共用会话；audit hook 审计；特殊前缀回 A |
+
 ~/.qoder/loop_engine/           # 代码目录
 ├── cli.py                      # CLI 入口 + 命令处理
 ├── machine.py                  # 状态机路由

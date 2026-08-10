@@ -11,7 +11,7 @@ import registry
 import report
 
 
-def init_from_prd(name, root, change_id, projects, prd_path, modules=None):
+def init_from_prd(name, root, change_id, projects, prd_path, modules=None, context=None):
     """Full PRD-driven setup: parse PRD → worktrees → init → generate specs → register."""
     root = os.path.abspath(root)
     os.makedirs(root, exist_ok=True, mode=0o755)
@@ -28,7 +28,7 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None):
         if not success:
             return {"error": f"Worktree failed for {proj_name}: {msg}"}
 
-    init_requirement(root)
+    init_requirement(root, context)
     sm = StateManager(root)
     state = sm.load()
 
@@ -93,7 +93,7 @@ def init_requirement(root, context=None):
     return result
 
 
-def setup_requirement(name, root, change_id, projects):
+def setup_requirement(name, root, change_id, projects, context=None):
     """Full setup: worktrees → init → register. Returns result dict."""
     root = os.path.abspath(root)
     os.makedirs(root, exist_ok=True)
@@ -104,7 +104,7 @@ def setup_requirement(name, root, change_id, projects):
         success, msg = create_worktree(proj_source, target, change_id)
         if not success:
             return {"error": f"Worktree failed for {proj_name}: {msg}"}
-    init_requirement(root)
+    init_requirement(root, context)
     projects_data = [{"name": n, "source": s} for n, s in projects]
     try:
         entry = registry.add_requirement(name, root, projects=projects_data)

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import requests  # noqa: E402 — used by notify_pending()
 
@@ -26,6 +27,7 @@ LOG_PATH = os.path.join(DATA_DIR, "schedule.log")
 
 STATE_FILE = ".loop/state.json"
 LOCK_FILE = ".loop/lock"
+RUNS_PATH = os.path.join(DATA_DIR, "runs.json")
 SPEC_GLOB = "openspec/changes/*/specs/*/spec.md"
 
 SYNCED = "SYNCED"
@@ -49,7 +51,7 @@ _TRIGGER_FOR_STATUS = {
 }
 _TRIGGER_PRIORITY = (PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT)
 
-DEFAULT_CONFIG = {"interval_minutes": 5, "max_concurrency": 2, "last_run": None}
+DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 
 LOOP_AGENT_PROMPT = (
     "You are a loop engine agent. You will receive directives JSON. "
@@ -59,6 +61,10 @@ LOOP_AGENT_PROMPT = (
 
 MAX_SAME_ACTION = 3
 MAX_TOTAL_STEPS = 200
+HEARTBEAT_SECONDS = 300
+HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
+MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
+LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
 
@@ -248,44 +254,30 @@ def _clear_approval(name):
         _save_pending(data)
 
 
-def notify_pending(fresh_entries):
-    """Push WeCom notification for newly detected pending items.
+def notify_text(message):
+    """Push a plain text notification to WeCom (group bot or self-built app).
 
-    Uses group-bot webhook when configured (no domain/token needed);
-    falls back to the self-built app API for setups with a verified domain.
+    Returns True if sent. Silently skips when WeCom is not configured.
     """
-    if not fresh_entries:
-        return
     wecom_config_path = os.path.join(DATA_DIR, "wecom.json")
     if not os.path.exists(wecom_config_path):
-        return  # WeCom not configured, skip notification
+        return False
     with open(wecom_config_path) as f:
         config = json.load(f)
-    # Build message
-    lines = ["[调度] 检测到待处理项："]
-    for entry in fresh_entries:
-        trigger = entry.get("trigger", "UNKNOWN")
-        modules = entry.get("modules", [])
-        names = ", ".join(m.get("key", "?") for m in modules)
-        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
-    lines.append("终端执行 'loop_engine approve <name>' 确认后调度器开始执行。")
-    msg_content = "\n".join(lines)
-    # Group bot webhook path (preferred)
     webhook_url = config.get("webhook_url")
     if webhook_url:
         r = requests.post(
             webhook_url,
-            json={"msgtype": "text", "text": {"content": msg_content}},
+            json={"msgtype": "text", "text": {"content": message}},
             timeout=10)
         result = r.json()
         if result.get("errcode", -1) != 0:
             _log(f"notify: webhook send failed: {result.get('errmsg')}")
-        else:
-            _log(f"notify: sent {len(fresh_entries)} pending item(s) to WeCom group")
-        return
-    # Self-built app API path (requires verified domain in WeCom console)
+            return False
+        _log("notify: sent to WeCom group")
+        return True
     if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
-        return
+        return False
     r = requests.get(
         "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
         params={"corpid": config["corp_id"], "corpsecret": config["secret"]},
@@ -293,7 +285,7 @@ def notify_pending(fresh_entries):
     token_data = r.json()
     if token_data.get("errcode", -1) != 0:
         _log(f"notify: gettoken failed: {token_data.get('errmsg')}")
-        return
+        return False
     access_token = token_data["access_token"]
     r2 = requests.post(
         f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
@@ -301,15 +293,30 @@ def notify_pending(fresh_entries):
             "touser": "@all",
             "msgtype": "text",
             "agentid": int(config["agent_id"]),
-            "text": {"content": msg_content},
+            "text": {"content": message},
             "safe": 0,
         },
         timeout=10)
     result = r2.json()
     if result.get("errcode", -1) != 0:
         _log(f"notify: send failed: {result.get('errmsg')}")
-    else:
-        _log(f"notify: sent {len(fresh_entries)} pending item(s) to WeCom")
+        return False
+    _log("notify: sent to WeCom")
+    return True
+
+
+def notify_pending(fresh_entries):
+    """Push WeCom notification for newly detected pending items."""
+    if not fresh_entries:
+        return
+    lines = ["[调度] 检测到待处理项："]
+    for entry in fresh_entries:
+        trigger = entry.get("trigger", "UNKNOWN")
+        modules = entry.get("modules", [])
+        names = ", ".join(m.get("key", "?") for m in modules)
+        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
+    lines.append("终端执行 'loop_engine approve <name>' 确认后调度器开始执行。")
+    notify_text("\n".join(lines))
 
 
 # ---------- schedule config ----------
@@ -328,13 +335,25 @@ def save_config(cfg):
     _atomic_write_json(CONFIG_PATH, cfg)
 
 
-def set_interval(minutes):
-    if minutes < 1:
-        raise ValueError("interval must be >= 1 minute")
-    cfg = load_config()
-    cfg["interval_minutes"] = int(minutes)
-    save_config(cfg)
-    return cfg
+def load_runs():
+    """Read execution history (runs.json). Returns {"runs": [...]}."""
+    if not os.path.exists(RUNS_PATH):
+        return {"runs": []}
+    with open(RUNS_PATH) as f:
+        return json.load(f)
+
+
+def _record_run(name, end, steps, started_at, finished_at):
+    data = load_runs()
+    data.setdefault("runs", []).append({
+        "requirement": name,
+        "end": end,
+        "steps": steps,
+        "started_at": datetime.datetime.fromtimestamp(started_at).isoformat(),
+        "finished_at": datetime.datetime.fromtimestamp(finished_at).isoformat(),
+        "duration_seconds": int(finished_at - started_at),
+    })
+    _atomic_write_json(RUNS_PATH, data)
 
 
 def set_max_concurrency(n):
@@ -361,7 +380,12 @@ def _pid_alive(pid):
 
 
 def acquire_lock(root):
-    """Returns True if the lock is acquired (reclaims stale locks)."""
+    """Returns True if the lock is acquired (reclaims stale locks).
+
+    A lock is stale when its PID is dead, or when a live PID has not
+    touched the lock for LOCK_MAX_AGE_SECONDS (run_requirement refreshes
+    it every step, so an untouched lock means the runner is wedged).
+    """
     path = _lock_path(root)
     if os.path.exists(path):
         try:
@@ -370,7 +394,12 @@ def acquire_lock(root):
         except (ValueError, OSError):
             pid = None
         if pid and _pid_alive(pid):
-            return False
+            try:
+                age = time.time() - os.path.getmtime(path)
+            except OSError:
+                age = 0
+            if age <= LOCK_MAX_AGE_SECONDS:
+                return False
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(str(os.getpid()))
@@ -419,13 +448,30 @@ def run_requirement(name):
     root = req["root"]
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
+    start = time.time()
+    last_beat = start
+    beat_interval = HEARTBEAT_SECONDS
+    notify_text(f"[调度] 开始执行 {name} ({root})")
     _log(f"run {name}: start ({root})")
     try:
         steps = 0
         same_action = 0
         last_action = None
+        retries = 0
+        active_action = None
+        active_module = None
+        failure_detail = None
         end = "max_steps"
         while steps < MAX_TOTAL_STEPS:
+            os.utime(_lock_path(root), None)  # keep lock fresh for staleness check
+            # heartbeat: ping WeCom with backoff (5min -> 15min -> 30min)
+            # so long runs stay visibly alive without spamming
+            if time.time() - last_beat >= beat_interval:
+                elapsed_min = int((time.time() - start) // 60)
+                pos = f"（{active_action} {active_module}）" if active_action else ""
+                notify_text(f"[调度] {name} 仍在执行{pos}，已 {elapsed_min} 分钟")
+                last_beat = time.time()
+                beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
             r = subprocess.run(_engine_cmd("next", "--root", root),
                                capture_output=True, text=True)
@@ -436,6 +482,8 @@ def run_requirement(name):
                 end = "bad_next_output"
                 break
             action = directives.get("action")
+            active_action = action
+            active_module = directives.get("module")
             if action == "IDLE":
                 end = "idle"
                 break
@@ -458,6 +506,11 @@ def run_requirement(name):
                 capture_output=True, text=True)
             if q.returncode != 0:
                 _log(f"run {name}: qodercli exited {q.returncode}")
+                failure_detail = (q.stderr or "").strip() or f"exit {q.returncode}"
+                if retries < MAX_FAILURE_RETRIES:
+                    retries += 1
+                    _log(f"run {name}: retrying step (retry {retries})")
+                    continue  # state unchanged — same step replays idempotently
                 end = "qodercli_failed"
                 break
             c = subprocess.run(_engine_cmd("commit", "--root", root),
@@ -470,6 +523,11 @@ def run_requirement(name):
                 break
             if "error" in commit:
                 _log(f"run {name}: commit error: {commit['error']}")
+                failure_detail = commit["error"]
+                if retries < MAX_FAILURE_RETRIES:
+                    retries += 1
+                    _log(f"run {name}: retrying step (retry {retries})")
+                    continue
                 end = "commit_error"
                 break
             if not commit.get("next_action"):
@@ -485,6 +543,14 @@ def run_requirement(name):
     finally:
         release_lock(root)
         _clear_approval(name)
+        finished_at = time.time()
+        elapsed_min = int((finished_at - start) // 60)
+        _record_run(name, end, steps, start, finished_at)
+        if end == "idle":
+            notify_text(f"[调度] {name} 执行完成：idle，共 {steps} 步，耗时 {elapsed_min} 分钟")
+        else:
+            detail = f"：{failure_detail}" if failure_detail else ""
+            notify_text(f"[调度] {name} 执行结束：{end}{detail}，共 {steps} 步，耗时 {elapsed_min} 分钟")
 
 
 def dispatch(entries, max_concurrency=2):

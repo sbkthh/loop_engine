@@ -1,5 +1,6 @@
 """DirectiveBuilder: generate self-contained directives JSON per action."""
 
+import json
 import os
 
 from constants import (
@@ -251,5 +252,14 @@ def build(action, module_key, module, root_dir="."):
         )
         d["context"]["review_issues"] = review_issues
         d["context"]["test_command"] = test_cmd
+
+    # Machine-local environment context (databases, nacos, gateways), gitignored.
+    ctx_path = os.path.join(root_dir, ".loop", "context.json")
+    if os.path.exists(ctx_path):
+        try:
+            with open(ctx_path) as f:
+                d["context"]["environment"] = json.load(f)
+        except (OSError, ValueError) as e:
+            d["context"]["environment_error"] = f"invalid context.json: {e}"
 
     return base

@@ -102,6 +102,18 @@ def cmd_resolve_draft(args):
     print("resolve-draft: not implemented yet")
 
 
+def _load_context_file(path):
+    """Load environment context JSON file. Returns dict or None."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"Error: cannot load context file {path}: {e}")
+        sys.exit(1)
+
+
 def cmd_setup(args):
     projects = []
     if args.projects:
@@ -113,7 +125,9 @@ def cmd_setup(args):
                 print(f"Invalid project spec: {pair}")
                 sys.exit(1)
             projects.append((name, path))
-    result = setup_requirement(args.requirement_name, args.root, args.change, projects)
+    context = _load_context_file(args.context)
+    result = setup_requirement(args.requirement_name, args.root, args.change,
+                               projects, context=context)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if "error" in result:
         sys.exit(1)
@@ -141,8 +155,9 @@ def cmd_requirement_add(args):
             print(f"Error: PRD file not found: {args.prd}")
             sys.exit(1)
         modules = args.modules.split(",") if args.modules else None
+        context = _load_context_file(args.context)
         result = init_from_prd(args.name, args.root_path, args.change, projects,
-                               args.prd, modules=modules)
+                               args.prd, modules=modules, context=context)
         if "error" in result:
             print(f"Error: {result['error']}")
             sys.exit(1)
@@ -198,8 +213,33 @@ def cmd_requirement_rename(args):
         sys.exit(1)
 
 
+def cmd_context_set(args):
+    context = _load_context_file(args.file)
+    sm = StateManager(args.root)
+    os.makedirs(sm.loop_dir, exist_ok=True)
+    ctx_path = os.path.join(sm.loop_dir, "context.json")
+    with open(ctx_path, "w") as f:
+        json.dump(context, f, indent=2, ensure_ascii=False)
+    print(f"Context written: {ctx_path}")
+
+
+def cmd_context_show(args):
+    sm = StateManager(args.root)
+    ctx_path = os.path.join(sm.loop_dir, "context.json")
+    if not os.path.exists(ctx_path):
+        print("No context.json (environment context not configured).")
+        return
+    with open(ctx_path) as f:
+        print(f.read())
+
+
 def cmd_poll(args):
-    merged = scheduler.poll()
+    try:
+        merged = scheduler.poll()
+    except Exception as e:
+        scheduler.notify_text(f"[调度失败] poll 异常：{e}")
+        print(f"Poll failed: {e}")
+        sys.exit(1)
     config = scheduler.load_config()
     forked = scheduler.dispatch(merged, config.get("max_concurrency", 2))
     config["last_run"] = datetime.datetime.now().isoformat()
@@ -258,20 +298,10 @@ def cmd_run(args):
 
 def cmd_schedule_status(args):
     cfg = scheduler.load_config()
-    print(f"Interval: {cfg['interval_minutes']} min")
     print(f"Max concurrency: {cfg['max_concurrency']}")
     print(f"Last run: {cfg.get('last_run') or '-'}")
     print(f"Config: {scheduler.CONFIG_PATH}")
     print(f"Log: {scheduler.LOG_PATH}")
-
-
-def cmd_schedule_interval(args):
-    try:
-        cfg = scheduler.set_interval(args.minutes)
-        print(f"Interval: {cfg['interval_minutes']} min")
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
 
 
 def cmd_schedule_max_concurrency(args):
@@ -318,7 +348,8 @@ Role: multi-requirement spec manager. You manage specs for every requirement in 
 
 - Navigate with absolute paths from requirements.json roots; never change cwd
 - Never edit state.json directly — state changes only via `next`/`commit`
-- New requirement: grilling skill (requirements) → openspec-propose (scaffold) → SCORE round-trip
+- Every spec change — first creation OR later modification — starts with the `grilling`/`grill-me` skill: interview the user one question at a time until shared understanding, then edit spec.md
+- `openspec-new-change`/`openspec-propose` create a NEW change proposal only (proposal/design/specs/tasks in one go); they do NOT support appending to or modifying an existing change/spec. Modify an existing spec by editing its spec.md in place
 - Editing a SYNCED module's spec → warn it will transition to PARTIAL; score first; grep sibling specs for cross-module contract impact
 - Pending triggers: SPEC_CHANGED / READY_PENDING = auto-executable (scheduler forks after user approval); NEEDS_REFINEMENT / BLOCKED / DRAFT = report-only, your job to resolve here
 """
@@ -549,6 +580,8 @@ def main():
                    help="Change ID for feature branch")
     p.add_argument("--projects", required=True,
                    help="Comma-separated name=path pairs")
+    p.add_argument("--context", default=None,
+                   help="Path to environment context JSON (databases/nacos, written to .loop/context.json)")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("requirement-add", parents=[common],
@@ -565,6 +598,8 @@ def main():
                    help="Comma-separated name=path pairs (required with --prd)")
     p.add_argument("--modules", default=None,
                    help="Comma-separated module names matching PRD ## headings (default: all sections)")
+    p.add_argument("--context", default=None,
+                   help="Path to environment context JSON (databases/nacos, written to .loop/context.json)")
     p.set_defaults(func=cmd_requirement_add)
 
     p = sub.add_parser("requirement-rename", parents=[common],
@@ -581,6 +616,16 @@ def main():
                        help="Unregister a requirement")
     p.add_argument("name", help="Requirement name to remove")
     p.set_defaults(func=cmd_requirement_remove)
+
+    p = sub.add_parser("context", parents=[common],
+                       help="Manage .loop/context.json (databases, nacos, gateways)")
+    csub = p.add_subparsers(dest="context_command", required=True)
+    pc_set = csub.add_parser("set", help="Write context from a JSON file")
+    pc_set.add_argument("--file", required=True,
+                        help="Path to environment context JSON file")
+    pc_set.set_defaults(func=cmd_context_set)
+    pc_show = csub.add_parser("show", help="Show current context")
+    pc_show.set_defaults(func=cmd_context_show)
 
     p = sub.add_parser("poll", parents=[common],
                        help="Run one poll cycle (detect pending + dispatch approved)")
@@ -603,13 +648,10 @@ def main():
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("schedule", parents=[common],
-                       help="Scheduler config (interval, max concurrency)")
+                       help="Scheduler config (max concurrency)")
     ssub = p.add_subparsers(dest="schedule_command", required=True)
     p_status = ssub.add_parser("status", help="Show schedule config")
     p_status.set_defaults(func=cmd_schedule_status)
-    p_interval = ssub.add_parser("interval", help="Set polling interval")
-    p_interval.add_argument("minutes", type=int)
-    p_interval.set_defaults(func=cmd_schedule_interval)
     p_maxc = ssub.add_parser("max-concurrency", help="Set max parallel runs")
     p_maxc.add_argument("n", type=int)
     p_maxc.set_defaults(func=cmd_schedule_max_concurrency)

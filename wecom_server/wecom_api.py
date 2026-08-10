@@ -1,5 +1,6 @@
 """WeCom REST API: access_token caching + message push."""
 import logging
+import re
 import time
 
 import requests
@@ -7,6 +8,8 @@ import requests
 logger = logging.getLogger("wecom")
 
 _token_cache = {"token": None, "expires_at": 0.0}
+
+_MAX_BYTES = 1800  # keep well under WeCom's 2048-byte markdown limit
 
 
 def get_access_token(config):
@@ -27,22 +30,65 @@ def get_access_token(config):
     return _token_cache["token"]
 
 
+def sanitize_markdown(content):
+    """Convert standard markdown to WeCom's supported subset (#, **, >, <font>).
+
+    Tables collapse to pipe-joined text rows; fenced code blocks become indented text.
+    """
+    lines = []
+    in_code = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            lines.append("    " + line)
+            continue
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                continue  # table separator row
+            lines.append(" | ".join(cells))
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def split_segments(content, max_bytes=_MAX_BYTES):
+    """Split content into <=max_bytes segments on character boundaries (never mid-CJK)."""
+    segments = []
+    current = ""
+    for ch in content:
+        trial = current + ch
+        if len(trial.encode("utf-8")) > max_bytes:
+            segments.append(current)
+            current = ch
+        else:
+            current = trial
+    if current:
+        segments.append(current)
+    return segments
+
+
 def send_text(user_id, content, config):
-    """Push a text message to a specific user. Returns True on success."""
+    """Push content as WeCom markdown, segmented if long. Returns True if all sent."""
     token = get_access_token(config)
-    r = requests.post(
-        f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
-        json={
-            "touser": user_id,
-            "msgtype": "text",
-            "agentid": int(config["agent_id"]),
-            "text": {"content": content},
-        },
-        timeout=10,
-    )
-    data = r.json()
-    if data.get("errcode", -1) != 0:
-        logger.error("[wecom] send failed: %s", data.get("errmsg"))
-        return False
-    logger.info("[wecom] pushed message to %s (%d chars)", user_id, len(content))
+    content = sanitize_markdown(content)
+    for seg in split_segments(content):
+        r = requests.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+            json={
+                "touser": user_id,
+                "msgtype": "markdown",
+                "agentid": int(config["agent_id"]),
+                "markdown": {"content": seg},
+            },
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("errcode", -1) != 0:
+            logger.error("[wecom] send failed: %s", data.get("errmsg"))
+            return False
+        logger.info("[wecom] pushed segment (%d bytes) to %s", len(seg.encode("utf-8")), user_id)
     return True

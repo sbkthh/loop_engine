@@ -153,6 +153,28 @@ loop_engine init --root /path/to/your-project
 
 > 使用 `--prd` 注册时，初始化已自动完成，无需再执行此步骤。
 
+### 环境上下文（数据库 / Nacos / 网关）
+
+需求涉及的运行时环境（数据库 UAT/PROD、Nacos namespace/dataID、API 网关等）存放在 `.loop/context.json`（机器本地，不入库）。敏感值只写环境变量引用（`password_env`），不存明文：
+
+```json
+{
+  "databases": {
+    "uat": {"host": "10.x.x.x", "port": 3306, "name": "wms_uat", "password_env": "DB_UAT_PASSWORD"}
+  },
+  "nacos": {"namespace": "cross-dock-v2", "data_ids": ["wms-inbound.yml"]}
+}
+```
+
+**写入**：注册时用 `--context <json文件>`（`setup` / `requirement-add --prd` 均支持）；已注册的需求用：
+
+```bash
+loop_engine context --root <req_root> set --file /path/context.json
+loop_engine context --root <req_root> show
+```
+
+**消费**：`loop_engine next` 会把 context 合并进 directives 的 `context.environment`，MAKER/Checker 据此配置 dgate CLI、Nacos MCP 等访问；loop engine 自身不连接任何服务，只透传。
+
 ---
 
 ## 四、手动运行（"手动试点"模式）
@@ -248,12 +270,12 @@ loop_engine run strategic-stockup-system-upgrade
 # 查看当前配置
 loop_engine schedule status
 
-# 设置轮询间隔（分钟）
-loop_engine schedule interval 5
-
 # 设置最大并行数
 loop_engine schedule max-concurrency 2
 ```
+
+> 轮询间隔由 crontab 唯一决定（见下），schedule.json 不存间隔配置，
+> 避免两套配置漂移。
 
 ### 定时自动轮询（crontab）
 

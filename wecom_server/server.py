@@ -75,16 +75,19 @@ def callback_message():
         from .router import dispatch
         import registry as reg_mod
         reg = reg_mod.list_requirements()
-        result = dispatch(content, reg, DATA_DIR)
+        result = dispatch(content, reg, DATA_DIR, from_user)
         if callable(result):
             threading.Thread(
                 target=_async_worker,
                 args=(result, from_user, CONFIG),
                 daemon=True,
             ).start()
-            return "success"
-        reply = result
-        logger.info("[wecom] reply: %s", reply[:200])
+            preview = content if len(content) <= 20 else content[:20] + "…"
+            reply = f"已收到：「{preview}」正在处理中，完成后推送结果。"
+            logger.info("[wecom] ack sent (async processing)")
+        else:
+            reply = result
+            logger.info("[wecom] reply: %s", reply[:200])
     except Exception as e:
         import traceback
         logger.error("[wecom] dispatch error: %s", e)

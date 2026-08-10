@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -62,13 +63,22 @@ class SchedulerBase(unittest.TestCase):
             "PENDING_PATH": scheduler.PENDING_PATH,
             "CONFIG_PATH": scheduler.CONFIG_PATH,
             "LOG_PATH": scheduler.LOG_PATH,
+            "RUNS_PATH": scheduler.RUNS_PATH,
         }
         scheduler.REGISTRY_PATH = os.path.join(self.tmp.name, "requirements.json")
         scheduler.PENDING_PATH = os.path.join(self.tmp.name, "pending.json")
         scheduler.CONFIG_PATH = os.path.join(self.tmp.name, "schedule.json")
         scheduler.LOG_PATH = os.path.join(self.tmp.name, "schedule.log")
+        scheduler.RUNS_PATH = os.path.join(self.tmp.name, "runs.json")
+        # poll()/run_requirement() would otherwise send real WeCom pushes
+        self._notify_pending_orig = scheduler.notify_pending
+        scheduler.notify_pending = mock.MagicMock()
+        self._notify_text_orig = scheduler.notify_text
+        scheduler.notify_text = mock.MagicMock()
 
     def tearDown(self):
+        scheduler.notify_text = self._notify_text_orig
+        scheduler.notify_pending = self._notify_pending_orig
         for attr, value in self._paths.items():
             setattr(scheduler, attr, value)
         self.tmp.cleanup()
@@ -82,6 +92,47 @@ class SchedulerBase(unittest.TestCase):
                                      "registered_at": "t"})
         with open(scheduler.REGISTRY_PATH, "w") as f:
             json.dump(data, f)
+        return root
+
+    def _fake_run(self, next_actions, commit_next="MAKER_STEP0",
+                  commit_error=None, qodercli_failures=0, commit_failures=0):
+        q_left = [qodercli_failures]
+        c_left = [commit_failures]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action,
+                                           "module": "c/m"}), stderr="", returncode=0)
+                if sub == "commit":
+                    if commit_error:
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"error": commit_error}),
+                            stderr="", returncode=0)
+                    if c_left[0] > 0:
+                        c_left[0] -= 1
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"error": "transient"}),
+                            stderr="", returncode=0)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": commit_next}),
+                        stderr="", returncode=0)
+            if q_left[0] > 0 and any("qodercli" in part for part in cmd):
+                q_left[0] -= 1
+                return types.SimpleNamespace(stdout="", stderr="boom", returncode=1)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+        return fake_run
+
+    def _register_pending(self, name):
+        root = self.register(name, os.path.join(self.tmp.name, name))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        scheduler.poll()
+        scheduler.approve(name)
         return root
 
 
@@ -218,6 +269,26 @@ class TestLock(SchedulerBase):
             f.write(str(os.getpid()))
         self.assertFalse(scheduler.acquire_lock(root))
 
+    def test_acquire_reclaims_stale_live_lock(self):
+        root = os.path.join(self.tmp.name, "req")
+        lock = os.path.join(root, ".loop", "lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        with open(lock, "w") as f:
+            f.write(str(os.getpid()))
+        old = time.time() - scheduler.LOCK_MAX_AGE_SECONDS - 60
+        os.utime(lock, (old, old))
+        self.assertTrue(scheduler.acquire_lock(root))
+        self.assertTrue(scheduler.is_locked(root))
+
+    def test_acquire_fresh_live_lock_kept(self):
+        root = os.path.join(self.tmp.name, "req")
+        lock = os.path.join(root, ".loop", "lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        with open(lock, "w") as f:
+            f.write(str(os.getpid()))
+        os.utime(lock, None)  # fresh mtime
+        self.assertFalse(scheduler.acquire_lock(root))
+
     def test_acquire_reclaims_stale_lock(self):
         root = os.path.join(self.tmp.name, "req")
         os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
@@ -236,36 +307,6 @@ class TestLock(SchedulerBase):
 
 
 class TestRun(SchedulerBase):
-    def _fake_run(self, next_actions, commit_next="MAKER_STEP0",
-                  commit_error=None):
-        def fake_run(cmd, **kwargs):
-            if any("__main__.py" in part for part in cmd):
-                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
-                if sub == "next":
-                    action = next_actions.pop(0) if next_actions else "IDLE"
-                    return types.SimpleNamespace(
-                        stdout=json.dumps({"action": action,
-                                           "module": "c/m"}), returncode=0)
-                if sub == "commit":
-                    if commit_error:
-                        return types.SimpleNamespace(
-                            stdout=json.dumps({"error": commit_error}),
-                            returncode=0)
-                    return types.SimpleNamespace(
-                        stdout=json.dumps({"action": "SCORE",
-                                           "next_action": commit_next}),
-                        returncode=0)
-            return types.SimpleNamespace(stdout="", returncode=0)
-        return fake_run
-
-    def _register_pending(self, name):
-        root = self.register(name, os.path.join(self.tmp.name, name))
-        _make_spec(root, "c", "m")
-        _make_state(root, {"c/m": _module("c", "m", "READY")})
-        scheduler.poll()
-        scheduler.approve(name)
-        return root
-
     def test_run_to_idle(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE", "SCORE"])
@@ -283,12 +324,13 @@ class TestRun(SchedulerBase):
 
     def test_run_commit_error_stops(self):
         root = self._register_pending("req")
-        fake = self._fake_run(next_actions=["SCORE"],
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
                               commit_error="No result file")
         with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "commit_error")
+        self.assertEqual(result["steps"], 2)
         self.assertFalse(scheduler.is_locked(root))
 
     def test_run_no_advance_stops(self):
@@ -314,6 +356,71 @@ class TestRun(SchedulerBase):
     def test_run_not_registered(self):
         result = scheduler.run_requirement("ghost")
         self.assertIn("error", result)
+
+    def test_run_retries_qodercli_failure_once(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
+                              qodercli_failures=1)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "idle")
+        self.assertEqual(result["steps"], 3)
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_run_retries_commit_error_once(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
+                              commit_failures=1)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "idle")
+        self.assertEqual(result["steps"], 3)
+
+    def test_run_qodercli_failure_after_retry(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
+                              qodercli_failures=2)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "qodercli_failed")
+        self.assertEqual(result["steps"], 2)
+
+    def test_run_commit_error_after_retry(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
+                              commit_failures=2)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "commit_error")
+        self.assertEqual(result["steps"], 2)
+
+    def test_run_records_history(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            scheduler.run_requirement("req")
+
+        runs = scheduler.load_runs()["runs"]
+        self.assertEqual(len(runs), 1)
+        r = runs[0]
+        self.assertEqual(r["requirement"], "req")
+        self.assertEqual(r["end"], "idle")
+        self.assertEqual(r["steps"], 3)
+        self.assertGreaterEqual(r["duration_seconds"], 0)
+        self.assertIn("started_at", r)
+        self.assertIn("finished_at", r)
+
+    def test_run_history_appends(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            scheduler.run_requirement("req")
+            scheduler.run_requirement("req")
+        self.assertEqual(len(scheduler.load_runs()["runs"]), 2)
 
     def test_run_locked_requirement_fails(self):
         root = self._register_pending("req")
@@ -382,20 +489,116 @@ class TestDispatch(SchedulerBase):
 class TestConfig(SchedulerBase):
     def test_default_config(self):
         cfg = scheduler.load_config()
-        self.assertEqual(cfg["interval_minutes"], 5)
         self.assertEqual(cfg["max_concurrency"], 2)
-
-    def test_set_interval_round_trip(self):
-        scheduler.set_interval(10)
-        self.assertEqual(scheduler.load_config()["interval_minutes"], 10)
-        with self.assertRaises(ValueError):
-            scheduler.set_interval(0)
+        self.assertNotIn("interval_minutes", cfg)
 
     def test_set_max_concurrency_round_trip(self):
         scheduler.set_max_concurrency(3)
         self.assertEqual(scheduler.load_config()["max_concurrency"], 3)
         with self.assertRaises(ValueError):
             scheduler.set_max_concurrency(0)
+
+
+class TestNotify(SchedulerBase):
+    def test_notify_text_skips_without_config(self):
+        scheduler.notify_text = self._notify_text_orig
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name):
+            self.assertFalse(scheduler.notify_text("hello"))
+
+    def test_notify_text_webhook_success(self):
+        scheduler.notify_text = self._notify_text_orig
+        wecom = os.path.join(self.tmp.name, "wecom.json")
+        with open(wecom, "w") as f:
+            json.dump({"webhook_url": "https://webhook.example"}, f)
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"errcode": 0, "errmsg": "ok"}
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
+             mock.patch.object(scheduler.requests, "post", return_value=mock_resp) as mock_post:
+            self.assertTrue(scheduler.notify_text("hello"))
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["text"]["content"], "hello")
+
+    def test_run_sends_start_and_finish(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        self.assertTrue(any(m.startswith("[调度] 开始执行 req") for m in messages))
+        self.assertTrue(any("执行完成" in m and "idle" in m for m in messages))
+
+    def test_run_sends_heartbeat_for_long_run(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
+        t0 = 1000.0
+        times = [t0, t0, t0 + 301, t0 + 301, t0 + 301, t0 + 301, t0 + 302]
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify, \
+             mock.patch.object(scheduler.time, "time", side_effect=times):
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        self.assertTrue(any("仍在执行" in m and "5 分钟" in m for m in messages))
+
+    def test_run_heartbeat_backs_off(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "PLAN"] * 4)
+        t0 = 1000.0
+        # 5min heartbeat at iter1, 15min heartbeat at iter3; after that
+        # 30min ceiling means iter5 (t0+1501) must NOT fire a third beat.
+        # Each beat consumes 3 time calls (check, elapsed, last_beat).
+        times = [t0, t0 + 301, t0 + 301, t0 + 301, t0 + 302,
+                 t0 + 1201, t0 + 1201, t0 + 1201, t0 + 1301,
+                 t0 + 1501, t0 + 1800, t0 + 2100,
+                 t0 + 2400, t0 + 2700, t0 + 2701]
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify, \
+             mock.patch.object(scheduler.time, "time", side_effect=times):
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        beats = [m for m in messages if "仍在执行" in m]
+        self.assertEqual(len(beats), 2)
+
+    def test_heartbeat_includes_position(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "PLAN"] * 4)
+        t0 = 1000.0
+        times = [t0, t0 + 301, t0 + 301, t0 + 301, t0 + 302,
+                 t0 + 1201, t0 + 1201, t0 + 1201, t0 + 1301,
+                 t0 + 1501, t0 + 1800, t0 + 2100,
+                 t0 + 2400, t0 + 2700, t0 + 2701]
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify, \
+             mock.patch.object(scheduler.time, "time", side_effect=times):
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        beats = [m for m in messages if "仍在执行" in m]
+        # second beat (after iter2 finished) shows the last activity
+        self.assertIn("PLAN c/m", beats[1])
+
+    def test_failure_notify_includes_detail(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"],
+                              commit_failures=2)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        done = [m for m in messages if "执行结束" in m]
+        self.assertEqual(len(done), 1)
+        self.assertIn("commit_error", done[0])
+        self.assertIn("transient", done[0])  # commit error detail
+
+    def test_idle_notify_keeps_success_wording(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        done = [m for m in messages if "执行完成" in m]
+        self.assertEqual(len(done), 1)
+        self.assertIn("idle", done[0])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ def cmd_next(args):
 def cmd_commit(args):
     machine = StateMachine(args.root)
     result = machine.commit()
+    # count this step in an active manual session (no-op for scheduler runs)
+    scheduler.manual_step(args.root)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -294,6 +296,20 @@ def cmd_run(args):
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if "error" in result:
         sys.exit(1)
+
+
+def cmd_manual_begin(args):
+    if not scheduler.manual_begin(args.root):
+        print(f"Lock held for {args.root} — manual session not started")
+        sys.exit(1)
+    print(f"Manual session started for {args.root} (lock acquired)")
+
+
+def cmd_manual_end(args):
+    if not scheduler.manual_end(args.root):
+        print(f"No manual session or lock replaced for {args.root}")
+        sys.exit(1)
+    print(f"Manual session ended for {args.root} (lock released)")
 
 
 def cmd_schedule_status(args):
@@ -646,6 +662,16 @@ def main():
                        help="(internal) Execute a requirement to completion")
     p.add_argument("requirement", help="Requirement name")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("manual-begin", parents=[common],
+                       help="(internal) Acquire lock for a manual (G-driven) loop")
+    p.add_argument("root", help="Requirement root dir")
+    p.set_defaults(func=cmd_manual_begin)
+
+    p = sub.add_parser("manual-end", parents=[common],
+                       help="(internal) Release a manual-session lock")
+    p.add_argument("root", help="Requirement root dir")
+    p.set_defaults(func=cmd_manual_end)
 
     p = sub.add_parser("schedule", parents=[common],
                        help="Scheduler config (max concurrency)")

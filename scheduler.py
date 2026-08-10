@@ -27,6 +27,7 @@ LOG_PATH = os.path.join(DATA_DIR, "schedule.log")
 
 STATE_FILE = ".loop/state.json"
 LOCK_FILE = ".loop/lock"
+MANUAL_FILE = ".loop/manual.json"
 RUNS_PATH = os.path.join(DATA_DIR, "runs.json")
 SPEC_GLOB = "openspec/changes/*/specs/*/spec.md"
 
@@ -56,7 +57,9 @@ DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 LOOP_AGENT_PROMPT = (
     "You are a loop engine agent. You will receive directives JSON. "
     "Read the spec/plan files it references, follow the instructions, "
-    "and write your output to .loop/result.md in the specified output format."
+    "and write your output to .loop/result.md in the specified output format. "
+    "The directives may carry 'context.previous_result' — the previous step's "
+    "output; use it as context for continuity."
 )
 
 MAX_SAME_ACTION = 3
@@ -432,6 +435,85 @@ def is_locked(root):
     return _pid_alive(pid)
 
 
+def manual_begin(root):
+    """Acquire the requirement lock for a manual (G-driven) loop.
+
+    Uses the same lock as run_requirement, so a manual loop and the
+    scheduler can never run the same requirement concurrently. The session
+    owner is recorded in .loop/manual.json so manual_end can tell whether
+    the lock still belongs to this session before releasing it.
+    """
+    if not acquire_lock(root):
+        return False
+    try:
+        with open(os.path.join(root, MANUAL_FILE), "w") as f:
+            json.dump({"pid": os.getpid(), "started_at": time.time(),
+                       "steps": 0}, f)
+    except OSError:
+        release_lock(root)
+        return False
+    return True
+
+
+def manual_step(root):
+    """Count one committed step of an active manual session (no-op otherwise)."""
+    session_path = os.path.join(root, MANUAL_FILE)
+    if not os.path.exists(session_path):
+        return
+    try:
+        with open(session_path) as f:
+            session = json.load(f)
+        session["steps"] = int(session.get("steps", 0)) + 1
+        with open(session_path, "w") as f:
+            json.dump(session, f)
+    except (ValueError, OSError):
+        pass
+
+
+def manual_end(root):
+    """Release a manual-session lock and record the run in runs.json.
+
+    Returns False (without touching the lock) when the lock was replaced
+    by another process — e.g. a scheduler run after the manual session died.
+    """
+    session_path = os.path.join(root, MANUAL_FILE)
+    if not os.path.exists(session_path):
+        return False
+    try:
+        with open(session_path) as f:
+            session = json.load(f)
+        with open(_lock_path(root)) as f:
+            lock_pid = int(f.read().strip() or "0")
+    except (ValueError, OSError):
+        return False
+    if lock_pid != session.get("pid"):
+        return False
+    try:
+        os.unlink(_lock_path(root))
+        os.unlink(session_path)
+    except OSError:
+        return False
+    _record_manual_run(root, session)
+    return True
+
+
+def _record_manual_run(root, session):
+    started_at = float(session.get("started_at", time.time()))
+    req = next((r for r in _read_registry() if r.get("root") == root), None)
+    name = req.get("name") if req else os.path.basename(root.rstrip("/")) or root
+    # loop completed when the machine has no module mid-progress
+    end = "idle"
+    try:
+        with open(os.path.join(root, STATE_FILE)) as f:
+            state = json.load(f)
+        if state.get("current", {}).get("module"):
+            end = "manual_stop"
+    except (OSError, ValueError):
+        pass
+    _record_run(name, end, int(session.get("steps", 0)),
+                started_at, time.time())
+
+
 def running_count(registry_entries=None):
     if registry_entries is None:
         registry_entries = _read_registry()
@@ -461,6 +543,7 @@ def run_requirement(name):
         active_action = None
         active_module = None
         failure_detail = None
+        prev_result = None  # previous step's result.md content, fed to next step
         end = "max_steps"
         while steps < MAX_TOTAL_STEPS:
             os.utime(_lock_path(root), None)  # keep lock fresh for staleness check
@@ -499,10 +582,18 @@ def run_requirement(name):
                 last_action = action
             _log(f"run {name}: step {steps} action={action} "
                  f"module={directives.get('module', '-')}")
+            payload = directives
+            if prev_result is not None:
+                payload = dict(directives)
+                inner = dict(payload.get("directives", {}))
+                inner = {**inner, "context": {
+                    **inner.get("context", {}),
+                    "previous_result": prev_result}}
+                payload["directives"] = inner
             q = subprocess.run(
                 [_QODERCLI, "--print", "--dangerously-skip-permissions",
                  "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
-                 json.dumps(directives)],
+                 json.dumps(payload)],
                 capture_output=True, text=True)
             if q.returncode != 0:
                 _log(f"run {name}: qodercli exited {q.returncode}")
@@ -513,6 +604,12 @@ def run_requirement(name):
                     continue  # state unchanged — same step replays idempotently
                 end = "qodercli_failed"
                 break
+            # capture result.md before commit consumes and clears it
+            result_text = ""
+            result_path = os.path.join(root, ".loop", "result.md")
+            if os.path.exists(result_path):
+                with open(result_path) as f:
+                    result_text = f.read()
             c = subprocess.run(_engine_cmd("commit", "--root", root),
                                capture_output=True, text=True)
             try:
@@ -538,6 +635,7 @@ def run_requirement(name):
                 _log(f"run {name}: gray-listed, stopping for human review")
                 end = "gray_list"
                 break
+            prev_result = result_text
         _log(f"run {name}: finished ({end}) after {steps} step(s)")
         return {"requirement": name, "steps": steps, "end": end}
     finally:

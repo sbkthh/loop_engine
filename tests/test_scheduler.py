@@ -305,6 +305,84 @@ class TestLock(SchedulerBase):
         scheduler.release_lock(root)
         self.assertTrue(os.path.exists(os.path.join(root, ".loop", "lock")))
 
+    def test_manual_begin_locks(self):
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        self.assertTrue(scheduler.manual_begin(root))
+        self.assertTrue(scheduler.is_locked(root))
+        self.assertTrue(os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
+
+    def test_manual_begin_fails_when_scheduler_runs(self):
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        scheduler.acquire_lock(root)
+        self.assertFalse(scheduler.manual_begin(root))
+
+    def test_manual_end_releases_own_lock(self):
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        scheduler.manual_begin(root)
+        self.assertTrue(scheduler.manual_end(root))
+        self.assertFalse(scheduler.is_locked(root))
+        self.assertFalse(os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
+
+    def test_manual_end_refuses_replaced_lock(self):
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        scheduler.manual_begin(root)
+        # manual session died and a scheduler run took over the lock
+        import subprocess as sp
+        proc = sp.Popen(["sleep", "60"])
+        try:
+            with open(os.path.join(root, ".loop", "lock"), "w") as f:
+                f.write(str(proc.pid))
+            self.assertFalse(scheduler.manual_end(root))
+            self.assertTrue(scheduler.is_locked(root))
+        finally:
+            proc.kill()
+
+    def test_manual_begin_blocks_scheduler_run(self):
+        root = self._register_pending("req")
+        self.assertTrue(scheduler.manual_begin(root))
+        result = scheduler.run_requirement("req")
+        self.assertIn("error", result)
+        self.assertIn("lock held", result["error"])
+
+    def test_manual_run_records_history(self):
+        root = self._register_pending("req")
+        scheduler.manual_begin(root)
+        scheduler.manual_step(root)
+        scheduler.manual_step(root)
+        self.assertTrue(scheduler.manual_end(root))
+
+        runs = scheduler.load_runs()["runs"]
+        self.assertEqual(len(runs), 1)
+        r = runs[0]
+        self.assertEqual(r["requirement"], "req")
+        self.assertEqual(r["end"], "idle")
+        self.assertEqual(r["steps"], 2)
+
+    def test_manual_end_records_manual_stop_when_mid_progress(self):
+        root = self._register_pending("req")
+        with open(os.path.join(root, ".loop", "state.json")) as f:
+            state = json.load(f)
+        state["current"] = {"module": "c/m", "action": "MAKER_STEP0",
+                            "attempt": 0}
+        with open(os.path.join(root, ".loop", "state.json"), "w") as f:
+            json.dump(state, f)
+        scheduler.manual_begin(root)
+        self.assertTrue(scheduler.manual_end(root))
+
+        runs = scheduler.load_runs()["runs"]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["end"], "manual_stop")
+
+    def test_manual_step_noop_without_session(self):
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        scheduler.manual_step(root)  # must not raise
+        self.assertEqual(scheduler.load_runs()["runs"], [])
+
 
 class TestRun(SchedulerBase):
     def test_run_to_idle(self):
@@ -356,6 +434,42 @@ class TestRun(SchedulerBase):
     def test_run_not_registered(self):
         result = scheduler.run_requirement("ghost")
         self.assertIn("error", result)
+
+    def test_run_passes_previous_result_to_next_step(self):
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "MAKER_STEP0"]
+        captured = []
+        result_body = ("---MAKER_OUTPUT---\nSTATUS: SUCCESS\n"
+                       "FILES_CREATED:\n  - A.java\n---END_MAKER_OUTPUT---")
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(json.loads(cmd[-1]))
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write(result_body)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            scheduler.run_requirement("req")
+
+        self.assertEqual(len(captured), 2)
+        self.assertIsNone(
+            captured[0].get("directives", {}).get("context", {})
+            .get("previous_result"))
+        self.assertEqual(
+            captured[1]["directives"]["context"]["previous_result"], result_body)
 
     def test_run_retries_qodercli_failure_once(self):
         root = self._register_pending("req")

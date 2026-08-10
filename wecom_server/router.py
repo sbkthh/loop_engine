@@ -68,6 +68,15 @@ _LLM_SYSTEM_PROMPT = (
     "modify an existing spec by editing its spec.md in place\n"
     "- After editing a spec, run 'loop_engine next --root <path>' to start the "
     "loop (SCORE/CLASSIFY_CHANGE) — never implement code directly\n\n"
+    "Manual execution rules (when driving a next/commit loop manually, e.g. "
+    "user says '主动执行' or asks you to run the loop step by step):\n"
+    "- ALWAYS run 'loop_engine manual-begin --root <path>' BEFORE the first "
+    "'loop_engine next' — it acquires the same lock the scheduler uses, so a "
+    "manual loop and a scheduled run never touch the same requirement "
+    "concurrently. If manual-begin fails (lock held), do NOT proceed — tell "
+    "the user the requirement is locked\n"
+    "- Run 'loop_engine manual-end --root <path>' when the loop finishes "
+    "(machine reports IDLE/SYNCED) or the user stops it\n\n"
     "Answer the user's question concisely in Chinese. "
     "If asked about specific project status, run the command. "
     "If you don't know, say so.\n\n"
@@ -80,6 +89,26 @@ _LLM_SYSTEM_PROMPT = (
     "- For multiple items, write them as separate lines like: '模块A: 状态'\n\n"
     "User: {message}\n"
 )
+
+
+_AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "hooks", "audit_hook.sh")
+
+
+def _audit_settings():
+    """Per-invocation qodercli settings auditing sensitive tool calls.
+
+    Injected via --settings so only WeCom-spawned sessions carry the hook;
+    the user's own qodercli sessions are untouched.
+    """
+    return json.dumps({
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash",
+                 "hooks": [{"type": "command", "command": _AUDIT_HOOK}]}
+            ]
+        }
+    })
 
 
 def _get_model():
@@ -158,10 +187,11 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     prompt = _LLM_SYSTEM_PROMPT.format(message=message)
     # first message creates session, subsequent messages resume it
     session_flag = "--session-id" if is_new else "--resume"
+    settings = _audit_settings()
     try:
         r = subprocess.run(
             [qodercli_path, "--print", session_flag, session_id, "--model", model,
-             "--dangerously-skip-permissions"],
+             "--dangerously-skip-permissions", "--settings", settings],
             input=prompt, capture_output=True, text=True,
         )
         lines = (r.stdout or "").splitlines()
@@ -173,7 +203,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
             logger.info("[wecom] session %s not found, creating new", session_id)
             r = subprocess.run(
                 [qodercli_path, "--print", "--session-id", session_id, "--model", model,
-                 "--dangerously-skip-permissions"],
+                 "--dangerously-skip-permissions", "--settings", settings],
                 input=prompt, capture_output=True, text=True,
             )
             lines = (r.stdout or "").splitlines()

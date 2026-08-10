@@ -566,6 +566,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 | F | wecom_server | A (wecom start) | 常驻 :5000；同步返回 success |
 | G | qodercli | F（每消息） | 按用户共用会话；audit hook 审计；特殊前缀回 A |
 
+```
 ~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）
 ├── cli.py                      # CLI 入口 + 命令处理
 ├── machine.py                  # 状态机路由

@@ -234,6 +234,10 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm = StateManager(self.root)
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], NEEDS_REFINEMENT)
+        self.assertEqual(state["modules"][self.key]["last_score"], 75)
+        self.assertTrue(any(
+            t.get("output") == "committed -> IDLE (SCORE 75/100)"
+            for t in state["trace"]))
 
     def test_score_cross_consistency_fail(self):
         self._init_module_ready()
@@ -247,6 +251,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm = StateManager(self.root)
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], NEEDS_REFINEMENT)
+        self.assertEqual(state["modules"][self.key]["last_score"], 85)
 
     def test_checker_hard_error_retry(self):
         self._init_module_ready()

@@ -145,6 +145,8 @@ class StateMachine:
             StateManager.clear_current(state)
 
         display = (next_action or 'IDLE').replace('_', '')
+        if action == SCORE and module.get("last_score") is not None:
+            display = f"{display} (SCORE {module['last_score']}/100)"
         self._trace(state, action, module_key,
                      f"committed -> {display}")
         self.sm.save(state)
@@ -166,6 +168,8 @@ class StateMachine:
             raise ValueError("SCORE field missing from result")
         if cross == "FAIL":
             score = min(score, 85)
+        module["last_score"] = score
+        module["score_cross"] = cross
         if score >= SCORE_THRESHOLD and cross != "FAIL":
             module["status"] = READY
             return MAKER_STEP0

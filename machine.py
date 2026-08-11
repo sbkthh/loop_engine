@@ -300,7 +300,13 @@ class StateMachine:
             state["audit_trail"] = trail[-AUDIT_RETENTION:]
 
     def _execute_gray_list(self, state, key, module):
-        for warning in module.get("soft_warnings", []):
+        warnings = module.get("soft_warnings", [])
+        if not warnings:
+            warnings = [{
+                "description": ("Checker 报告软警告但条目未按格式解析，"
+                                "详见 .loop/result-CHECKER.md 存档"),
+            }]
+        for warning in warnings:
             state.setdefault("gray_drafts", []).append({
                 "id": len(state.get("gray_drafts", [])) + 1,
                 "module": key,

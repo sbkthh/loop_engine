@@ -506,6 +506,38 @@ class TestRun(SchedulerBase):
         self.assertIn("run req: start", log)
         self.assertIn("finished (idle)", log)
 
+    def test_run_archives_step_result(self):
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "IDLE"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+                return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run):
+            scheduler.run_requirement("req")
+
+        archive = os.path.join(root, ".loop", "result-SCORE.md")
+        self.assertTrue(os.path.exists(archive))
+        with open(archive) as f:
+            self.assertEqual(f.read(), "SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+
     def test_run_commit_error_stops(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE", "SCORE"],

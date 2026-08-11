@@ -672,6 +672,13 @@ def run_requirement(name):
             if os.path.exists(result_path):
                 with open(result_path) as f:
                     result_text = f.read()
+                archive_path = os.path.join(root, ".loop",
+                                            f"result-{action}.md")
+                try:
+                    with open(archive_path, "w") as f:
+                        f.write(result_text)
+                except OSError:
+                    pass
             c = subprocess.run(_engine_cmd("commit", "--root", root),
                                capture_output=True, text=True)
             try:

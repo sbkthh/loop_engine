@@ -358,6 +358,61 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertTrue(len(state["gray_drafts"]) > 0)
 
+    def test_checker_gray_list_fallback_when_warnings_unparsed(self):
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        machine.next()
+        self._write_result("SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+        machine.commit()
+        machine.next()
+
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        open(plan_full, "w").close()
+        self._write_result(
+            f"---MAKER_OUTPUT---\nSTATUS: SUCCESS\nPLAN_PATH: {plan_path}\n---END_MAKER_OUTPUT---"
+        )
+        machine.commit()
+        machine.next()
+
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n  test_files_written:\n    - /t/Foo.java\n"
+            "  red_test_output: |\n    Tests run: 1, Failures: 1\n  red_confirmed: true\n"
+            "---END_MAKER_OUTPUT---"
+        )
+        machine.commit()
+        machine.next()
+
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\nFILES_CREATED:\n  - /m/Foo.java\n"
+            "FILES_MODIFIED:\nPLAN_PATH: /p.md\nTEST_RESULTS:\n"
+            "  class: FooTest\n  total: 5  passed: 5  failed: 0\n"
+            "BLOCKERS: none\nHUMAN_DECISIONS: 0\n---END_MAKER_OUTPUT---"
+        )
+        machine.commit()
+        machine.next()
+
+        # SOFT_WARNING_COUNT > 0 but the entry lacks the [TYPE] bracket, so
+        # the discrepancies regex parses nothing — draft must still be created
+        self._write_result(
+            "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n"
+            "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 0\n"
+            "SOFT_WARNING_COUNT: 1\nINFO_COUNT: 0\n"
+            "DISCREPANCIES:\n  1. [SOFT_WARNING] method mismatch\n"
+            "TEST_RESULTS:\n  class: FooTest\n  total: 5  passed: 5  failed: 0  errors: 0\n"
+            "COVERAGE: 1/1 Scenarios have test methods\n---END_CHECKER_OUTPUT---"
+        )
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
+        sm = StateManager(self.root)
+        state = sm.load()
+        self.assertEqual(len(state["gray_drafts"]), 1)
+        self.assertIn("未按格式解析", state["gray_drafts"][0]["summary"])
+
     def test_commit_no_mid_progress(self):
         machine = StateMachine(self.root)
         r = machine.commit()

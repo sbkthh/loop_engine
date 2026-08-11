@@ -175,8 +175,20 @@ class TestPoll(SchedulerBase):
         _make_spec(root, "c", "m")
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "SCORE", "attempt": 0})
+        with open(os.path.join(root, ".loop", "lock"), "w") as f:
+            f.write(str(os.getpid()))
 
         self.assertEqual(scheduler.poll(), [])
+
+    def test_poll_detects_stale_current_without_lock(self):
+        """A stale current.action with no lock must not hide pending work."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    current={"module": "c/m", "action": "SCORE", "attempt": 0})
+
+        entries = scheduler.poll()
+        self.assertEqual(entries[0]["trigger"], "READY_PENDING")
 
     def test_poll_detects_new_draft_module(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
@@ -266,10 +278,22 @@ class TestApprove(SchedulerBase):
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "MAKER_STEP0",
                              "attempt": 0})
+        with open(os.path.join(root, ".loop", "lock"), "w") as f:
+            f.write(str(os.getpid()))
 
         with self.assertRaises(ValueError) as ctx:
             scheduler.approve("req")
         self.assertIn("正在执行中", str(ctx.exception))
+
+    def test_approve_stale_current_reports_waiting(self):
+        """Stale current.action without lock → not 'executing', just no work."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "PARTIAL")},
+                    current={"module": "c/m", "action": "SCORE", "attempt": 0})
+
+        with self.assertRaises(ValueError) as ctx:
+            scheduler.approve("req")
+        self.assertIn("等待下次 poll", str(ctx.exception))
 
     def test_approve_records_approved_by(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))

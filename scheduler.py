@@ -154,8 +154,8 @@ def _poll_requirement(root, name):
         return None
     with open(state_path) as f:
         state = json.load(f)
-    if state.get("current", {}).get("action"):
-        return None  # mid-progress — being executed, skip
+    if state.get("current", {}).get("action") and is_locked(root):
+        return None  # mid-progress — lock held, being executed, skip
     modules = state.get("modules", {})
     detected = []
     for key, module in modules.items():
@@ -234,7 +234,7 @@ def _no_pending_message(name):
             state = json.load(f)
     except (OSError, ValueError):
         return f"{name} 当前没有待执行工作（等待下次 poll 检测）"
-    if state.get("current", {}).get("action"):
+    if is_locked(req["root"]):
         return f"{name} 正在执行中，无需重复批准"
     if all(m.get("status") == SYNCED
            for m in state.get("modules", {}).values()):

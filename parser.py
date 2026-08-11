@@ -55,14 +55,14 @@ def _parse_test_results(block):
 
 def _parse_tdd_red_evidence(block):
     evidence_match = re.search(
-        r'TDD_RED_EVIDENCE:\s*\n((?:[ \t]+.*\n?)+)', block
+        r'TDD_RED_EVIDENCE:\s*\n((?:[ \t]+.*\n?|\n)+)', block
     )
     if not evidence_match:
         return None
     evidence = evidence_match.group(1)
     files = re.findall(r'-\s+(.+)', evidence)
     output_match = re.search(
-        r'red_test_output:\s*\|?\s*\n((?:[ \t]+.*\n?)+?)(?=  \w+:|$)',
+        r'red_test_output:\s*\|?\s*\n((?:[ \t]+.*\n?|\n)+?)(?=  \w+:|\Z)',
         evidence, re.MULTILINE
     )
     red_output = output_match.group(1).strip() if output_match else None

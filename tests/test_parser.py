@@ -69,6 +69,27 @@ TDD_RED_EVIDENCE:
         result = parse_maker_output(text)
         self.assertFalse(result['tdd_red_evidence']['red_confirmed'])
 
+    def test_step1_red_blank_line_in_output_block(self):
+        """Blank line inside red_test_output must not truncate evidence."""
+        text = """---MAKER_OUTPUT---
+STATUS: SUCCESS
+TDD_RED_EVIDENCE:
+  test_files_written:
+    - /src/test/FooTest.java
+  red_test_output: |
+    mvn test
+    [ERROR] Tests run: 1, Failures: 1
+
+    RED confirmed: existing handler returns 200
+    expects 400/500
+  red_confirmed: true
+---END_MAKER_OUTPUT---
+"""
+        result = parse_maker_output(text)
+        evidence = result['tdd_red_evidence']
+        self.assertTrue(evidence['red_confirmed'])
+        self.assertIn("RED confirmed", evidence['red_test_output'])
+
 
 class TestParseMakerOutputStep2Green(unittest.TestCase):
     def test_step2_success(self):

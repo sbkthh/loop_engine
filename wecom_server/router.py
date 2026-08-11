@@ -247,8 +247,8 @@ def _execute_gray_list_view(name, registry, data_dir):
     for req_name, d in found:
         lines.append(f"「{req_name}」草稿 {d['id']}："
                      f"[{d.get('module', '-')}] {d.get('summary', '')}")
-    lines.append("回复「接受 <编号>」或「拒绝 <编号>」逐条裁决，"
-                 "或「全部接受」/「全部拒绝」")
+        lines.append(f"→ 回复「接受 {d['id']}」或「拒绝 {d['id']}」裁决该条")
+    lines.append("多条可一起处理：「全部接受」/「全部拒绝」")
     return "\n".join(lines)
 
 

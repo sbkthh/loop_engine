@@ -371,7 +371,7 @@ def test_gray_list_view_lists_pending_drafts(monkeypatch, tmp_path):
     assert "草稿 1" in reply and "warn A" in reply
     assert "草稿 2" in reply and "warn B" in reply
     assert "warn C" not in reply
-    assert "接受" in reply and "拒绝" in reply
+    assert "接受 1" in reply and "拒绝 2" in reply
     assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
 
 

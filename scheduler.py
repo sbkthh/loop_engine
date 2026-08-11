@@ -562,6 +562,56 @@ def _cleanup_stale_manual(root):
         pass
 
 
+def _no_advance_reason(root):
+    """Human-readable reason for a no_advance stop."""
+    try:
+        with open(os.path.join(root, STATE_FILE)) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return "状态机未推进"
+    statuses = [m.get("status") for m in state.get("modules", {}).values()]
+    if NEEDS_REFINEMENT in statuses:
+        return "SCORE 评分不足（<90），需要完善 spec"
+    if BLOCKED in statuses:
+        return "存在阻塞模块，需要人工处理"
+    if DRAFT in statuses:
+        return "存在未完成 spec 的新模块"
+    if all(s == SYNCED for s in statuses):
+        return "所有模块已同步"
+    return "状态机未推进（无下一步可执行）"
+
+
+def _end_message(name, end, steps, elapsed_min, failure_detail, root):
+    """User-facing run-end notification: outcome + what to do next."""
+    base = f"[调度] {name} "
+    if end == "idle":
+        return (f"{base}执行完成（成功）：所有模块已同步 SYNCED，"
+                f"共 {steps} 步，耗时 {elapsed_min} 分钟")
+    if end == "gray_list":
+        return (f"{base}执行暂停：Checker 发现待人工裁决的问题（灰名单）。"
+                f"微信回复「查看灰名单」逐条裁决（接受/拒绝/修复），"
+                f"裁决后回复「批准执行 {name}」继续执行")
+    if end == "no_advance":
+        reason = _no_advance_reason(root)
+        next_hint = ("处理完成后回复「批准执行 {name}」继续"
+                     if reason != "所有模块已同步"
+                     else "无需进一步操作")
+        return (f"{base}执行暂停：{reason}，共 {steps} 步，耗时 {elapsed_min} 分钟。"
+                f"{next_hint}")
+    if end in ("qodercli_failed", "commit_error",
+               "bad_next_output", "bad_commit_output"):
+        detail = failure_detail or end
+        return (f"{base}执行失败：{detail}，共 {steps} 步，"
+                f"耗时 {elapsed_min} 分钟。修复后回复「批准执行 {name}」重试")
+    if end == "repeat_limit":
+        return (f"{base}执行停止：同一步骤重复多次未推进，需人工检查，"
+                f"共 {steps} 步，耗时 {elapsed_min} 分钟")
+    if end == "max_steps":
+        return (f"{base}执行停止：达到最大步数上限，需人工检查，"
+                f"共 {steps} 步，耗时 {elapsed_min} 分钟")
+    return f"{base}执行结束（{end}），共 {steps} 步，耗时 {elapsed_min} 分钟"
+
+
 def running_count(registry_entries=None):
     if registry_entries is None:
         registry_entries = _read_registry()
@@ -713,13 +763,9 @@ def run_requirement(name):
         finished_at = time.time()
         elapsed_min = int((finished_at - start) // 60)
         _record_run(name, end, steps, start, finished_at)
-        if end == "idle":
-            notify_text(f"[调度] {name} 执行完成：idle，共 {steps} 步，耗时 {elapsed_min} 分钟",
-                        user_id)
-        else:
-            detail = f"：{failure_detail}" if failure_detail else ""
-            notify_text(f"[调度] {name} 执行结束：{end}{detail}，共 {steps} 步，耗时 {elapsed_min} 分钟",
-                        user_id)
+        notify_text(
+            _end_message(name, end, steps, elapsed_min, failure_detail, root),
+            user_id)
 
 
 def dispatch(entries, max_concurrency=2):

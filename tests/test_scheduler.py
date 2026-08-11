@@ -895,7 +895,26 @@ class TestNotify(SchedulerBase):
             scheduler.run_requirement("req")
         messages = [c.args[0] for c in mock_notify.call_args_list]
         self.assertTrue(any(m.startswith("[调度] 开始执行 req") for m in messages))
-        self.assertTrue(any("执行完成" in m and "idle" in m for m in messages))
+        self.assertTrue(any("执行完成（成功）" in m for m in messages))
+
+    def test_end_message_gray_list_guides_adjudication(self):
+        msg = scheduler._end_message(
+            "req", "gray_list", 5, 11, None,
+            os.path.join(self.tmp.name, "req"))
+        self.assertIn("执行暂停", msg)
+        self.assertIn("灰名单", msg)
+        self.assertIn("查看灰名单", msg)
+        self.assertIn("批准执行 req", msg)
+        self.assertNotIn("gray_list", msg)
+
+    def test_end_message_no_advance_reports_reason(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT")})
+        msg = scheduler._end_message(
+            "req", "no_advance", 2, 5, None, root)
+        self.assertIn("SCORE 评分不足", msg)
+        self.assertIn("完善 spec", msg)
+        self.assertNotIn("no_advance", msg)
 
     def test_run_notifies_approved_user(self):
         root = self._register_pending("req")
@@ -966,10 +985,10 @@ class TestNotify(SchedulerBase):
              mock.patch.object(scheduler, "notify_text") as mock_notify:
             scheduler.run_requirement("req")
         messages = [c.args[0] for c in mock_notify.call_args_list]
-        done = [m for m in messages if "执行结束" in m]
+        done = [m for m in messages if "执行失败" in m]
         self.assertEqual(len(done), 1)
-        self.assertIn("commit_error", done[0])
         self.assertIn("transient", done[0])  # commit error detail
+        self.assertIn("重试", done[0])
 
     def test_idle_notify_keeps_success_wording(self):
         root = self._register_pending("req")
@@ -978,9 +997,9 @@ class TestNotify(SchedulerBase):
              mock.patch.object(scheduler, "notify_text") as mock_notify:
             scheduler.run_requirement("req")
         messages = [c.args[0] for c in mock_notify.call_args_list]
-        done = [m for m in messages if "执行完成" in m]
+        done = [m for m in messages if "执行完成（成功）" in m]
         self.assertEqual(len(done), 1)
-        self.assertIn("idle", done[0])
+        self.assertIn("SYNCED", done[0])
 
 
 if __name__ == "__main__":

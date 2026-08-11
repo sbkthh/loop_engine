@@ -360,10 +360,10 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertTrue(len(state["gray_drafts"]) > 0)
         # verify gray resume point was stored
         module = state["modules"][self.key]
-        self.assertEqual(module.get("_gray_resume"), "CODE_REVIEW")
+        self.assertEqual(module.get("_gray_resume"), "MAKER_FIX")
 
-    def test_checker_gray_list_resumes_to_code_review_after_adjudication(self):
-        """After all gray drafts resolved, next() resumes to CODE_REVIEW."""
+    def test_checker_gray_list_resumes_to_maker_fix_after_accept(self):
+        """After all gray drafts accepted, next() resumes to MAKER_FIX."""
         self._init_module_ready()
         machine = StateMachine(self.root)
         machine.next()
@@ -402,18 +402,71 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         r = machine.commit()
         self.assertEqual(r["next_action"], "_GRAY_LIST_")
 
-        # simulate user resolving all gray drafts
+        # simulate user accepting all gray drafts
         sm = StateManager(self.root)
         state = sm.load()
         for d in state["gray_drafts"]:
             d["status"] = "accepted"
         sm.save(state)
 
-        # next() should resume to CODE_REVIEW, not SCORE
+        # next() should resume to MAKER_FIX (accepted = issues need fixing)
+        r = machine.next()
+        self.assertEqual(r["action"], "MAKER_FIX")
+        self.assertEqual(r["module"], self.key)
+        state = sm.load()
+        self.assertNotIn("_gray_resume", state["modules"].get(self.key, {}))
+
+    def test_checker_gray_list_resumes_to_code_review_after_all_rejected(self):
+        """After all gray drafts rejected, next() resumes to CODE_REVIEW."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        machine.next()
+        self._write_result("SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+        machine.commit()
+        machine.next()
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        open(plan_full, "w").close()
+        self._write_result(
+            f"---MAKER_OUTPUT---\nSTATUS: SUCCESS\nPLAN_PATH: {plan_path}\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n  test_files_written:\n    - /t/Foo.java\n"
+            "  red_test_output: |\n    Tests run: 1, Failures: 1\n  red_confirmed: true\n"
+            "---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\nFILES_CREATED:\n  - /m/Foo.java\n"
+            "FILES_MODIFIED:\nPLAN_PATH: /p.md\nTEST_RESULTS:\n"
+            "  class: FooTest\n  total: 5  passed: 5  failed: 0\n"
+            "BLOCKERS: none\nHUMAN_DECISIONS: 0\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n"
+            "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 0\n"
+            "SOFT_WARNING_COUNT: 1\nINFO_COUNT: 0\n"
+            "DISCREPANCIES:\n  1. [SOFT_WARNING] [B] method mismatch\n"
+            "TEST_RESULTS:\n  class: FooTest\n  total: 5  passed: 5  failed: 0  errors: 0\n"
+            "COVERAGE: 1/1 Scenarios have test methods\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
+        # simulate user rejecting all gray drafts
+        sm = StateManager(self.root)
+        state = sm.load()
+        for d in state["gray_drafts"]:
+            d["status"] = "rejected"
+        sm.save(state)
+
+        # next() should resume to CODE_REVIEW (rejected = no fixes needed)
         r = machine.next()
         self.assertEqual(r["action"], "CODE_REVIEW")
         self.assertEqual(r["module"], self.key)
-        # verify _gray_resume was cleaned up
         state = sm.load()
         self.assertNotIn("_gray_resume", state["modules"].get(self.key, {}))
 
@@ -471,6 +524,122 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(len(state["gray_drafts"]), 1)
         self.assertIn("未按格式解析", state["gray_drafts"][0]["summary"])
+
+    def test_checker_filters_rejected_warnings(self):
+        """Checker skips soft_warnings whose description matches a rejected draft."""
+        from state import StateManager
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        # seed a rejected draft for this module — summary matches parsed
+        # description format (no [TYPE] prefix), same as _execute_gray_list creates
+        sm = StateManager(self.root)
+        st = sm.load()
+        st.setdefault("gray_drafts", []).append({
+            "id": 99, "module": self.key, "status": "rejected",
+            "summary": "method mismatch",
+        })
+        sm.save(st)
+
+        machine.next()
+        self._write_result("SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+        machine.commit()
+        machine.next()
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        open(plan_full, "w").close()
+        self._write_result(
+            f"---MAKER_OUTPUT---\nSTATUS: SUCCESS\nPLAN_PATH: {plan_path}\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n  test_files_written:\n    - /t/Foo.java\n"
+            "  red_test_output: |\n    Tests run: 1, Failures: 1\n  red_confirmed: true\n"
+            "---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\nFILES_CREATED:\n  - /m/Foo.java\n"
+            "FILES_MODIFIED:\nPLAN_PATH: /p.md\nTEST_RESULTS:\n"
+            "  class: FooTest\n  total: 5  passed: 5  failed: 0\n"
+            "BLOCKERS: none\nHUMAN_DECISIONS: 0\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+
+        # checker output includes the previously rejected warning plus a new one
+        self._write_result(
+            "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n"
+            "DISCREPANCY_COUNT: 2\nHARD_ERROR_COUNT: 0\n"
+            "SOFT_WARNING_COUNT: 2\nINFO_COUNT: 0\n"
+            "DISCREPANCIES:\n"
+            "  1. [SOFT_WARNING] [B] method mismatch\n"
+            "  2. [SOFT_WARNING] [C] new issue\n"
+            "TEST_RESULTS:\n  class: FooTest\n  total: 5  passed: 5  failed: 0  errors: 0\n"
+            "COVERAGE: 1/1 Scenarios have test methods\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        # filtered soft=1 (only "new issue"), so → GRAY_LIST with one new draft
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
+        state = sm.load()
+        # seeded rejected (id=99) + 1 new draft from _execute_gray_list
+        self.assertEqual(len(state["gray_drafts"]), 2)
+
+    def test_checker_filters_all_rejected_skips_gray_list(self):
+        """When all soft_warnings match rejected drafts, skip GRAY_LIST."""
+        from state import StateManager
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        sm = StateManager(self.root)
+        st = sm.load()
+        st.setdefault("gray_drafts", []).append({
+            "id": 99, "module": self.key, "status": "rejected",
+            "summary": "method mismatch",
+        })
+        sm.save(st)
+
+        machine.next()
+        self._write_result("SCORE: 95/100\nCROSS_CONSISTENCY: PASS")
+        machine.commit()
+        machine.next()
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        open(plan_full, "w").close()
+        self._write_result(
+            f"---MAKER_OUTPUT---\nSTATUS: SUCCESS\nPLAN_PATH: {plan_path}\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n  test_files_written:\n    - /t/Foo.java\n"
+            "  red_test_output: |\n    Tests run: 1, Failures: 1\n  red_confirmed: true\n"
+            "---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+        self._write_result(
+            "---MAKER_OUTPUT---\nSTATUS: SUCCESS\nFILES_CREATED:\n  - /m/Foo.java\n"
+            "FILES_MODIFIED:\nPLAN_PATH: /p.md\nTEST_RESULTS:\n"
+            "  class: FooTest\n  total: 5  passed: 5  failed: 0\n"
+            "BLOCKERS: none\nHUMAN_DECISIONS: 0\n---END_MAKER_OUTPUT---")
+        machine.commit()
+        machine.next()
+
+        # only the rejected warning — should skip GRAY_LIST and go to CODE_REVIEW
+        self._write_result(
+            "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n"
+            "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 0\n"
+            "SOFT_WARNING_COUNT: 1\nINFO_COUNT: 0\n"
+            "DISCREPANCIES:\n"
+            "  1. [SOFT_WARNING] [B] method mismatch\n"
+            "TEST_RESULTS:\n  class: FooTest\n  total: 5  passed: 5  failed: 0  errors: 0\n"
+            "COVERAGE: 1/1 Scenarios have test methods\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "CODE_REVIEW")
+        state = sm.load()
+        self.assertEqual(len(state["gray_drafts"]), 1)
 
     def test_commit_no_mid_progress(self):
         machine = StateMachine(self.root)

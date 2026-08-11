@@ -103,7 +103,11 @@ class StateMachine:
                        and d.get("module", "").startswith(module["change_id"])]
             if not pending:
                 del module["_gray_resume"]
-                action = gray_resume
+                # any accepted draft → need MAKER_FIX; all rejected → CODE_REVIEW only
+                any_accepted = any(d.get("status") == "accepted"
+                                   for d in state.get("gray_drafts", [])
+                                   if d.get("module", "").startswith(module["change_id"]))
+                action = MAKER_FIX if any_accepted else CODE_REVIEW
             else:
                 action = None
         else:
@@ -169,7 +173,7 @@ class StateMachine:
             StateManager.clear_current(state)
         elif next_action == _GRAY_LIST:
             self._execute_gray_list(state, module_key, module)
-            module["_gray_resume"] = CODE_REVIEW
+            module["_gray_resume"] = MAKER_FIX
             StateManager.clear_current(state)
         elif next_action:
             attempt = module.get("maker_attempt", 0)
@@ -277,15 +281,30 @@ class StateMachine:
         if not parsed:
             raise ValueError("Output format error: No CHECKER_OUTPUT block found")
         hard = parsed.get("hard_error_count") or 0
-        soft = parsed.get("soft_warning_count") or 0
+        raw_soft = parsed.get("soft_warning_count") or 0
+        rejected_summaries = {
+            d["summary"] for d in state.get("gray_drafts", [])
+            if d.get("status") == "rejected" and d.get("module") == key
+        }
         module["hard_errors"] = [
             d for d in parsed.get("discrepancies", [])
             if d.get("severity") == "HARD_ERROR"
         ]
-        module["soft_warnings"] = [
+        parsed_soft = [
             d for d in parsed.get("discrepancies", [])
             if d.get("severity") == "SOFT_WARNING"
         ]
+        filtered = [
+            d for d in parsed_soft
+            if d.get("description", "") not in rejected_summaries
+        ]
+        module["soft_warnings"] = filtered
+        # if some warnings were unparseable, defer to raw count so
+        # _execute_gray_list creates the fallback draft; otherwise use filtered
+        if raw_soft > len(parsed_soft):
+            soft = raw_soft
+        else:
+            soft = len(filtered)
         if hard > 0 and module.get("maker_attempt", 0) < MAX_MAKER_ATTEMPTS:
             module["maker_attempt"] = module.get("maker_attempt", 0) + 1
             return MAKER_FIX

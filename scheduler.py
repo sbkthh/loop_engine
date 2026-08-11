@@ -242,7 +242,7 @@ def _no_pending_message(name):
     return f"{name} 当前没有待执行工作（等待下次 poll 检测）"
 
 
-def approve(name=None, all_=False):
+def approve(name=None, all_=False, approved_by=None):
     data = load_pending()
     entries = data.get("pending", [])
     if all_:
@@ -250,6 +250,8 @@ def approve(name=None, all_=False):
         for e in entries:
             if e.get("trigger") in AUTO_EXECUTABLE and not e.get("approved"):
                 e["approved"] = True
+                if approved_by:
+                    e["approved_by"] = approved_by
                 count += 1
         _save_pending(data)
         return count
@@ -265,6 +267,8 @@ def approve(name=None, all_=False):
     if entry.get("approved"):
         return 0
     entry["approved"] = True
+    if approved_by:
+        entry["approved_by"] = approved_by
     _save_pending(data)
     return 1
 
@@ -278,55 +282,44 @@ def _clear_approval(name):
         _save_pending(data)
 
 
-def notify_text(message):
-    """Push a plain text notification to WeCom (group bot or self-built app).
+def _last_user():
+    """Most recently active WeCom user (written by the wecom server)."""
+    try:
+        with open(os.path.join(DATA_DIR, "last_user.json")) as f:
+            return json.load(f).get("user") or None
+    except (OSError, ValueError):
+        return None
 
-    Returns True if sent. Silently skips when WeCom is not configured.
+
+def notify_text(message, user_id=None):
+    """Push a plain text notification to the WeCom self-built app chat.
+
+    Recipient is the user who approved the run (or the most recently active
+    WeCom user). Returns True if sent. Silently skips when WeCom is not
+    configured or no recipient is known.
     """
     wecom_config_path = os.path.join(DATA_DIR, "wecom.json")
     if not os.path.exists(wecom_config_path):
         return False
     with open(wecom_config_path) as f:
         config = json.load(f)
-    webhook_url = config.get("webhook_url")
-    if webhook_url:
-        r = requests.post(
-            webhook_url,
-            json={"msgtype": "text", "text": {"content": message}},
-            timeout=10)
-        result = r.json()
-        if result.get("errcode", -1) != 0:
-            _log(f"notify: webhook send failed: {result.get('errmsg')}")
-            return False
-        _log("notify: sent to WeCom group")
-        return True
+    if not user_id:
+        user_id = _last_user()
+    if not user_id:
+        _log("notify: no recipient user, skipped")
+        return False
     if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
         return False
-    r = requests.get(
-        "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-        params={"corpid": config["corp_id"], "corpsecret": config["secret"]},
-        timeout=10)
-    token_data = r.json()
-    if token_data.get("errcode", -1) != 0:
-        _log(f"notify: gettoken failed: {token_data.get('errmsg')}")
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from wecom_server.wecom_api import send_text
+        sent = send_text(user_id, message, config)
+        _log(f"notify: sent to {user_id}" if sent
+             else f"notify: send failed for {user_id}")
+        return sent
+    except Exception as e:
+        _log(f"notify: send failed: {e}")
         return False
-    access_token = token_data["access_token"]
-    r2 = requests.post(
-        f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
-        json={
-            "touser": "@all",
-            "msgtype": "text",
-            "agentid": int(config["agent_id"]),
-            "text": {"content": message},
-            "safe": 0,
-        },
-        timeout=10)
-    result = r2.json()
-    if result.get("errcode", -1) != 0:
-        _log(f"notify: send failed: {result.get('errmsg')}")
-        return False
-    _log("notify: sent to WeCom")
-    return True
 
 
 def notify_pending(fresh_entries):
@@ -576,10 +569,16 @@ def run_requirement(name):
     root = req["root"]
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
+    user_id = None
+    try:
+        entry = _find_entry(load_pending(), name)
+        user_id = entry.get("approved_by") if entry else None
+    except (OSError, ValueError):
+        pass
     start = time.time()
     last_beat = start
     beat_interval = HEARTBEAT_SECONDS
-    notify_text(f"[调度] 开始执行 {name} ({root})")
+    notify_text(f"[调度] 开始执行 {name} ({root})", user_id)
     _log(f"run {name}: start ({root})")
     try:
         steps = 0
@@ -598,7 +597,8 @@ def run_requirement(name):
             if time.time() - last_beat >= beat_interval:
                 elapsed_min = int((time.time() - start) // 60)
                 pos = f"（{active_action} {active_module}）" if active_action else ""
-                notify_text(f"[调度] {name} 仍在执行{pos}，已 {elapsed_min} 分钟")
+                notify_text(f"[调度] {name} 仍在执行{pos}，已 {elapsed_min} 分钟",
+                            user_id)
                 last_beat = time.time()
                 beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
@@ -698,10 +698,12 @@ def run_requirement(name):
         elapsed_min = int((finished_at - start) // 60)
         _record_run(name, end, steps, start, finished_at)
         if end == "idle":
-            notify_text(f"[调度] {name} 执行完成：idle，共 {steps} 步，耗时 {elapsed_min} 分钟")
+            notify_text(f"[调度] {name} 执行完成：idle，共 {steps} 步，耗时 {elapsed_min} 分钟",
+                        user_id)
         else:
             detail = f"：{failure_detail}" if failure_detail else ""
-            notify_text(f"[调度] {name} 执行结束：{end}{detail}，共 {steps} 步，耗时 {elapsed_min} 分钟")
+            notify_text(f"[调度] {name} 执行结束：{end}{detail}，共 {steps} 步，耗时 {elapsed_min} 分钟",
+                        user_id)
 
 
 def dispatch(entries, max_concurrency=2):

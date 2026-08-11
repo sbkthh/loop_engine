@@ -34,7 +34,8 @@ def test_approve_prefix_executes(monkeypatch):
                         _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
     calls = {}
     monkeypatch.setattr(scheduler, "approve",
-                        lambda name: calls.__setitem__("approve", name) or 1)
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approve", name) or 1)
     monkeypatch.setattr(scheduler, "load_pending",
                         lambda: {"pending": [{"requirement": "req"}]})
     monkeypatch.setattr(scheduler, "load_config",
@@ -64,6 +65,33 @@ def test_approve_unknown_requirement(monkeypatch):
     assert "没有找到需求" in reply
 
 
+def test_approve_prefix_passes_user_id(monkeypatch):
+    """Approval records who initiated it so scheduler notifies that user."""
+    from wecom_server import router
+    import scheduler
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__APPROVE__ req"))
+    calls = {}
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approved_by", approved_by) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert "已批准并开始执行" in reply
+    assert calls["approved_by"] == "u1"
+
+
 def test_approve_report_only_returns_error(monkeypatch):
     from wecom_server import router
     import scheduler
@@ -72,7 +100,7 @@ def test_approve_report_only_returns_error(monkeypatch):
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     monkeypatch.setattr(scheduler, "approve",
-                        lambda name: (_ for _ in ()).throw(
+                        lambda name, approved_by=None: (_ for _ in ()).throw(
                             ValueError("report-only")))
 
     fn = dispatch("批准 req", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")

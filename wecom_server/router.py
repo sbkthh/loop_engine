@@ -168,7 +168,7 @@ def _execute_history(name, registry, data_dir):
     return "\n".join(lines)
 
 
-def _execute_approve(name, registry, data_dir):
+def _execute_approve(name, registry, data_dir, user_id=None):
     """Approve + dispatch a requirement for real execution. Returns reply text."""
     req = next((r for r in registry if r.get("name") == name), None)
     if not req:
@@ -177,7 +177,7 @@ def _execute_approve(name, registry, data_dir):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import scheduler
     try:
-        count = scheduler.approve(name)
+        count = scheduler.approve(name, approved_by=user_id)
     except ValueError as e:
         return f"无法批准：{e}"
     if count == 0:
@@ -339,7 +339,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         return "无响应，请稍后再试。"
     if reply.startswith("__APPROVE__"):
         name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
-        return _execute_approve(name, registry, data_dir)
+        return _execute_approve(name, registry, data_dir, user_id)
     if reply.startswith("__HISTORY__"):
         name = reply[len("__HISTORY__"):].strip().splitlines()[0].strip() or "ALL"
         return _execute_history(name, registry, data_dir)

@@ -271,6 +271,16 @@ class TestApprove(SchedulerBase):
             scheduler.approve("req")
         self.assertIn("正在执行中", str(ctx.exception))
 
+    def test_approve_records_approved_by(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        scheduler.poll()
+
+        self.assertEqual(scheduler.approve("req", approved_by="LiChuan"), 1)
+        entry = scheduler.load_pending()["pending"][0]
+        self.assertEqual(entry["approved_by"], "LiChuan")
+
 
 class TestLock(SchedulerBase):
     def test_acquire_release(self):
@@ -768,18 +778,43 @@ class TestNotify(SchedulerBase):
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name):
             self.assertFalse(scheduler.notify_text("hello"))
 
-    def test_notify_text_webhook_success(self):
+    def test_notify_text_skips_without_recipient(self):
         scheduler.notify_text = self._notify_text_orig
         wecom = os.path.join(self.tmp.name, "wecom.json")
         with open(wecom, "w") as f:
-            json.dump({"webhook_url": "https://webhook.example"}, f)
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"errcode": 0, "errmsg": "ok"}
+            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
-             mock.patch.object(scheduler.requests, "post", return_value=mock_resp) as mock_post:
+             mock.patch("wecom_server.wecom_api.send_text") as mock_send:
+            self.assertFalse(scheduler.notify_text("hello"))
+        mock_send.assert_not_called()
+
+    def test_notify_text_sends_to_last_user(self):
+        scheduler.notify_text = self._notify_text_orig
+        wecom = os.path.join(self.tmp.name, "wecom.json")
+        with open(wecom, "w") as f:
+            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
+        with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
+            json.dump({"user": "LiChuan"}, f)
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
+             mock.patch("wecom_server.wecom_api.send_text",
+                        return_value=True) as mock_send:
             self.assertTrue(scheduler.notify_text("hello"))
-        body = mock_post.call_args[1]["json"]
-        self.assertEqual(body["text"]["content"], "hello")
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][0], "LiChuan")
+        self.assertEqual(mock_send.call_args[0][1], "hello")
+
+    def test_notify_text_explicit_user_overrides_last_user(self):
+        scheduler.notify_text = self._notify_text_orig
+        wecom = os.path.join(self.tmp.name, "wecom.json")
+        with open(wecom, "w") as f:
+            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
+        with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
+            json.dump({"user": "SomeoneElse"}, f)
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
+             mock.patch("wecom_server.wecom_api.send_text",
+                        return_value=True) as mock_send:
+            self.assertTrue(scheduler.notify_text("hello", user_id="LiChuan"))
+        self.assertEqual(mock_send.call_args[0][0], "LiChuan")
 
     def test_run_sends_start_and_finish(self):
         root = self._register_pending("req")
@@ -790,6 +825,19 @@ class TestNotify(SchedulerBase):
         messages = [c.args[0] for c in mock_notify.call_args_list]
         self.assertTrue(any(m.startswith("[调度] 开始执行 req") for m in messages))
         self.assertTrue(any("执行完成" in m and "idle" in m for m in messages))
+
+    def test_run_notifies_approved_user(self):
+        root = self._register_pending("req")
+        pend = scheduler.load_pending()
+        pend["pending"][0]["approved_by"] = "LiChuan"
+        scheduler._save_pending(pend)
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            scheduler.run_requirement("req")
+        users = {c.args[1] for c in mock_notify.call_args_list
+                 if len(c.args) > 1}
+        self.assertIn("LiChuan", users)
 
     def test_run_sends_heartbeat_for_long_run(self):
         root = self._register_pending("req")

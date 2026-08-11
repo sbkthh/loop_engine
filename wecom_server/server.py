@@ -70,6 +70,13 @@ def callback_message():
     from_user = inner.findtext("FromUserName", "")
     msg_type = inner.findtext("MsgType", "")
     logger.info("[wecom] msg from %s (%s): %s", from_user, msg_type, content)
+    # Remember the most recent active user so scheduler notifications
+    # (pending detection etc.) can target the self-built app chat.
+    try:
+        with open(os.path.join(DATA_DIR, "last_user.json"), "w") as f:
+            json.dump({"user": from_user}, f)
+    except OSError:
+        pass
     # Dispatch
     try:
         from .router import dispatch

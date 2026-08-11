@@ -43,14 +43,27 @@ def _extract_bool(block, key):
     return m.group(1).lower() == 'true'
 
 
+_LIST_RESULT_RE = re.compile(
+    r'^\s*-\s*([^:]+):\s*total=(\d+),\s*passed=(\d+),\s*failed=(\d+)',
+    re.MULTILINE)
+
+
 def _parse_test_results(block):
-    return {
+    result = {
         'class_name': _extract_field(block, r'class') or _extract_field(block, 'class'),
         'total': _extract_int(block, 'total'),
         'passed': _extract_int(block, 'passed'),
         'failed': _extract_int(block, 'failed'),
         'errors': _extract_int(block, 'errors'),
     }
+    # tolerate list-style rows: "- FooTest: total=7, passed=7, failed=0"
+    rows = _LIST_RESULT_RE.findall(block)
+    if rows and result['total'] is None:
+        result['class_name'] = rows[0][0].strip()
+        result['total'] = sum(int(t) for _, t, _, _ in rows)
+        result['passed'] = sum(int(p) for _, _, p, _ in rows)
+        result['failed'] = sum(int(f) for _, _, _, f in rows)
+    return result
 
 
 def _parse_tdd_red_evidence(block):

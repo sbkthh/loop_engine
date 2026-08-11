@@ -335,5 +335,22 @@ TDD_RED_EVIDENCE:
         self.assertTrue(evidence['tdd_skip'])
         self.assertEqual(evidence['test_files_written'], [])
 
+    def test_step2_green_list_format_test_results(self):
+        text = """---MAKER_OUTPUT---
+STATUS: SUCCESS
+FILES_CREATED:
+  - /src/main/Foo.java
+TEST_RESULTS:
+  - FooTest: total=7, passed=7, failed=0
+  - BarTest: total=4, passed=4, failed=0
+  - mvn clean test (root): PASSED
+---END_MAKER_OUTPUT---
+"""
+        result = parse_maker_output(text)
+        tr = result['test_results']
+        self.assertEqual(tr['total'], 11)
+        self.assertEqual(tr['passed'], 11)
+        self.assertEqual(tr['failed'], 0)
+
 if __name__ == '__main__':
     unittest.main()

@@ -101,3 +101,26 @@ def read_test_command(project_root):
     if not re.search(r"\bclean\b", cmd):
         cmd = cmd.replace("mvn", "mvn clean", 1)
     return cmd
+
+
+def read_checker_test_command(cmd, root, files=()):
+    """CHECKER-only incremental test command.
+
+    CHECKER never modifies code and the previous step (GREEN) just ran a
+    full 'mvn clean test', so target/ artifacts are fresh — a clean rebuild
+    is pure waste (20-30 min on zkh projects). The clean-first rule exists
+    because incremental builds after code edits are unreliable; no code
+    changes happen between GREEN and CHECKER, so incremental is safe here.
+    """
+    cmd = re.sub(r"\bclean\s+", "", cmd)
+    root = os.path.abspath(root).replace(os.sep, "/") + "/"
+    modules = set()
+    for path in files:
+        path = path.replace(os.sep, "/")
+        if path.startswith(root):
+            first = path[len(root):].split("/", 1)[0]
+            if first:
+                modules.add(first)
+    if modules:
+        cmd = f"{cmd} -pl {','.join(sorted(modules))} -am"
+    return cmd

@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from spec_utils import read_test_command
+from spec_utils import read_test_command, read_checker_test_command
 
 
 class TestReadTestCommand(unittest.TestCase):
@@ -37,6 +37,40 @@ class TestReadTestCommand(unittest.TestCase):
     def test_custom_flags_preserved(self):
         self._write_agents("Run all tests: mvn test -DskipITs")
         self.assertEqual(read_test_command(self.root), "mvn clean test -DskipITs")
+
+
+class TestReadCheckerTestCommand(unittest.TestCase):
+    """CHECKER reuses GREEN's fresh build artifacts: no clean, scoped -pl."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_removes_clean_when_no_files(self):
+        self.assertEqual(
+            read_checker_test_command("mvn clean test", self.root, []),
+            "mvn test")
+
+    def test_scopes_to_changed_modules(self):
+        files = [
+            os.path.join(self.root, "zkh-opc-sna-manager",
+                         "src/main/java/com/X.java"),
+            os.path.join(self.root, "zkh-opc-sna-stock-strategy",
+                         "src/test/java/com/Y.java"),
+        ]
+        cmd = read_checker_test_command("mvn clean test", self.root, files)
+        self.assertEqual(
+            cmd,
+            "mvn test -pl zkh-opc-sna-manager,zkh-opc-sna-stock-strategy -am")
+
+    def test_outside_files_ignored(self):
+        cmd = read_checker_test_command(
+            "mvn clean test", self.root,
+            ["/elsewhere/project/src/main/java/X.java"])
+        self.assertEqual(cmd, "mvn test")
 
 
 if __name__ == '__main__':

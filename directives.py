@@ -9,6 +9,7 @@ from constants import (
 )
 from spec_utils import (
     derive_spec_path, derive_plan_path, read_test_command,
+    read_checker_test_command,
 )
 
 
@@ -152,10 +153,14 @@ def build(action, module_key, module, root_dir="."):
 
     elif action == CHECKER:
         d["plan_path"] = module.get("plan_path") or plan_path
+        changed_files = (module.get("files_created", [])
+                         + module.get("files_modified", []))
+        checker_cmd = read_checker_test_command(test_cmd, root_dir, changed_files)
         d["instructions"] = (
             "Verify spec-plan-code three-way consistency.\n"
-            f"Read the spec file, plan file, and all code files.\n"
-            f"Run '{test_cmd}' to get baseline test results.\n"
+            "Read the spec file, plan file, and the changed files listed in "
+            "context (files_created / files_modified).\n"
+            f"Run '{checker_cmd}' to get baseline test results.\n"
             "Check: field existence, method signatures, line references, module dependencies,\n"
             "type consistency, import completeness, task status, cross-plan dependencies.\n"
             "Classify each discrepancy as HARD_ERROR (compile/logic failure),\n"
@@ -185,7 +190,7 @@ def build(action, module_key, module, root_dir="."):
         )
         d["context"]["files_created"] = module.get("files_created", [])
         d["context"]["files_modified"] = module.get("files_modified", [])
-        d["context"]["test_command"] = test_cmd
+        d["context"]["test_command"] = checker_cmd
 
     elif action == MAKER_FIX:
         d["plan_path"] = module.get("plan_path") or plan_path

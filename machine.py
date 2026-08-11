@@ -96,7 +96,25 @@ class StateMachine:
             return {"action": "IDLE", "message": "所有模块同步，无待处理项"}
 
         module_key, module = selected
-        action = None
+        gray_resume = module.get("_gray_resume")
+        if gray_resume:
+            pending = [d for d in state.get("gray_drafts", [])
+                       if d.get("status") == "pending"
+                       and d.get("module", "").startswith(module["change_id"])]
+            if not pending:
+                del module["_gray_resume"]
+                action = gray_resume
+            else:
+                action = None
+        else:
+            action = None
+        if action:
+            StateManager.set_current(state, module_key, action)
+            self._trace(state, "SCAN", module_key,
+                        f"gray resume -> {action}")
+            self.sm.save(state)
+            module = state["modules"][module_key]
+            return directives.build(action, module_key, module, self.root_dir)
         if module["status"] == PARTIAL:
             action = CLASSIFY_CHANGE
         elif module["status"] == READY:
@@ -151,6 +169,7 @@ class StateMachine:
             StateManager.clear_current(state)
         elif next_action == _GRAY_LIST:
             self._execute_gray_list(state, module_key, module)
+            module["_gray_resume"] = CODE_REVIEW
             StateManager.clear_current(state)
         elif next_action:
             attempt = module.get("maker_attempt", 0)

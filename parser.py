@@ -126,7 +126,7 @@ def parse_checker_output(text):
         return None
 
     discrepancies = re.findall(
-        r'\d+\.\s*\[([\w-]+)\]\s*\[([\w-]+)\]\s*(.+)', block
+        r'\d+\.\s*\[([\w-]+)\]\s*\[([^\]\n]+)\]\s*(.*)', block
     )
 
     coverage_match = re.search(r'(\d+)/(\d+)\s*Scenarios', block)
@@ -138,7 +138,8 @@ def parse_checker_output(text):
         'soft_warning_count': _extract_int(block, 'SOFT_WARNING_COUNT'),
         'info_count': _extract_int(block, 'INFO_COUNT'),
         'discrepancies': [
-            {'severity': s, 'type': t, 'description': d.strip()}
+            {'severity': s, 'type': t,
+             'description': (d.strip() or t).strip()}
             for s, t, d in discrepancies
         ],
         'test_results': _parse_test_results(block),

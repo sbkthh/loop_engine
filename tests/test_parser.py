@@ -318,6 +318,29 @@ DISCREPANCIES:
         self.assertEqual(result['soft_warning_count'], 1)
         self.assertEqual(result['info_count'], 3)
 
+    def test_checker_output_parses_type_with_spaces(self):
+        text = """---CHECKER_OUTPUT---
+STATUS: INCONSISTENT
+DISCREPANCY_COUNT: 2
+HARD_ERROR_COUNT: 0
+SOFT_WARNING_COUNT: 1
+INFO_COUNT: 1
+DISCREPANCIES:
+1. [SOFT_WARNING] [test-coverage / plan deviation]
+   Plan TDD table T7 mandates a direct test, implementation is correct
+2. [INFO] [dual-write nuance] update() writes only new fields
+---END_CHECKER_OUTPUT---
+"""
+        result = parse_checker_output(text)
+        self.assertEqual(len(result['discrepancies']), 2)
+        soft = result['discrepancies'][0]
+        self.assertEqual(soft['severity'], 'SOFT_WARNING')
+        self.assertEqual(soft['type'], 'test-coverage / plan deviation')
+        # description on the next indented line is picked up too
+        self.assertEqual(soft['description'],
+                         'Plan TDD table T7 mandates a direct test, '
+                         'implementation is correct')
+
     def test_step1_red_tdd_skip_parsed(self):
         text = """---MAKER_OUTPUT---
 STATUS: SUCCESS

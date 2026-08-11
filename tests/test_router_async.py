@@ -358,3 +358,42 @@ def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
 
     assert "对应多个模块" in reply
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
+
+
+def test_spec_result_single_token_full_key(monkeypatch, tmp_path):
+    """One-token full key (name merged with key) → owner located by key."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, spec_path = _make_spec_root(tmp_path)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply and "chg1/m1" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "PARTIAL"
+
+
+def test_spec_result_single_token_unknown_key(monkeypatch, tmp_path):
+    """One-token key that no requirement owns → helpful error, no change."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ ghost/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "找不到模块" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"

@@ -69,12 +69,14 @@ _LLM_SYSTEM_PROMPT = (
     "they do NOT support appending to or modifying an existing change/spec — "
     "modify an existing spec by editing its spec.md in place\n"
     "- After editing a spec, your reply MUST start with exactly "
-    "'__SPEC_RESULT__ <requirement name> <module key>' on the first line "
-    "(module key is change_id/module_name, e.g. "
-    "cross-dock-v2-backend/cross-dock-persistence), then a short summary of "
-    "what changed. Do NOT run 'loop_engine next' or 'commit' — the prefix "
-    "registers the change (hash update + backup) and the user then approves "
-    "execution\n\n"
+    "'__SPEC_RESULT__ <requirement name> <module key>' on the first line. "
+    "IMPORTANT: <requirement name> and <module key> are TWO space-separated "
+    "arguments — even when the requirement name equals the change_id prefix, "
+    "write both, e.g. '__SPEC_RESULT__ cross-dock-v2-backend "
+    "cross-dock-v2-backend/cross-dock-persistence'. Do NOT merge them into "
+    "one token. Then add a short summary of what changed. Do NOT run "
+    "'loop_engine next' or 'commit' — the prefix registers the change (hash "
+    "update + backup) and the user then approves execution\n\n"
     "Manual execution rules (when driving a next/commit loop manually, e.g. "
     "user says '主动执行' or asks you to run the loop step by step):\n"
     "- ALWAYS run 'loop_engine manual-begin --root <path>' BEFORE the first "
@@ -217,6 +219,27 @@ def _resolve_module_key(st, key):
     raise ValueError(f"找不到模块 {key}（可用：{', '.join(modules) or '无'}）")
 
 
+def _execute_spec_result_by_key(module_key, registry, data_dir):
+    """Locate the requirement owning module_key and register the change."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    owners = []
+    for req in registry:
+        try:
+            st = StateManager(req.get("root", "")).load()
+        except Exception:
+            continue
+        if module_key in st.get("modules", {}):
+            owners.append(req.get("name", "?"))
+    if len(owners) == 1:
+        return _execute_spec_result(owners[0], module_key, registry, data_dir)
+    if len(owners) > 1:
+        return (f"模块 {module_key} 对应多个需求（{'、'.join(owners)}），"
+                f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+    return (f"找不到模块 {module_key}：没有需求的状态机包含该模块，"
+            f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+
+
 def _execute_spec_result(name, module_key, registry, data_dir):
     """Register a G-edited spec change: verify hash changed, backup, PARTIAL.
 
@@ -323,6 +346,9 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     if reply.startswith("__SPEC_RESULT__"):
         rest = reply[len("__SPEC_RESULT__"):].strip().splitlines()[0].strip()
         parts = rest.split(None, 1)
+        if len(parts) == 1:
+            # single-token full key (assistant merged name+key) — locate owner
+            return _execute_spec_result_by_key(parts[0], registry, data_dir)
         if len(parts) != 2:
             return ("格式错误：__SPEC_RESULT__ <需求名> "
                     "<change_id>/<module_name>")

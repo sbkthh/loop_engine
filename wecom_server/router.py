@@ -427,11 +427,46 @@ def _execute_spec_result(name, module_key, registry, data_dir):
             f"请回复『批准执行 {name}』开始实现")
 
 
+def _classify_requirement(message, registry):
+    """Semantic fallback: ask the LLM which requirement a message is about.
+    Returns a requirement name, or None when nothing matches. One-off
+    call with no session context, so it never pollutes any conversation.
+    """
+    names = [r.get("name") for r in registry if r.get("name")]
+    if not names:
+        return None
+    qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
+    prompt = (
+        "你只做需求归属分类，不回答其他问题。可选需求："
+        + "、".join(names)
+        + "\n判断下面这条用户消息在聊哪个需求。消息没有明确指向任何需求，"
+          "就回答「无」。只输出一个需求名或「无」，不要输出任何其他内容。\n\n"
+        + f"消息：{message}"
+    )
+    try:
+        r = subprocess.run(
+            [qodercli_path, "--print", "--session-id", str(uuid.uuid4()),
+             "--model", _get_model(), "--dangerously-skip-permissions"],
+            input=prompt, capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        logger.warning("[wecom] requirement classify failed: %s", e)
+        return None
+    reply = (r.stdout or "").strip()
+    for name in names:
+        if name in reply:
+            return name
+    return None
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
     model = _get_model()
     requirement = _detect_requirement(message, registry)
+    if not requirement:
+        # exact match failed — ask the LLM which requirement this is about
+        requirement = _classify_requirement(message, registry)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.format(message=message)
     # first message creates session, subsequent messages resume it

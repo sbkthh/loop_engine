@@ -623,3 +623,59 @@ def test_llm_dispatch_global_session_no_tag_when_unknown(monkeypatch, tmp_path):
 
     assert used["req"] == "global"
     assert reply == "有什么可以帮你"
+
+
+
+def test_classify_requirement_semantic_match(monkeypatch, tmp_path):
+    """Messages with no exact name still route via semantic classification."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply("我判断这条消息在聊 req"))
+
+    name = router._classify_requirement(
+        "把那个时间范围校验的报错改成中文提示",
+        [{"name": "req", "root": root}])
+
+    assert name == "req"
+
+
+def test_classify_requirement_none_when_no_match(monkeypatch, tmp_path):
+    """Classifier saying 无 falls back to global."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router.subprocess, "run", _fake_llm_reply("无"))
+
+    name = router._classify_requirement("你好", [{"name": "req", "root": root}])
+
+    assert name is None
+
+
+def test_llm_dispatch_semantic_classify_routes_session(monkeypatch, tmp_path):
+    """Exact match miss + semantic hit → requirement session + tagged reply."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if any("qodercli" in part for part in cmd):
+            if "只做需求归属分类" in kwargs.get("input", ""):
+                return types.SimpleNamespace(stdout="req", returncode=0)
+            return types.SimpleNamespace(stdout="好的，我来看一下", returncode=0)
+        return types.SimpleNamespace(stdout="", stderr="", returncode=1)
+
+    used = {}
+    monkeypatch.setattr(
+        router, "_get_session_id",
+        lambda uid, req="global": used.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+
+    fn = dispatch("把那个时间范围校验的报错改成中文提示",
+                  [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert used["req"] == "req"
+    assert reply == "【req】\n好的，我来看一下"

@@ -296,5 +296,27 @@ class TestParseDispatcher(unittest.TestCase):
         self.assertEqual(result['status'], 'CONSISTENT')
 
 
+    def test_checker_output_parses_hyphenated_types(self):
+        text = """---CHECKER_OUTPUT---
+STATUS: CONSISTENT
+DISCREPANCY_COUNT: 4
+HARD_ERROR_COUNT: 0
+SOFT_WARNING_COUNT: 1
+INFO_COUNT: 3
+DISCREPANCIES:
+  1. [SOFT_WARNING] [scenario-coverage] Summary 场景"日期格式错误"无对应测试方法
+  2. [INFO] [spec-prose] spec.md:30 数据源残留
+  3. [INFO] [field-mapping] crossFlag 列位置
+  4. [INFO] [plan-drift] plan 未更新
+---END_CHECKER_OUTPUT---
+"""
+        result = parse_checker_output(text)
+        self.assertEqual(len(result['discrepancies']), 4)
+        first = result['discrepancies'][0]
+        self.assertEqual(first['severity'], 'SOFT_WARNING')
+        self.assertEqual(first['type'], 'scenario-coverage')
+        self.assertEqual(result['soft_warning_count'], 1)
+        self.assertEqual(result['info_count'], 3)
+
 if __name__ == '__main__':
     unittest.main()

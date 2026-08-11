@@ -112,7 +112,7 @@ def parse_checker_output(text):
         return None
 
     discrepancies = re.findall(
-        r'\d+\.\s*\[(\w+)\]\s*\[(\w+)\]\s*(.+)', block
+        r'\d+\.\s*\[([\w-]+)\]\s*\[([\w-]+)\]\s*(.+)', block
     )
 
     coverage_match = re.search(r'(\d+)/(\d+)\s*Scenarios', block)

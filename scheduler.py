@@ -327,12 +327,21 @@ def notify_pending(fresh_entries):
     if not fresh_entries:
         return
     lines = ["[调度] 检测到待处理项："]
+    advice = []
     for entry in fresh_entries:
         trigger = entry.get("trigger", "UNKNOWN")
         modules = entry.get("modules", [])
         names = ", ".join(m.get("key", "?") for m in modules)
         lines.append(f"• {entry['requirement']} ({trigger}): {names}")
-    lines.append("微信回复「批准执行 <需求名>」即可开始执行。")
+        if trigger in AUTO_EXECUTABLE:
+            advice.append(f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
+        elif trigger == NEEDS_REFINEMENT:
+            advice.append("请回复「完善spec」进一步完善 spec")
+        elif trigger == BLOCKED:
+            advice.append("请处理阻塞问题后回复「完善spec」")
+        elif trigger == DRAFT:
+            advice.append("请回复「完善spec」完成新模块 spec")
+    lines.extend(advice)
     notify_text("\n".join(lines))
 
 

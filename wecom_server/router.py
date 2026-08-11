@@ -100,6 +100,9 @@ _LLM_SYSTEM_PROMPT = (
     "leave a manual loop without manual-end: it writes the run record and "
     "releases the lock\n\n"
     "Answer the user's question concisely in Chinese. "
+    "Every reply MUST start with a line '【<requirement name>】' "
+    "identifying the requirement being discussed (e.g. 【cross-dock-v2-backend】); "
+    "when no requirement is identifiable, use 【通用】. "
     "If asked about specific project status, run the command. "
     "If you don't know, say so.\n\n"
     "Output format (mandatory):\n"
@@ -147,12 +150,15 @@ def _get_model():
 _SESSION_DIR = os.path.expanduser("~/.qoder/loop_engine/sessions")
 
 
-def _get_session_id(user_id):
-    """Get or create a stable qodercli session ID per WeCom user.
+def _get_session_id(user_id, requirement="global"):
+    """Get or create a stable qodercli session ID per WeCom user and
+    requirement. Sessions are split per requirement so conversations
+    about different requirements never share context.
     Returns (session_id, is_new) where is_new=True means first-time use.
     """
     os.makedirs(_SESSION_DIR, exist_ok=True)
-    path = os.path.join(_SESSION_DIR, f"{user_id}.txt")
+    safe = requirement.replace("/", "_").replace(":", "_").replace(" ", "_")
+    path = os.path.join(_SESSION_DIR, f"{user_id}__{safe}.txt")
     if os.path.exists(path):
         with open(path) as f:
             return f.read().strip(), False
@@ -160,6 +166,36 @@ def _get_session_id(user_id):
     with open(path, "w") as f:
         f.write(sid)
     return sid, True
+
+
+def _detect_requirement(message, registry):
+    """Deterministically find which requirement a message belongs to.
+    Matches requirement names and their module keys/names; returns the
+    first (leftmost) hit, or None to fall back to the global session.
+    """
+    hits = []
+    for req in registry:
+        name = req.get("name", "")
+        if name and name in message:
+            hits.append((message.index(name), name))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    for req in registry:
+        try:
+            st = StateManager(req.get("root", "")).load()
+        except Exception:
+            continue
+        for key in st.get("modules", {}):
+            if key in message:
+                hits.append((message.index(key), req["name"]))
+                continue
+            mod = key.rsplit("/", 1)[-1]
+            if mod and mod in message:
+                hits.append((message.index(mod), req["name"]))
+    if not hits:
+        return None
+    hits.sort(key=lambda h: (h[0], -len(h[1])))
+    return hits[0][1]
 
 
 def _execute_history(name, registry, data_dir):
@@ -392,10 +428,11 @@ def _execute_spec_result(name, module_key, registry, data_dir):
 
 
 def _llm_dispatch(message, registry, data_dir, user_id):
-    """Background LLM direct response with per-user session context."""
+    """Background LLM direct response with per-user/per-requirement session."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
     model = _get_model()
-    session_id, is_new = _get_session_id(user_id)
+    requirement = _detect_requirement(message, registry)
+    session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.format(message=message)
     # first message creates session, subsequent messages resume it
     session_flag = "--session-id" if is_new else "--resume"
@@ -427,6 +464,8 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         return f"处理失败：{e}"
     if not reply:
         return "无响应，请稍后再试。"
+    if requirement and not reply.startswith(("__", "【")):
+        reply = f"【{requirement}】\n{reply}"
     if reply.startswith("__APPROVE__"):
         name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
         return _execute_approve(name, registry, data_dir, user_id)

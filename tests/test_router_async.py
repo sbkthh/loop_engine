@@ -29,7 +29,7 @@ def test_approve_prefix_executes(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
     calls = {}
@@ -55,7 +55,7 @@ def test_approve_prefix_executes(monkeypatch):
 def test_approve_unknown_requirement(monkeypatch):
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ ghost"))
 
@@ -70,7 +70,7 @@ def test_approve_prefix_passes_user_id(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     calls = {}
@@ -96,7 +96,7 @@ def test_approve_report_only_returns_error(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     monkeypatch.setattr(scheduler, "approve",
@@ -122,7 +122,7 @@ def test_history_prefix_lists_runs(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ req\n最近记录如下"))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
@@ -138,7 +138,7 @@ def test_history_prefix_all(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ ALL\n总体情况"))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
@@ -154,7 +154,7 @@ def test_history_empty(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ ALL"))
     monkeypatch.setattr(scheduler, "load_runs", lambda: {"runs": []})
@@ -168,7 +168,7 @@ def test_history_empty(monkeypatch):
 def test_normal_reply_untouched(monkeypatch):
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("两个需求的当前状态如下…"))
 
@@ -228,7 +228,7 @@ def test_spec_result_registers_change(monkeypatch, tmp_path):
                 stdout="__SPEC_RESULT__ req chg1/m1\n已修改", returncode=0)
         return real_run(cmd, **kwargs)  # git show must run for real
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run", fake_run)
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
@@ -256,7 +256,7 @@ def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -273,7 +273,7 @@ def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
     from wecom_server import router
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ ghost chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -289,7 +289,7 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
     from wecom_server import router
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -305,7 +305,7 @@ def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
 
     root, spec_path = _make_spec_root(tmp_path)
     os.remove(spec_path)  # module registered but spec file gone
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -322,7 +322,7 @@ def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req onlyname"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -344,7 +344,7 @@ def _seed_gray_drafts(root, drafts):
 
 def _gray_test(monkeypatch, tmp_path, llm_reply, registry_root):
     from wecom_server import router
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply(llm_reply))
     return dispatch("灰名单", [{"name": "req", "root": registry_root}],
@@ -467,7 +467,7 @@ def test_spec_result_autocompletes_module_name(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -500,7 +500,7 @@ def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -521,7 +521,7 @@ def test_spec_result_single_token_full_key(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -539,7 +539,7 @@ def test_spec_result_single_token_unknown_key(monkeypatch, tmp_path):
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ ghost/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -549,3 +549,77 @@ def test_spec_result_single_token_unknown_key(monkeypatch, tmp_path):
 
     assert "找不到模块" in reply
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
+
+
+
+def test_get_session_id_split_per_requirement(monkeypatch, tmp_path):
+    """Same user talking about different requirements gets different
+    sessions; same (user, requirement) pair stays stable."""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_SESSION_DIR", str(tmp_path))
+
+    sid_a1, new1 = router._get_session_id("u1", "reqA")
+    sid_b1, new2 = router._get_session_id("u1", "reqB")
+    sid_a2, new3 = router._get_session_id("u1", "reqA")
+    sid_global1, new4 = router._get_session_id("u1")
+    sid_global2, new5 = router._get_session_id("u1", "global")
+
+    assert sid_a1 != sid_b1 != sid_global1
+    assert new1 and new2 and new4
+    assert sid_a2 == sid_a1 and not new3
+    assert sid_global2 == sid_global1 and not new5
+
+
+def test_detect_requirement_matches_name_and_module(tmp_path):
+    """Messages mentioning requirement name or module name resolve to the
+    owning requirement; unrelated messages fall back to None (global)."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    registry = [{"name": "req", "root": root}]
+
+    assert router._detect_requirement("改一下 req 的 spec", registry) == "req"
+    assert router._detect_requirement("改一下 m1 的 spec", registry) == "req"
+    assert router._detect_requirement("改一下 chg1/m1", registry) == "req"
+    assert router._detect_requirement("随便聊聊", registry) is None
+
+
+def test_llm_dispatch_tags_reply_with_requirement(monkeypatch, tmp_path):
+    """LLM chat replies get a 【requirement】 header and use the
+    requirement-scoped session when the message identifies one."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    used = {}
+    monkeypatch.setattr(
+        router, "_get_session_id",
+        lambda uid, req="global": used.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("好的，我来看一下"))
+
+    fn = dispatch("改一下 m1 的 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert used["req"] == "req"
+    assert reply == "【req】\n好的，我来看一下"
+
+
+def test_llm_dispatch_global_session_no_tag_when_unknown(monkeypatch, tmp_path):
+    """Messages with no identifiable requirement use the global session
+    and get no 【...】 header."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    used = {}
+    monkeypatch.setattr(
+        router, "_get_session_id",
+        lambda uid, req="global": used.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("有什么可以帮你"))
+
+    fn = dispatch("随便聊聊", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert used["req"] == "global"
+    assert reply == "有什么可以帮你"

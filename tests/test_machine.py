@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from state import StateManager
 from machine import StateMachine
-from constants import READY, SYNCED, NEEDS_REFINEMENT, DRAFT, RESULT_FILE
+from constants import (READY, SYNCED, NEEDS_REFINEMENT, DRAFT, RESULT_FILE,
+                       MAKER_STEP1_RED)
 
 
 class TestMachineFullRoundTrip(unittest.TestCase):
@@ -468,6 +469,51 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertEqual(len(state["trace"]), 20)
         self.assertEqual(state["trace"][-1]["output"], "trace row 24")
 
+
+    def test_red_skip_accepts_no_test_files(self):
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.set_current(state, self.key, MAKER_STEP1_RED)
+        sm.save(state)
+        machine = StateMachine(self.root)
+
+        self._write_result(
+            "---MAKER_OUTPUT---\n"
+            "STATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n"
+            "  test_files_written: []\n"
+            "  red_test_output: |\n"
+            "    Tests run: 19, Failures: 0, Errors: 0\n"
+            "    BUILD SUCCESS\n"
+            "  red_confirmed: true\n"
+            "  tdd_skip: true\n"
+            "---END_MAKER_OUTPUT---"
+        )
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_STEP2_GREEN")
+
+    def test_red_skip_false_without_files_still_rejected(self):
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.set_current(state, self.key, MAKER_STEP1_RED)
+        sm.save(state)
+        machine = StateMachine(self.root)
+
+        self._write_result(
+            "---MAKER_OUTPUT---\n"
+            "STATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n"
+            "  test_files_written: []\n"
+            "  red_test_output: |\n"
+            "    Tests run: 19, Failures: 0\n"
+            "  red_confirmed: true\n"
+            "  tdd_skip: false\n"
+            "---END_MAKER_OUTPUT---"
+        )
+        r = machine.commit()
+        self.assertIn("No test files written", r.get("error", ""))
 
 class TestCliSetStatus(unittest.TestCase):
     def setUp(self):

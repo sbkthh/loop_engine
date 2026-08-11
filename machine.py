@@ -222,6 +222,10 @@ class StateMachine:
         evidence = parsed.get("tdd_red_evidence")
         if not evidence:
             raise ValueError("TDD_RED_EVIDENCE missing")
+        if evidence.get("tdd_skip"):
+            # plan classifies all methods as skip — existing tests already
+            # cover the change, no new RED tests needed; GREEN verifies pass
+            return MAKER_STEP2_GREEN
         if not evidence.get("red_confirmed"):
             raise ValueError("RED not confirmed")
         if not evidence.get("test_files_written"):

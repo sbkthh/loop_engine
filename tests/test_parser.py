@@ -318,5 +318,22 @@ DISCREPANCIES:
         self.assertEqual(result['soft_warning_count'], 1)
         self.assertEqual(result['info_count'], 3)
 
+    def test_step1_red_tdd_skip_parsed(self):
+        text = """---MAKER_OUTPUT---
+STATUS: SUCCESS
+TDD_RED_EVIDENCE:
+  test_files_written: []
+  red_test_output: |
+    Tests run: 19, Failures: 0, Errors: 0
+    BUILD SUCCESS
+  red_confirmed: true
+  tdd_skip: true
+---END_MAKER_OUTPUT---
+"""
+        result = parse_maker_output(text)
+        evidence = result['tdd_red_evidence']
+        self.assertTrue(evidence['tdd_skip'])
+        self.assertEqual(evidence['test_files_written'], [])
+
 if __name__ == '__main__':
     unittest.main()

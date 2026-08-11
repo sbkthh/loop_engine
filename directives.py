@@ -102,7 +102,10 @@ def build(action, module_key, module, root_dir="."):
             "TDD RED Mode. Read the spec file and the plan file.\n"
             "Write test classes for all 'must TDD' methods from the plan's classification table.\n"
             f"Run '{test_cmd}'. Tests MUST fail with assertion failures (not compile errors).\n"
-            "Do NOT write any implementation code (src/main)."
+            "Do NOT write any implementation code (src/main).\n"
+            "If the plan's classification table has NO 'must TDD' methods (all entries are "
+            "'skip' because tests already exist), do NOT write new tests: run the existing "
+            "tests, confirm they pass, and declare 'tdd_skip: true' in TDD_RED_EVIDENCE."
         )
         d["output_format"] = (
             "Write MAKER_OUTPUT block to .loop/result.md:\n"
@@ -114,6 +117,7 @@ def build(action, module_key, module, root_dir="."):
             "  red_test_output: |\n"
             "    {mvn test output summary}\n"
             "  red_confirmed: true|false\n"
+            "  tdd_skip: true|false  (true only when the plan has no 'must TDD' methods)\n"
             "---END_MAKER_OUTPUT---"
         )
 

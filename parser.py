@@ -70,6 +70,7 @@ def _parse_tdd_red_evidence(block):
         'test_files_written': [f.strip() for f in files],
         'red_test_output': red_output,
         'red_confirmed': _extract_bool(evidence, 'red_confirmed'),
+        'tdd_skip': _extract_bool(evidence, 'tdd_skip'),
     }
 
 

@@ -286,8 +286,12 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
                  if d.get("status") == "pending"]
     lines = ["\n".join(messages)]
     if not remaining:
-        lines.append(f"灰名单已全部裁决完毕。"
-                     f"回复「批准执行 {name}」继续执行")
+        import scheduler
+        scheduler.approve(name)
+        cfg = scheduler.load_config()
+        scheduler.dispatch(scheduler.load_pending()["pending"],
+                           max_concurrency=cfg.get("max_concurrency", 2))
+        lines.append(f"灰名单已全部裁决完毕，继续执行 {name}")
     else:
         lines.append(f"还有 {len(remaining)} 条待裁决"
                      f"（回复「查看灰名单」查看）")

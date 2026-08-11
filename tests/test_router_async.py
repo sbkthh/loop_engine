@@ -408,8 +408,9 @@ def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
     assert "还有 1 条待裁决" in reply
 
 
-def test_adjudicate_all_done_hints_approve(monkeypatch, tmp_path):
-    """Last draft adjudicated → tells user to approve to continue."""
+def test_adjudicate_all_done_auto_dispatches(monkeypatch, tmp_path):
+    """Last draft adjudicated → auto-approves and dispatches."""
+    import scheduler as sched_mod
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
@@ -417,6 +418,19 @@ def test_adjudicate_all_done_hints_approve(monkeypatch, tmp_path):
         {"id": 1, "module": "chg1/m1", "summary": "warn A",
          "status": "pending"},
     ])
+
+    approve_called = False
+    dispatch_called = False
+    def _fake_approve(name, **kw):
+        nonlocal approve_called
+        approve_called = True
+        return 1
+    def _fake_dispatch(pending, **kw):
+        nonlocal dispatch_called
+        dispatch_called = True
+        return {"req": None}
+    monkeypatch.setattr(sched_mod, "approve", _fake_approve)
+    monkeypatch.setattr(sched_mod, "dispatch", _fake_dispatch)
 
     fn = _gray_test(monkeypatch, tmp_path,
                     "__ADJUDICATE__ req all reject\n已拒绝", root)
@@ -426,7 +440,9 @@ def test_adjudicate_all_done_hints_approve(monkeypatch, tmp_path):
     assert st["gray_drafts"][0]["status"] == "rejected"
     assert "已拒绝草稿 1" in reply
     assert "全部裁决完毕" in reply
-    assert "批准执行 req" in reply
+    assert "继续执行 req" in reply
+    assert approve_called
+    assert dispatch_called
 
 
 def test_adjudicate_unknown_id(monkeypatch, tmp_path):

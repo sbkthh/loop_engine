@@ -41,8 +41,9 @@ DRAFT = "DRAFT"
 
 SPEC_CHANGED = "SPEC_CHANGED"
 READY_PENDING = "READY_PENDING"
+GRAY_LIST = "GRAY_LIST"
 
-AUTO_EXECUTABLE = (SPEC_CHANGED, READY_PENDING)
+AUTO_EXECUTABLE = (SPEC_CHANGED, READY_PENDING, GRAY_LIST)
 
 _TRIGGER_FOR_STATUS = {
     PARTIAL: SPEC_CHANGED,
@@ -188,8 +189,14 @@ def _poll_requirement(root, name):
             })
     if not detected:
         return None
-    trigger = next(_TRIGGER_FOR_STATUS[s] for s in _TRIGGER_PRIORITY
-                   if any(m["status"] == s for m in detected))
+    drafts = state.get("gray_drafts", [])
+    if any(d.get("status") == "pending" for d in drafts):
+        # gray-list drafts await human adjudication — this overrides the
+        # READY_PENDING trigger so the notification guides adjudication
+        trigger = GRAY_LIST
+    else:
+        trigger = next(_TRIGGER_FOR_STATUS[s] for s in _TRIGGER_PRIORITY
+                       if any(m["status"] == s for m in detected))
     return {
         "requirement": name,
         "root": root,
@@ -334,7 +341,14 @@ def notify_pending(fresh_entries):
         names = ", ".join(m.get("key", "?") for m in modules)
         lines.append(f"• {entry['requirement']} ({trigger}): {names}")
         if trigger in AUTO_EXECUTABLE:
-            advice.append(f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
+            if trigger == GRAY_LIST:
+                advice.append(
+                    f"「{entry['requirement']}」有灰名单问题待裁决，"
+                    f"请回复「查看灰名单」逐条裁决（接受/拒绝/修复），"
+                    f"裁决后回复「批准执行 {entry['requirement']}」继续执行")
+            else:
+                advice.append(
+                    f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
         elif trigger == NEEDS_REFINEMENT:
             advice.append("请回复「完善spec」进一步完善 spec")
         elif trigger == BLOCKED:

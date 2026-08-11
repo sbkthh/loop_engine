@@ -138,6 +138,38 @@ class SchedulerBase(unittest.TestCase):
 
 
 class TestPoll(SchedulerBase):
+    def _state_with_gray_drafts(self, root, drafts):
+        state_path = os.path.join(root, ".loop", "state.json")
+        with open(state_path) as f:
+            state = json.load(f)
+        state["gray_drafts"] = drafts
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+
+    def test_poll_gray_list_trigger_when_drafts_pending(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        self._state_with_gray_drafts(root, [
+            {"id": 1, "module": "c/m", "summary": "warn",
+             "status": "pending"}])
+
+        entries = scheduler.poll()
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["trigger"], "GRAY_LIST")
+
+    def test_poll_ready_trigger_after_drafts_resolved(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        self._state_with_gray_drafts(root, [
+            {"id": 1, "module": "c/m", "summary": "warn",
+             "status": "accepted"}])
+
+        entries = scheduler.poll()
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["trigger"], "READY_PENDING")
+
     def test_poll_synced_hash_changed(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         h = _make_spec(root, "c", "m")
@@ -843,6 +875,20 @@ class TestNotify(SchedulerBase):
         self.assertIn("微信回复「批准执行 req-a」即可开始执行", text)
         self.assertIn("请回复「完善spec」进一步完善 spec", text)
         self.assertNotIn("终端执行", text)
+
+    def test_notify_pending_gray_list_guides_adjudication(self):
+        with mock.patch.object(scheduler, "notify_pending",
+                               self._notify_pending_orig), \
+             mock.patch.object(scheduler, "notify_text") as nt:
+            scheduler.notify_pending([
+                {"requirement": "req-a", "trigger": "GRAY_LIST",
+                 "modules": [{"key": "c/m"}]},
+            ])
+        text = nt.call_args.args[0]
+        self.assertIn("灰名单问题待裁决", text)
+        self.assertIn("「查看灰名单」", text)
+        self.assertIn("裁决后回复「批准执行 req-a」继续执行", text)
+        self.assertNotIn("即可开始执行", text)
 
     def test_notify_text_skips_without_config(self):
         scheduler.notify_text = self._notify_text_orig

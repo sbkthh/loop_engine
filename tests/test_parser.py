@@ -1,4 +1,4 @@
-"""Tests for parser.py — all output format parsing."""
+"""Tests for parser.py — all output format parsing (JSON only)."""
 
 import sys
 import os
@@ -14,20 +14,16 @@ from parser import (
 
 class TestParseMakerOutputStep0(unittest.TestCase):
     def test_step0_success(self):
-        text = """Some preamble text.
-
----MAKER_OUTPUT---
-STATUS: SUCCESS
-PLAN_PATH: openspec/changes/cross-dock-v2/plans/dashboard-plan.md
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "SUCCESS", '
+                '"plan_path": "openspec/changes/cross-dock-v2/plans/dashboard-plan.md"}')
         result = parse_maker_output(text)
         self.assertEqual(result['status'], 'SUCCESS')
-        self.assertEqual(result['plan_path'], 'openspec/changes/cross-dock-v2/plans/dashboard-plan.md')
+        self.assertEqual(result['plan_path'],
+                         'openspec/changes/cross-dock-v2/plans/dashboard-plan.md')
         self.assertEqual(result['mode'], 'step0')
 
     def test_step0_failed(self):
-        text = "---MAKER_OUTPUT---\nSTATUS: FAILED\n---END_MAKER_OUTPUT---"
+        text = '{"status": "FAILED"}'
         result = parse_maker_output(text)
         self.assertEqual(result['status'], 'FAILED')
         self.assertIsNone(result['plan_path'])
@@ -35,18 +31,12 @@ PLAN_PATH: openspec/changes/cross-dock-v2/plans/dashboard-plan.md
 
 class TestParseMakerOutputStep1Red(unittest.TestCase):
     def test_step1_red_confirmed(self):
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-TDD_RED_EVIDENCE:
-  test_files_written:
-    - /src/test/FooTest.java
-    - /src/test/BarTest.java
-  red_test_output: |
-    Tests run: 2, Failures: 2, Errors: 0, Skipped: 0
-    [ERROR] FooTest.testCreate()
-  red_confirmed: true
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "SUCCESS", '
+                '"tdd_red_evidence": {"test_files_written": '
+                '["/src/test/FooTest.java", "/src/test/BarTest.java"], '
+                '"red_test_output": "Tests run: 2, Failures: 2, Errors: 0, Skipped: 0\\n'
+                '[ERROR] FooTest.testCreate()", '
+                '"red_confirmed": true, "tdd_skip": false}}')
         result = parse_maker_output(text)
         self.assertEqual(result['mode'], 'step1_red')
         self.assertEqual(result['status'], 'SUCCESS')
@@ -56,60 +46,34 @@ TDD_RED_EVIDENCE:
         self.assertIsNotNone(evidence['red_test_output'])
 
     def test_step1_red_not_confirmed(self):
-        text = """---MAKER_OUTPUT---
-STATUS: FAILED
-TDD_RED_EVIDENCE:
-  test_files_written:
-    - /src/test/FooTest.java
-  red_test_output: |
-    Tests run: 1, Failures: 0, Errors: 1
-  red_confirmed: false
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "FAILED", '
+                '"tdd_red_evidence": {"test_files_written": '
+                '["/src/test/FooTest.java"], '
+                '"red_test_output": "Tests run: 1, Failures: 0, Errors: 1", '
+                '"red_confirmed": false, "tdd_skip": false}}')
         result = parse_maker_output(text)
         self.assertFalse(result['tdd_red_evidence']['red_confirmed'])
 
-    def test_step1_red_blank_line_in_output_block(self):
-        """Blank line inside red_test_output must not truncate evidence."""
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-TDD_RED_EVIDENCE:
-  test_files_written:
-    - /src/test/FooTest.java
-  red_test_output: |
-    mvn test
-    [ERROR] Tests run: 1, Failures: 1
-
-    RED confirmed: existing handler returns 200
-    expects 400/500
-  red_confirmed: true
----END_MAKER_OUTPUT---
-"""
+    def test_step1_red_tdd_skip(self):
+        text = ('{"status": "SUCCESS", '
+                '"tdd_red_evidence": {"test_files_written": [], '
+                '"red_test_output": "Tests run: 19, Failures: 0, Errors: 0\\nBUILD SUCCESS", '
+                '"red_confirmed": true, "tdd_skip": true}}')
         result = parse_maker_output(text)
         evidence = result['tdd_red_evidence']
-        self.assertTrue(evidence['red_confirmed'])
-        self.assertIn("RED confirmed", evidence['red_test_output'])
+        self.assertTrue(evidence['tdd_skip'])
+        self.assertEqual(evidence['test_files_written'], [])
 
 
 class TestParseMakerOutputStep2Green(unittest.TestCase):
     def test_step2_success(self):
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-FILES_CREATED:
-  - /src/main/Foo.java
-  - /src/main/Bar.java
-FILES_MODIFIED:
-  - /src/main/Baz.java
-PLAN_PATH: /abs/plan.md
-TEST_RESULTS:
-  class: FooTest
-  total: 5
-  passed: 5
-  failed: 0
-BLOCKERS: none
-HUMAN_DECISIONS: 0
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "SUCCESS", '
+                '"files_created": ["/src/main/Foo.java", "/src/main/Bar.java"], '
+                '"files_modified": ["/src/main/Baz.java"], '
+                '"plan_path": "/abs/plan.md", '
+                '"test_results": {"class_name": "FooTest", "total": 5, '
+                '"passed": 5, "failed": 0, "errors": 0}, '
+                '"blockers": "none", "human_decisions": 0}')
         result = parse_maker_output(text)
         self.assertEqual(result['mode'], 'step2_green')
         self.assertEqual(result['status'], 'SUCCESS')
@@ -121,21 +85,13 @@ HUMAN_DECISIONS: 0
         self.assertEqual(result['human_decisions'], 0)
 
     def test_step2_partial(self):
-        text = """---MAKER_OUTPUT---
-STATUS: PARTIAL
-FILES_CREATED:
-  - /src/main/Foo.java
-FILES_MODIFIED:
-PLAN_PATH: /abs/plan.md
-TEST_RESULTS:
-  class: FooTest
-  total: 5
-  passed: 3
-  failed: 2
-BLOCKERS: some dependency issue
-HUMAN_DECISIONS: 2
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "PARTIAL", '
+                '"files_created": ["/src/main/Foo.java"], '
+                '"files_modified": [], '
+                '"plan_path": "/abs/plan.md", '
+                '"test_results": {"class_name": "FooTest", "total": 5, '
+                '"passed": 3, "failed": 2, "errors": 0}, '
+                '"blockers": "some dependency issue", "human_decisions": 2}')
         result = parse_maker_output(text)
         self.assertEqual(result['status'], 'PARTIAL')
         self.assertEqual(result['blockers'], 'some dependency issue')
@@ -144,19 +100,12 @@ HUMAN_DECISIONS: 2
 
 class TestParseMakerOutputFixMode(unittest.TestCase):
     def test_fix_mode(self):
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-FIXED_ITEMS:
-  - Missing field 'skuCode' in Entity
-  - Method signature mismatch
-REMAINING_ITEMS:
-TEST_RESULTS:
-  class: FooTest
-  total: 5
-  passed: 5
-  failed: 0
----END_MAKER_OUTPUT---
-"""
+        text = ('{"status": "SUCCESS", '
+                '"fixed_items": ["Missing field \'skuCode\' in Entity", '
+                '"Method signature mismatch"], '
+                '"remaining_items": [], '
+                '"test_results": {"class_name": "FooTest", "total": 5, '
+                '"passed": 5, "failed": 0}}')
         result = parse_maker_output(text)
         self.assertEqual(result['mode'], 'fix')
         self.assertEqual(result['status'], 'SUCCESS')
@@ -166,22 +115,12 @@ TEST_RESULTS:
 
 class TestParseCheckerOutput(unittest.TestCase):
     def test_consistent(self):
-        text = """---CHECKER_OUTPUT---
-STATUS: CONSISTENT
-DISCREPANCY_COUNT: 0
-HARD_ERROR_COUNT: 0
-SOFT_WARNING_COUNT: 0
-INFO_COUNT: 0
-DISCREPANCIES:
-TEST_RESULTS:
-  class: FooTest
-  total: 5
-  passed: 5
-  failed: 0
-  errors: 0
-COVERAGE: 3/3 Scenarios have test methods
----END_CHECKER_OUTPUT---
-"""
+        text = ('{"status": "CONSISTENT", "discrepancy_count": 0, '
+                '"hard_error_count": 0, "soft_warning_count": 0, '
+                '"info_count": 0, "discrepancies": [], '
+                '"test_results": {"class_name": "FooTest", "total": 5, '
+                '"passed": 5, "failed": 0, "errors": 0}, '
+                '"coverage": {"tested": 3, "total": 3}}')
         result = parse_checker_output(text)
         self.assertEqual(result['status'], 'CONSISTENT')
         self.assertEqual(result['hard_error_count'], 0)
@@ -189,24 +128,18 @@ COVERAGE: 3/3 Scenarios have test methods
         self.assertEqual(result['coverage']['total'], 3)
 
     def test_inconsistent(self):
-        text = """---CHECKER_OUTPUT---
-STATUS: INCONSISTENT
-DISCREPANCY_COUNT: 2
-HARD_ERROR_COUNT: 1
-SOFT_WARNING_COUNT: 1
-INFO_COUNT: 0
-DISCREPANCIES:
-  1. [HARD_ERROR] [A] Entity missing field 'skuCode' (spec L42) — Foo.java:88
-  2. [SOFT_WARNING] [B] Method signature mismatch — Bar.java:15
-TEST_RESULTS:
-  class: FooTest
-  total: 5
-  passed: 3
-  failed: 2
-  errors: 0
-COVERAGE: 2/3 Scenarios have test methods
----END_CHECKER_OUTPUT---
-"""
+        text = ('{"status": "INCONSISTENT", "discrepancy_count": 2, '
+                '"hard_error_count": 1, "soft_warning_count": 1, '
+                '"info_count": 0, '
+                '"discrepancies": ['
+                '{"severity": "HARD_ERROR", "type": "A", '
+                '"description": "Entity missing field \'skuCode\' (spec L42) — Foo.java:88"}, '
+                '{"severity": "SOFT_WARNING", "type": "B", '
+                '"description": "Method signature mismatch — Bar.java:15"}'
+                '], '
+                '"test_results": {"class_name": "FooTest", "total": 5, '
+                '"passed": 3, "failed": 2, "errors": 0}, '
+                '"coverage": {"tested": 2, "total": 3}}')
         result = parse_checker_output(text)
         self.assertEqual(result['status'], 'INCONSISTENT')
         self.assertEqual(result['hard_error_count'], 1)
@@ -216,100 +149,20 @@ COVERAGE: 2/3 Scenarios have test methods
         self.assertEqual(result['discrepancies'][0]['type'], 'A')
         self.assertEqual(result['coverage']['tested'], 2)
 
-
-class TestParseScore(unittest.TestCase):
-    def test_pass(self):
-        text = "SCORE: 92/100\ncross-consistency: PASS"
-        result = parse_score(text)
-        self.assertEqual(result['score'], 92)
-        self.assertEqual(result['cross_consistency'], 'PASS')
-
-    def test_fail(self):
-        text = "SCORE: 75/100\ncross-consistency: FAIL: orphan field in Scenario"
-        result = parse_score(text)
-        self.assertEqual(result['score'], 75)
-        self.assertEqual(result['cross_consistency'], 'FAIL')
-
-
-class TestParseClassifyChange(unittest.TestCase):
-    def test_lightweight(self):
-        result = parse_classify_change("CHANGE_MAGNITUDE: 轻量\nreason: typo fix")
-        self.assertEqual(result['magnitude'], '轻量')
-
-    def test_heavy(self):
-        result = parse_classify_change("CHANGE_MAGNITUDE: 重量")
-        self.assertEqual(result['magnitude'], '重量')
-
-
-class TestParseCodeReview(unittest.TestCase):
-    def test_with_critical(self):
-        text = "Review findings:\nCritical: null pointer risk in line 42\nImportant: missing test for edge case\nMinor: naming convention"
-        result = parse_code_review(text)
-        self.assertGreater(result['critical'], 0)
-        self.assertGreater(result['important'], 0)
-        self.assertGreater(result['minor'], 0)
-
-    def test_no_issues(self):
-        text = "Code looks good. Minor style suggestions only."
-        result = parse_code_review(text)
-        self.assertEqual(result['critical'], 0)
-
-    def test_markdown_bold_format(self):
-        text = (
-            "## CODE_REVIEW\n\n"
-            "### 1. Logic Bugs\n\n"
-            "**Important** — `Foo.java:12` — exception swallowed\n\n"
-            "**Important** — `Foo.java:20` — tx still commits\n\n"
-            "### 3. Architecture\n\n"
-            "**Minor** — `Bar.java:5` — POST vs GET\n\n"
-            "### 6. Summary\n\n"
-            "**No Critical issues found.**\n"
-            "**2 Important issues** (both in `Foo.java`).\n"
-        )
-        result = parse_code_review(text)
-        self.assertEqual(result['critical'], 0)
-        self.assertEqual(result['important'], 2)
-        self.assertEqual(result['minor'], 1)
-        self.assertEqual(len(result['issues']), 3)
-        self.assertEqual(result['issues'][0]['severity'], 'important')
-
-    def test_bullet_and_numbered_formats(self):
-        text = (
-            "- [Important] Foo.java:3 — bullet format\n"
-            "1. **Minor:** Bar.java:7 — numbered bold\n"
-            "- Critical: Baz.java:9 — plain bullet\n"
-        )
-        result = parse_code_review(text)
-        self.assertEqual(result['critical'], 1)
-        self.assertEqual(result['important'], 1)
-        self.assertEqual(result['minor'], 1)
-
-
-class TestParseDispatcher(unittest.TestCase):
-    def test_dispatch_score(self):
-        result = parse("SCORE: 90/100", "SCORE")
-        self.assertEqual(result['score'], 90)
-
-    def test_dispatch_checker(self):
-        text = "---CHECKER_OUTPUT---\nSTATUS: CONSISTENT\n---END_CHECKER_OUTPUT---"
-        result = parse(text, "CHECKER")
-        self.assertEqual(result['status'], 'CONSISTENT')
-
-
-    def test_checker_output_parses_hyphenated_types(self):
-        text = """---CHECKER_OUTPUT---
-STATUS: CONSISTENT
-DISCREPANCY_COUNT: 4
-HARD_ERROR_COUNT: 0
-SOFT_WARNING_COUNT: 1
-INFO_COUNT: 3
-DISCREPANCIES:
-  1. [SOFT_WARNING] [scenario-coverage] Summary 场景"日期格式错误"无对应测试方法
-  2. [INFO] [spec-prose] spec.md:30 数据源残留
-  3. [INFO] [field-mapping] crossFlag 列位置
-  4. [INFO] [plan-drift] plan 未更新
----END_CHECKER_OUTPUT---
-"""
+    def test_discrepancy_with_hyphenated_types(self):
+        text = ('{"status": "CONSISTENT", "discrepancy_count": 4, '
+                '"hard_error_count": 0, "soft_warning_count": 1, '
+                '"info_count": 3, '
+                '"discrepancies": ['
+                '{"severity": "SOFT_WARNING", "type": "scenario-coverage", '
+                '"description": "Summary 场景\\"日期格式错误\\"无对应测试方法"}, '
+                '{"severity": "INFO", "type": "spec-prose", '
+                '"description": "spec.md:30 数据源残留"}, '
+                '{"severity": "INFO", "type": "field-mapping", '
+                '"description": "crossFlag 列位置"}, '
+                '{"severity": "INFO", "type": "plan-drift", '
+                '"description": "plan 未更新"}'
+                ']}')
         result = parse_checker_output(text)
         self.assertEqual(len(result['discrepancies']), 4)
         first = result['discrepancies'][0]
@@ -318,62 +171,79 @@ DISCREPANCIES:
         self.assertEqual(result['soft_warning_count'], 1)
         self.assertEqual(result['info_count'], 3)
 
-    def test_checker_output_parses_type_with_spaces(self):
-        text = """---CHECKER_OUTPUT---
-STATUS: INCONSISTENT
-DISCREPANCY_COUNT: 2
-HARD_ERROR_COUNT: 0
-SOFT_WARNING_COUNT: 1
-INFO_COUNT: 1
-DISCREPANCIES:
-1. [SOFT_WARNING] [test-coverage / plan deviation]
-   Plan TDD table T7 mandates a direct test, implementation is correct
-2. [INFO] [dual-write nuance] update() writes only new fields
----END_CHECKER_OUTPUT---
-"""
+    def test_discrepancy_with_multiword_type(self):
+        text = ('{"status": "INCONSISTENT", "discrepancy_count": 2, '
+                '"hard_error_count": 0, "soft_warning_count": 1, '
+                '"info_count": 1, '
+                '"discrepancies": ['
+                '{"severity": "SOFT_WARNING", "type": "test-coverage / plan deviation", '
+                '"description": "Plan TDD table T7 mandates a direct test, '
+                'implementation is correct"}, '
+                '{"severity": "INFO", "type": "dual-write nuance", '
+                '"description": "update() writes only new fields"}'
+                ']}')
         result = parse_checker_output(text)
         self.assertEqual(len(result['discrepancies']), 2)
         soft = result['discrepancies'][0]
         self.assertEqual(soft['severity'], 'SOFT_WARNING')
         self.assertEqual(soft['type'], 'test-coverage / plan deviation')
-        # description on the next indented line is picked up too
         self.assertEqual(soft['description'],
                          'Plan TDD table T7 mandates a direct test, '
                          'implementation is correct')
 
-    def test_step1_red_tdd_skip_parsed(self):
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-TDD_RED_EVIDENCE:
-  test_files_written: []
-  red_test_output: |
-    Tests run: 19, Failures: 0, Errors: 0
-    BUILD SUCCESS
-  red_confirmed: true
-  tdd_skip: true
----END_MAKER_OUTPUT---
-"""
-        result = parse_maker_output(text)
-        evidence = result['tdd_red_evidence']
-        self.assertTrue(evidence['tdd_skip'])
-        self.assertEqual(evidence['test_files_written'], [])
 
-    def test_step2_green_list_format_test_results(self):
-        text = """---MAKER_OUTPUT---
-STATUS: SUCCESS
-FILES_CREATED:
-  - /src/main/Foo.java
-TEST_RESULTS:
-  - FooTest: total=7, passed=7, failed=0
-  - BarTest: total=4, passed=4, failed=0
-  - mvn clean test (root): PASSED
----END_MAKER_OUTPUT---
-"""
-        result = parse_maker_output(text)
-        tr = result['test_results']
-        self.assertEqual(tr['total'], 11)
-        self.assertEqual(tr['passed'], 11)
-        self.assertEqual(tr['failed'], 0)
+class TestParseScore(unittest.TestCase):
+    def test_pass(self):
+        result = parse_score('{"score": 92, "cross_consistency": "PASS"}')
+        self.assertEqual(result['score'], 92)
+        self.assertEqual(result['cross_consistency'], 'PASS')
+
+    def test_fail(self):
+        result = parse_score('{"score": 75, "cross_consistency": "FAIL"}')
+        self.assertEqual(result['score'], 75)
+        self.assertEqual(result['cross_consistency'], 'FAIL')
+
+
+class TestParseClassifyChange(unittest.TestCase):
+    def test_lightweight(self):
+        result = parse_classify_change('{"magnitude": "轻量", "reason": "typo fix"}')
+        self.assertEqual(result['magnitude'], '轻量')
+
+    def test_heavy(self):
+        result = parse_classify_change('{"magnitude": "重量"}')
+        self.assertEqual(result['magnitude'], '重量')
+
+
+class TestParseCodeReview(unittest.TestCase):
+    def test_json_format(self):
+        text = ('{"issues": [{"severity": "critical", '
+                '"text": "null pointer risk in line 42"}, '
+                '{"severity": "important", '
+                '"text": "missing test for edge case"}, '
+                '{"severity": "minor", '
+                '"text": "naming convention"}]}')
+        result = parse_code_review(text)
+        self.assertEqual(result['critical'], 1)
+        self.assertEqual(result['important'], 1)
+        self.assertEqual(result['minor'], 1)
+
+    def test_no_issues(self):
+        result = parse_code_review('{"issues": []}')
+        self.assertEqual(result['critical'], 0)
+        self.assertEqual(result['issues'], [])
+
+
+class TestParseDispatcher(unittest.TestCase):
+    def test_dispatch_score(self):
+        result = parse('{"score": 90}', "SCORE")
+        self.assertEqual(result['score'], 90)
+
+    def test_dispatch_checker(self):
+        text = ('{"status": "CONSISTENT", "discrepancy_count": 0, '
+                '"hard_error_count": 0, "soft_warning_count": 0, '
+                '"info_count": 0, "discrepancies": []}')
+        result = parse(text, "CHECKER")
+        self.assertEqual(result['status'], 'CONSISTENT')
 
 
 class TestJsonOutput(unittest.TestCase):
@@ -510,23 +380,21 @@ class TestJsonOutput(unittest.TestCase):
             parse_code_review('{"issues": [{"severity": "major", "text": "x"}]}')
         self.assertIn('Output format error', str(ctx.exception))
 
-    def test_legacy_text_still_parses(self):
-        """Old text blocks keep working (in-flight runs, historical archives)."""
-        text = "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n" \
-               "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 1\n" \
-               "SOFT_WARNING_COUNT: 0\nINFO_COUNT: 0\n" \
-               "DISCREPANCIES:\n  1. [HARD_ERROR] [test] missing\n" \
-               "---END_CHECKER_OUTPUT---"
-        result = parse_checker_output(text)
-        self.assertEqual(result['status'], 'INCONSISTENT')
-        self.assertEqual(result['hard_error_count'], 1)
-        self.assertEqual(result['discrepancies'][0]['type'], 'test')
+    def test_legacy_text_returns_none(self):
+        """Old text blocks now return None (format support removed)."""
+        text = ("---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n"
+                "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 1\n"
+                "SOFT_WARNING_COUNT: 0\nINFO_COUNT: 0\n"
+                "DISCREPANCIES:\n  1. [HARD_ERROR] [test] missing\n"
+                "---END_CHECKER_OUTPUT---")
+        self.assertIsNone(parse_checker_output(text))
 
-    def test_garbage_returns_none_or_empty(self):
-        """Non-JSON, non-legacy garbage never raises in the fallback path."""
+    def test_garbage_returns_none(self):
+        """Non-JSON garbage returns None from all parsers."""
         self.assertIsNone(parse_maker_output("whatever"))
-        self.assertEqual(parse_score("whatever")['score'], None)
-        self.assertEqual(parse_classify_change("whatever")['magnitude'], None)
+        self.assertIsNone(parse_score("whatever"))
+        self.assertIsNone(parse_classify_change("whatever"))
+        self.assertIsNone(parse_code_review("whatever"))
 
 
 if __name__ == '__main__':

@@ -892,7 +892,7 @@ class TestRun(SchedulerBase):
                     with open(os.path.join(root, ".loop", "result.md")) as f:
                         text = f.read()
                     parsed = parse(text, "SCORE")
-                    if parsed.get("score") is None:
+                    if not parsed or parsed.get("score") is None:
                         # machine-level semantic error, no format prefix
                         return types.SimpleNamespace(
                             stdout=json.dumps(

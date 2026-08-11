@@ -38,12 +38,6 @@ MAX_REVIEW_FIX_CYCLES = 1
 TRACE_RETENTION = 20
 AUDIT_RETENTION = 30
 
-# Output block delimiters
-MAKER_OUTPUT_START = "---MAKER_OUTPUT---"
-MAKER_OUTPUT_END = "---END_MAKER_OUTPUT---"
-CHECKER_OUTPUT_START = "---CHECKER_OUTPUT---"
-CHECKER_OUTPUT_END = "---END_CHECKER_OUTPUT---"
-
 # File names (relative to root dir)
 STATE_FILE = ".loop/state.json"
 RESULT_FILE = ".loop/result.md"

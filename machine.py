@@ -199,6 +199,8 @@ class StateMachine:
 
     def _commit_score(self, state, key, module, text):
         parsed = parse_score(text)
+        if not parsed:
+            raise ValueError("Output format error: No SCORE block found")
         score = parsed.get("score")
         cross = parsed.get("cross_consistency")
         if score is None:
@@ -215,6 +217,8 @@ class StateMachine:
 
     def _commit_classify_change(self, state, key, module, text):
         parsed = parse_classify_change(text)
+        if not parsed:
+            raise ValueError("Output format error: No CLASSIFY_CHANGE block found")
         magnitude = parsed.get("magnitude")
         if magnitude == "轻量":
             return CHECKER
@@ -327,6 +331,8 @@ class StateMachine:
 
     def _commit_code_review(self, state, key, module, text):
         parsed = parse_code_review(text)
+        if not parsed:
+            raise ValueError("Output format error: No CODE_REVIEW block found")
         critical = parsed.get("critical", 0)
         important = parsed.get("important", 0)
         if critical > 0 or important > 0:

@@ -332,7 +332,7 @@ def notify_pending(fresh_entries):
         modules = entry.get("modules", [])
         names = ", ".join(m.get("key", "?") for m in modules)
         lines.append(f"• {entry['requirement']} ({trigger}): {names}")
-    lines.append("终端执行 'loop_engine approve <name>' 确认后调度器开始执行。")
+    lines.append("微信回复「批准执行 <需求名>」即可开始执行。")
     notify_text("\n".join(lines))
 
 

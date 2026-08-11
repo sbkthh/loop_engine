@@ -797,6 +797,18 @@ class TestConfig(SchedulerBase):
 
 
 class TestNotify(SchedulerBase):
+    def test_notify_pending_guides_wecom_approval(self):
+        with mock.patch.object(scheduler, "notify_pending",
+                               self._notify_pending_orig), \
+             mock.patch.object(scheduler, "notify_text") as nt:
+            scheduler.notify_pending([{
+                "requirement": "req", "trigger": "SPEC_CHANGED",
+                "modules": [{"key": "c/m"}],
+            }])
+        text = nt.call_args.args[0]
+        self.assertIn("微信回复「批准执行", text)
+        self.assertNotIn("终端执行", text)
+
     def test_notify_text_skips_without_config(self):
         scheduler.notify_text = self._notify_text_orig
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name):

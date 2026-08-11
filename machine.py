@@ -202,7 +202,7 @@ class StateMachine:
     def _commit_maker_step0(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
-            raise ValueError("No MAKER_OUTPUT block found")
+            raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             return MAKER_STEP0
         plan_path = parsed.get("plan_path")
@@ -218,10 +218,10 @@ class StateMachine:
     def _commit_maker_step1_red(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
-            raise ValueError("No MAKER_OUTPUT block found")
+            raise ValueError("Output format error: No MAKER_OUTPUT block found")
         evidence = parsed.get("tdd_red_evidence")
         if not evidence:
-            raise ValueError("TDD_RED_EVIDENCE missing")
+            raise ValueError("Output format error: TDD_RED_EVIDENCE missing")
         if evidence.get("tdd_skip"):
             # plan classifies all methods as skip — existing tests already
             # cover the change, no new RED tests needed; GREEN verifies pass
@@ -235,7 +235,7 @@ class StateMachine:
     def _commit_maker_step2_green(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
-            raise ValueError("No MAKER_OUTPUT block found")
+            raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") not in ("SUCCESS", "PARTIAL"):
             raise ValueError(f"Maker failed: {parsed.get('status')}")
         tr = parsed.get("test_results", {})
@@ -249,7 +249,7 @@ class StateMachine:
     def _commit_checker(self, state, key, module, text):
         parsed = parse_checker_output(text)
         if not parsed:
-            raise ValueError("No CHECKER_OUTPUT block found")
+            raise ValueError("Output format error: No CHECKER_OUTPUT block found")
         hard = parsed.get("hard_error_count") or 0
         soft = parsed.get("soft_warning_count") or 0
         module["hard_errors"] = [
@@ -272,7 +272,7 @@ class StateMachine:
     def _commit_maker_fix(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
-            raise ValueError("No MAKER_OUTPUT block found")
+            raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Fix failed: {parsed.get('status')}")
         tr = parsed.get("test_results", {})
@@ -296,7 +296,7 @@ class StateMachine:
     def _commit_code_review_fix(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
-            raise ValueError("No MAKER_OUTPUT block found")
+            raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Review fix failed: {parsed.get('status')}")
         if module.get("review_fix_attempt", 0) > MAX_REVIEW_FIX_CYCLES:

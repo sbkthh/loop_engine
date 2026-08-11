@@ -50,15 +50,14 @@ def build(action, module_key, module, root_dir="."):
             "Any cross-ref failure caps score at 85."
         )
         d["output_format"] = (
-            "Write to .loop/result.md:\n"
-            "SCORE: {n}/100\n"
-            "DIMENSIONS:\n"
-            "  scenario_coverage: {assessment}\n"
-            "  field_completeness: {assessment}\n"
-            "  api_contract: {assessment}\n"
-            "  exception_coverage: {assessment}\n"
-            "  ambiguity_markers: {count}\n"
-            "CROSS_CONSISTENCY: PASS|FAIL: {details if FAIL}"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"score": 87, "cross_consistency": "PASS|FAIL", '
+            '"dimensions": {"scenario_coverage": "...", '
+            '"field_completeness": "...", "api_contract": "...", '
+            '"exception_coverage": "...", "ambiguity_markers": 3}}\n'
+            "score: 0-100 integer. cross_consistency: PASS or FAIL "
+            "(FAIL when any cross-ref check fails; score is then capped at 85)."
         )
 
     elif action == CLASSIFY_CHANGE:
@@ -70,9 +69,10 @@ def build(action, module_key, module, root_dir="."):
             "- 重量 (heavy): new Scenario/field/API, business logic change, interface call-mode change"
         )
         d["output_format"] = (
-            "Write to .loop/result.md:\n"
-            "CHANGE_MAGNITUDE: 轻量|重量\n"
-            "REASON: {brief explanation}"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"magnitude": "轻量", "reason": "brief explanation"}\n'
+            "magnitude must be exactly 轻量 or 重量."
         )
         d["context"]["old_hash"] = old_hash
 
@@ -90,11 +90,10 @@ def build(action, module_key, module, root_dir="."):
             "Do NOT write any test or implementation code."
         )
         d["output_format"] = (
-            "Write MAKER_OUTPUT block to .loop/result.md:\n"
-            "---MAKER_OUTPUT---\n"
-            "STATUS: SUCCESS|FAILED\n"
-            f"PLAN_PATH: {plan_path}\n"
-            "---END_MAKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS", "plan_path": "' + plan_path + '"}\n'
+            "status: SUCCESS or FAILED. plan_path: absolute path of the plan file written."
         )
 
     elif action == MAKER_STEP1_RED:
@@ -109,17 +108,14 @@ def build(action, module_key, module, root_dir="."):
             "tests, confirm they pass, and declare 'tdd_skip: true' in TDD_RED_EVIDENCE."
         )
         d["output_format"] = (
-            "Write MAKER_OUTPUT block to .loop/result.md:\n"
-            "---MAKER_OUTPUT---\n"
-            "STATUS: SUCCESS|FAILED\n"
-            "TDD_RED_EVIDENCE:\n"
-            "  test_files_written:\n"
-            "    - {absolute_path}\n"
-            "  red_test_output: |\n"
-            "    {mvn test output summary}\n"
-            "  red_confirmed: true|false\n"
-            "  tdd_skip: true|false  (true only when the plan has no 'must TDD' methods)\n"
-            "---END_MAKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS", "plan_path": "' + (module.get('plan_path') or plan_path) + '",\n'
+            ' "tdd_red_evidence": {"test_files_written": ["/abs/path/Test.java"],\n'
+            '  "red_test_output": "Tests run: 5, Failures: 5 ...",\n'
+            '  "red_confirmed": true, "tdd_skip": false}}\n'
+            "tdd_skip: true ONLY when the plan's classification table has no "
+            "'must TDD' methods (then red_confirmed: true, test_files_written: [])."
         )
 
     elif action == MAKER_STEP2_GREEN:
@@ -133,22 +129,17 @@ def build(action, module_key, module, root_dir="."):
             "Max 3 retries on failure (fix impl, not tests)."
         )
         d["output_format"] = (
-            "Write MAKER_OUTPUT block to .loop/result.md:\n"
-            "---MAKER_OUTPUT---\n"
-            "STATUS: SUCCESS|PARTIAL|FAILED\n"
-            "FILES_CREATED:\n"
-            "  - {absolute_path}\n"
-            "FILES_MODIFIED:\n"
-            "  - {absolute_path}\n"
-            f"PLAN_PATH: {module.get('plan_path', plan_path)}\n"
-            "TEST_RESULTS:\n"
-            "  class: {test_class}\n"
-            "  total: {n}\n"
-            "  passed: {n}\n"
-            "  failed: {n}\n"
-            "BLOCKERS: none|{description}\n"
-            "HUMAN_DECISIONS: {n}|none\n"
-            "---END_MAKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS", "plan_path": "' + (module.get('plan_path') or plan_path) + '",\n'
+            ' "files_created": ["/abs/path/Foo.java"],\n'
+            ' "files_modified": ["/abs/path/Bar.java"],\n'
+            ' "test_results": {"class_name": "FooTest", "total": 7, '
+            '"passed": 7, "failed": 0, "errors": 0},\n'
+            ' "blockers": "none", "human_decisions": 0}\n'
+            "status: SUCCESS, PARTIAL, or FAILED. files_created/files_modified: "
+            "absolute paths. blockers: 'none' or a description. "
+            "human_decisions: count of decisions that need human input."
         )
 
     elif action == CHECKER:
@@ -168,25 +159,26 @@ def build(action, module_key, module, root_dir="."):
             "Do NOT modify any files."
         )
         d["output_format"] = (
-            "Write CHECKER_OUTPUT block to .loop/result.md:\n"
-            "---CHECKER_OUTPUT---\n"
-            "STATUS: CONSISTENT|INCONSISTENT\n"
-            "DISCREPANCY_COUNT: {n}\n"
-            "HARD_ERROR_COUNT: {n}\n"
-            "SOFT_WARNING_COUNT: {n}\n"
-            "INFO_COUNT: {n}\n"
-            "DISCREPANCIES:\n"
-            "  1. [HARD_ERROR] [{type}] {description with file:line}\n"
-            "  2. [SOFT_WARNING] [{type}] {description}\n"
-            "  3. [INFO] [{type}] {description}\n"
-            "TEST_RESULTS:\n"
-            "  class: {test_class}\n"
-            "  total: {n}\n"
-            "  passed: {n}\n"
-            "  failed: {n}\n"
-            "  errors: {n}\n"
-            "COVERAGE: {n}/{m} Scenarios have test methods\n"
-            "---END_CHECKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "INCONSISTENT",\n'
+            ' "discrepancy_count": 3, "hard_error_count": 1, '
+            '"soft_warning_count": 1, "info_count": 1,\n'
+            ' "discrepancies": [\n'
+            '  {"severity": "HARD_ERROR", "type": "test-coverage", '
+            '"description": "src/Foo.java:42 ..."},\n'
+            '  {"severity": "SOFT_WARNING", "type": "plan deviation", '
+            '"description": "..."},\n'
+            '  {"severity": "INFO", "type": "precision", '
+            '"description": "..."}\n'
+            ' ],\n'
+            ' "test_results": {"class_name": "FooTest", "total": 7, '
+            '"passed": 7, "failed": 0, "errors": 0},\n'
+            ' "coverage": {"tested": 5, "total": 6}}\n'
+            "Counts must exactly match the discrepancies array: "
+            "discrepancy_count = array length, hard_error_count = number of "
+            "HARD_ERROR items, etc. severity must be exactly one of "
+            "HARD_ERROR, SOFT_WARNING, INFO. description must include file:line."
         )
         d["context"]["files_created"] = module.get("files_created", [])
         d["context"]["files_modified"] = module.get("files_modified", [])
@@ -202,19 +194,14 @@ def build(action, module_key, module, root_dir="."):
             f"Run '{test_cmd}'."
         )
         d["output_format"] = (
-            "Write MAKER_OUTPUT block to .loop/result.md:\n"
-            "---MAKER_OUTPUT---\n"
-            "STATUS: SUCCESS|FAILED\n"
-            "FIXED_ITEMS:\n"
-            "  - {description of fixed item}\n"
-            "REMAINING_ITEMS:\n"
-            "  - {description of unfixed item}\n"
-            "TEST_RESULTS:\n"
-            "  class: {test_class}\n"
-            "  total: {n}\n"
-            "  passed: {n}\n"
-            "  failed: {n}\n"
-            "---END_MAKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS",\n'
+            ' "fixed_items": ["fixed item description"],\n'
+            ' "remaining_items": ["unfixed item description"],\n'
+            ' "test_results": {"class_name": "FooTest", "total": 7, '
+            '"passed": 7, "failed": 0, "errors": 0}}\n'
+            "status: SUCCESS or FAILED."
         )
         d["context"]["hard_errors"] = hard_errors
         d["context"]["test_command"] = test_cmd
@@ -228,10 +215,15 @@ def build(action, module_key, module, root_dir="."):
             "Do NOT modify any files."
         )
         d["output_format"] = (
-            "Write your review to .loop/result.md.\n"
-            "Format each issue as:\n"
-            "[Critical|Important|Minor] {file}:{line} — {description}\n"
-            "If no issues found, write: 'No Critical or Important issues found.'"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"issues": [\n'
+            '  {"severity": "critical", '
+            '"text": "src/Foo.java:42 — description"},\n'
+            '  {"severity": "important", "text": "..."}\n'
+            ' ]}\n'
+            "severity must be exactly one of critical, important, minor. "
+            "Empty array (\"issues\": []) when no issues found."
         )
         d["context"]["files_created"] = module.get("files_created", [])
         d["context"]["files_modified"] = module.get("files_modified", [])
@@ -245,19 +237,14 @@ def build(action, module_key, module, root_dir="."):
             f"Run '{test_cmd}'."
         )
         d["output_format"] = (
-            "Write MAKER_OUTPUT block to .loop/result.md:\n"
-            "---MAKER_OUTPUT---\n"
-            "STATUS: SUCCESS|FAILED\n"
-            "FIXED_ITEMS:\n"
-            "  - {description}\n"
-            "REMAINING_ITEMS:\n"
-            "  - {description}\n"
-            "TEST_RESULTS:\n"
-            "  class: {test_class}\n"
-            "  total: {n}\n"
-            "  passed: {n}\n"
-            "  failed: {n}\n"
-            "---END_MAKER_OUTPUT---"
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS",\n'
+            ' "fixed_items": ["fixed item description"],\n'
+            ' "remaining_items": ["unfixed item description"],\n'
+            ' "test_results": {"class_name": "FooTest", "total": 7, '
+            '"passed": 7, "failed": 0, "errors": 0}}\n'
+            "status: SUCCESS or FAILED."
         )
         d["context"]["review_issues"] = review_issues
         d["context"]["test_command"] = test_cmd

@@ -759,6 +759,164 @@ class TestRun(SchedulerBase):
         self.assertEqual(result["end"], "commit_error")
         self.assertEqual(result["steps"], 2)
 
+    def test_run_repairs_format_error_in_place(self):
+        """Format errors resume the same LLM session to rewrite result.md,
+        then re-commit — no step replay."""
+        from parser import parse
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "SCORE"]
+        sids = []
+        repaired = {"sids": [], "details": []}
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                sids.append(cmd[cmd.index("--session-id") + 1])
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write('{"cross_consistency": "PASS"}')  # missing score
+                return types.SimpleNamespace(stdout="", stderr="",
+                                             returncode=0)
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    with open(os.path.join(root, ".loop", "result.md")) as f:
+                        text = f.read()
+                    try:
+                        parse(text, "SCORE")
+                    except ValueError as e:
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"error": str(e)}),
+                            stderr="", returncode=0)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        def fake_repair(root_, sid, detail):
+            repaired["sids"].append(sid)
+            repaired["details"].append(detail)
+            with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                f.write('{"score": 95, "cross_consistency": "PASS"}')
+            return True
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run), \
+             mock.patch.object(scheduler, "_repair_result",
+                               side_effect=fake_repair):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "idle")
+        # each repair resumes the session that produced the broken output
+        self.assertEqual(repaired["sids"], sids)
+        self.assertIn("Output format error: missing field(s): score",
+                      repaired["details"][0])
+
+    def test_run_format_repair_exhausted_falls_back_to_retry(self):
+        """Repair budget exhausted (2 per attempt) → full step replay with a
+        fresh session id, then commit_error when the second attempt also fails."""
+        from parser import parse
+        root = self._register_pending("req")
+        sids = []
+        repair_calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                sids.append(cmd[cmd.index("--session-id") + 1])
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write('{"cross_consistency": "PASS"}')
+                return types.SimpleNamespace(stdout="", stderr="",
+                                             returncode=0)
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    with open(os.path.join(root, ".loop", "result.md")) as f:
+                        text = f.read()
+                    try:
+                        parse(text, "SCORE")
+                    except ValueError as e:
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"error": str(e)}),
+                            stderr="", returncode=0)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        def fake_repair(root_, sid, detail):
+            repair_calls["n"] += 1
+            with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                f.write('{"cross_consistency": "PASS"}')  # still broken
+            return True
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run), \
+             mock.patch.object(scheduler, "_repair_result",
+                               side_effect=fake_repair):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "commit_error")
+        self.assertEqual(len(sids), 2)  # initial + replayed attempt
+        self.assertNotEqual(sids[0], sids[1])
+        self.assertEqual(repair_calls["n"], 4)  # 2 per attempt
+
+    def test_run_semantic_commit_error_skips_repair(self):
+        """Errors without the 'Output format error: ' prefix are semantic —
+        they go straight to the existing retry path."""
+        from parser import parse
+        root = self._register_pending("req")
+        calls = {"repair": 0}
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("not json, not legacy text")
+                return types.SimpleNamespace(stdout="", stderr="",
+                                             returncode=0)
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    with open(os.path.join(root, ".loop", "result.md")) as f:
+                        text = f.read()
+                    parsed = parse(text, "SCORE")
+                    if parsed.get("score") is None:
+                        # machine-level semantic error, no format prefix
+                        return types.SimpleNamespace(
+                            stdout=json.dumps(
+                                {"error": "SCORE field missing from result"}),
+                            stderr="", returncode=0)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        def fake_repair(root_, sid, detail):
+            calls["repair"] += 1
+            return True
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run), \
+             mock.patch.object(scheduler, "_repair_result",
+                               side_effect=fake_repair):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "commit_error")
+        self.assertEqual(calls["repair"], 0)
+
     def test_run_records_history(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE", "SCORE"])

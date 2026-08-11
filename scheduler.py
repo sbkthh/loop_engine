@@ -69,6 +69,7 @@ MAX_TOTAL_STEPS = 200
 HEARTBEAT_SECONDS = 300
 HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
+MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
@@ -634,6 +635,35 @@ def running_count(registry_entries=None):
 
 # ---------- execution ----------
 
+_REPAIR_PROMPT = (
+    "Your previous output could not be parsed. Rewrite .loop/result.md with "
+    "ONLY the required JSON object — no markdown, no code fences, no "
+    "commentary. Do NOT re-run tests, do NOT recompile, do NOT modify any "
+    "other files. Parse error: {detail}"
+)
+
+
+def _repair_result(root, sid, detail):
+    """Resume the same LLM session to rewrite result.md in valid format.
+
+    No tests/compilation rerun: the step's work is already done, only the
+    output envelope was malformed. Returns False when the repair call fails.
+    """
+    q = subprocess.run(
+        [_QODERCLI, "--print", "--session-id", sid,
+         "--no-session-persistence",
+         "--dangerously-skip-permissions",
+         "--cwd", root, "--append-system-prompt",
+         _REPAIR_PROMPT.format(detail=detail),
+         "Rewrite .loop/result.md with the required JSON object"],
+        capture_output=True, text=True)
+    if q.returncode != 0:
+        _log(f"repair: qodercli exited {q.returncode}: "
+             f"{(q.stderr or '').strip()}")
+        return False
+    return True
+
+
 def run_requirement(name):
     """Execute one requirement to completion: next → qodercli → commit."""
     req = next((r for r in _read_registry() if r.get("name") == name), None)
@@ -743,14 +773,42 @@ def run_requirement(name):
                         f.write(result_text)
                 except OSError:
                     pass
-            c = subprocess.run(_engine_cmd("commit", "--root", root),
-                               capture_output=True, text=True)
-            try:
-                commit = json.loads(c.stdout or "{}")
-            except json.JSONDecodeError:
-                _log(f"run {name}: invalid commit output")
-                end = "bad_commit_output"
+            # format errors are repaired in place (resume the same LLM
+            # session to rewrite result.md) before falling back to a full
+            # step replay; semantic errors skip straight to the retry path
+            format_repairs = 0
+            bad_commit_output = False
+            while True:
+                c = subprocess.run(_engine_cmd("commit", "--root", root),
+                                   capture_output=True, text=True)
+                try:
+                    commit = json.loads(c.stdout or "{}")
+                except json.JSONDecodeError:
+                    _log(f"run {name}: invalid commit output")
+                    end = "bad_commit_output"
+                    bad_commit_output = True
+                    break
+                if "error" not in commit:
+                    break
+                _log(f"run {name}: commit error: {commit['error']}")
+                failure_detail = commit["error"]
+                if not failure_detail.startswith("Output format error: "):
+                    break
+                if format_repairs >= MAX_FORMAT_REPAIRS:
+                    _log(f"run {name}: format repair exhausted "
+                         f"({format_repairs})")
+                    break
+                format_repairs += 1
+                _log(f"run {name}: repairing result.md (repair "
+                     f"{format_repairs})")
+                if not _repair_result(root, sid, failure_detail):
+                    break
+            if bad_commit_output:
                 break
+            if "error" not in commit and format_repairs > 0:
+                # repair rewrote result.md — feed the fixed text forward
+                with open(result_path) as f:
+                    result_text = f.read()
             if "error" in commit:
                 _log(f"run {name}: commit error: {commit['error']}")
                 failure_detail = commit["error"]

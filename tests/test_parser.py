@@ -375,5 +375,159 @@ TEST_RESULTS:
         self.assertEqual(tr['passed'], 11)
         self.assertEqual(tr['failed'], 0)
 
+
+class TestJsonOutput(unittest.TestCase):
+    def test_maker_step0_json(self):
+        text = '{"status": "SUCCESS", "plan_path": "/abs/plan.md"}'
+        result = parse_maker_output(text)
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertEqual(result['plan_path'], '/abs/plan.md')
+        self.assertEqual(result['mode'], 'step0')
+
+    def test_maker_step1_red_json(self):
+        text = ('{"status": "SUCCESS", "plan_path": "/abs/plan.md", '
+                '"tdd_red_evidence": {"test_files_written": ["/t/FooTest.java"], '
+                '"red_test_output": "Tests run: 2, Failures: 2", '
+                '"red_confirmed": true, "tdd_skip": false}}')
+        result = parse_maker_output(text)
+        self.assertEqual(result['mode'], 'step1_red')
+        ev = result['tdd_red_evidence']
+        self.assertEqual(ev['test_files_written'], ['/t/FooTest.java'])
+        self.assertTrue(ev['red_confirmed'])
+        self.assertFalse(ev['tdd_skip'])
+
+    def test_maker_step2_green_json(self):
+        text = ('{"status": "SUCCESS", "plan_path": "/abs/plan.md", '
+                '"files_created": ["/s/Foo.java"], "files_modified": [], '
+                '"test_results": {"class_name": "FooTest", "total": 7, '
+                '"passed": 7, "failed": 0, "errors": 0}, '
+                '"blockers": "none", "human_decisions": 0}')
+        result = parse_maker_output(text)
+        self.assertEqual(result['mode'], 'step2_green')
+        self.assertEqual(result['files_created'], ['/s/Foo.java'])
+        self.assertEqual(result['test_results']['passed'], 7)
+        self.assertIsNone(result['blockers'])
+
+    def test_maker_fix_json(self):
+        text = ('{"status": "SUCCESS", "fixed_items": ["fixed a"], '
+                '"remaining_items": [], '
+                '"test_results": {"class_name": "T", "total": 3, '
+                '"passed": 3, "failed": 0}}')
+        result = parse_maker_output(text)
+        self.assertEqual(result['mode'], 'fix')
+        self.assertEqual(result['fixed_items'], ['fixed a'])
+
+    def test_json_inside_markdown_fence(self):
+        text = ('Some reasoning text.\n\n```json\n'
+                '{"score": 92, "cross_consistency": "PASS", '
+                '"dimensions": {"scenario_coverage": "strong"}}\n```\n')
+        result = parse_score(text)
+        self.assertEqual(result['score'], 92)
+        self.assertEqual(result['cross_consistency'], 'PASS')
+
+    def test_score_json_validation(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_score('{"cross_consistency": "PASS"}')
+        self.assertIn('Output format error', str(ctx.exception))
+        self.assertIn('score', str(ctx.exception))
+
+    def test_classify_json(self):
+        result = parse_classify_change('{"magnitude": "重量", "reason": "new API"}')
+        self.assertEqual(result['magnitude'], '重量')
+
+    def test_classify_json_invalid_magnitude(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_classify_change('{"magnitude": "medium"}')
+        self.assertIn('Output format error', str(ctx.exception))
+
+    def test_checker_json_counts_must_match(self):
+        bad = ('{"status": "INCONSISTENT", "discrepancy_count": 2, '
+               '"hard_error_count": 1, "soft_warning_count": 0, '
+               '"info_count": 0, '
+               '"discrepancies": [{"severity": "HARD_ERROR", "type": "t", '
+               '"description": "a"}]}')
+        with self.assertRaises(ValueError) as ctx:
+            parse_checker_output(bad)
+        self.assertIn('Output format error', str(ctx.exception))
+        self.assertIn('discrepancy_count', str(ctx.exception))
+
+    def test_checker_json_invalid_severity(self):
+        bad = ('{"status": "INCONSISTENT", "discrepancy_count": 1, '
+               '"hard_error_count": 0, "soft_warning_count": 0, '
+               '"info_count": 1, '
+               '"discrepancies": [{"severity": "WARN", "type": "t", '
+               '"description": "a"}]}')
+        with self.assertRaises(ValueError) as ctx:
+            parse_checker_output(bad)
+        self.assertIn('Output format error', str(ctx.exception))
+        self.assertIn('severity', str(ctx.exception))
+
+    def test_checker_json_full(self):
+        text = ('{"status": "INCONSISTENT", "discrepancy_count": 1, '
+                '"hard_error_count": 1, "soft_warning_count": 0, '
+                '"info_count": 0, '
+                '"discrepancies": [{"severity": "HARD_ERROR", '
+                '"type": "test-coverage", '
+                '"description": "src/Foo.java:42 missing method"}], '
+                '"test_results": {"class_name": "FooTest", "total": 7, '
+                '"passed": 7, "failed": 0, "errors": 0}, '
+                '"coverage": {"tested": 5, "total": 6}}')
+        result = parse_checker_output(text)
+        self.assertEqual(result['status'], 'INCONSISTENT')
+        self.assertEqual(result['hard_error_count'], 1)
+        self.assertEqual(result['discrepancies'][0]['severity'], 'HARD_ERROR')
+        self.assertEqual(result['discrepancies'][0]['description'],
+                         'src/Foo.java:42 missing method')
+        self.assertEqual(result['test_results']['passed'], 7)
+        self.assertEqual(result['coverage'], {'tested': 5, 'total': 6})
+
+    def test_checker_json_zero_discrepancies(self):
+        text = ('{"status": "CONSISTENT", "discrepancy_count": 0, '
+                '"hard_error_count": 0, "soft_warning_count": 0, '
+                '"info_count": 0, "discrepancies": []}')
+        result = parse_checker_output(text)
+        self.assertEqual(result['status'], 'CONSISTENT')
+        self.assertEqual(result['discrepancies'], [])
+        self.assertEqual(result['soft_warning_count'], 0)
+
+    def test_review_json(self):
+        text = ('{"issues": [{"severity": "critical", '
+                '"text": "src/A.java:1 bug"}, '
+                '{"severity": "minor", "text": "src/B.java:2 nit"}]}')
+        result = parse_code_review(text)
+        self.assertEqual(result['critical'], 1)
+        self.assertEqual(result['minor'], 1)
+        self.assertEqual(result['important'], 0)
+        self.assertEqual(result['issues'][0]['text'], 'src/A.java:1 bug')
+
+    def test_review_json_empty(self):
+        result = parse_code_review('{"issues": []}')
+        self.assertEqual(result['critical'], 0)
+        self.assertEqual(result['issues'], [])
+
+    def test_review_json_invalid_severity(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_code_review('{"issues": [{"severity": "major", "text": "x"}]}')
+        self.assertIn('Output format error', str(ctx.exception))
+
+    def test_legacy_text_still_parses(self):
+        """Old text blocks keep working (in-flight runs, historical archives)."""
+        text = "---CHECKER_OUTPUT---\nSTATUS: INCONSISTENT\n" \
+               "DISCREPANCY_COUNT: 1\nHARD_ERROR_COUNT: 1\n" \
+               "SOFT_WARNING_COUNT: 0\nINFO_COUNT: 0\n" \
+               "DISCREPANCIES:\n  1. [HARD_ERROR] [test] missing\n" \
+               "---END_CHECKER_OUTPUT---"
+        result = parse_checker_output(text)
+        self.assertEqual(result['status'], 'INCONSISTENT')
+        self.assertEqual(result['hard_error_count'], 1)
+        self.assertEqual(result['discrepancies'][0]['type'], 'test')
+
+    def test_garbage_returns_none_or_empty(self):
+        """Non-JSON, non-legacy garbage never raises in the fallback path."""
+        self.assertIsNone(parse_maker_output("whatever"))
+        self.assertEqual(parse_score("whatever")['score'], None)
+        self.assertEqual(parse_classify_change("whatever")['magnitude'], None)
+
+
 if __name__ == '__main__':
     unittest.main()

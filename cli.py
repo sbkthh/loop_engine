@@ -103,7 +103,12 @@ def cmd_set_status(args):
 
 
 def cmd_resolve_draft(args):
-    print("resolve-draft: not implemented yet")
+    from machine import resolve_gray_draft
+    ok, msg = resolve_gray_draft(StateManager(args.root), args.id,
+                                 args.decision)
+    print(msg)
+    if not ok:
+        sys.exit(1)
 
 
 def _load_context_file(path):

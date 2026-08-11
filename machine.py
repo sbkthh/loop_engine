@@ -24,6 +24,20 @@ _SYNCED = "_SYNCED_"
 _GRAY_LIST = "_GRAY_LIST_"
 
 
+def resolve_gray_draft(sm, draft_id, decision):
+    """Adjudicate one gray-list draft. Returns (changed, message)."""
+    state = sm.load()
+    for d in state.get("gray_drafts", []):
+        if d.get("id") == draft_id:
+            if d.get("status") != "pending":
+                return False, f"草稿 {draft_id} 已裁决（{d['status']}）"
+            d["status"] = "accepted" if decision == "accept" else "rejected"
+            sm.save(state)
+            label = "接受" if decision == "accept" else "拒绝"
+            return True, f"已{label}草稿 {draft_id}"
+    return False, f"找不到草稿 {draft_id}"
+
+
 class StateMachine:
     def __init__(self, root_dir="."):
         self.root_dir = os.path.abspath(root_dir)

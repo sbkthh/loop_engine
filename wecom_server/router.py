@@ -60,6 +60,17 @@ _LLM_SYSTEM_PROMPT = (
     "(or '__HISTORY__ ALL' when no requirement is mentioned), then you may add "
     "a short intro. Do NOT run any commands — the prefix reads the history "
     "automatically.\n\n"
+    "When the user asks to view gray-list drafts (e.g. '查看灰名单'), your "
+    "reply MUST start with '__GRAY_LIST__ <requirement name>' (or "
+    "'__GRAY_LIST__ ALL' when no requirement is mentioned), then you may add "
+    "a short intro. Do NOT run any commands.\n\n"
+    "When the user wants to adjudicate gray-list drafts (e.g. '接受 1', "
+    "'拒绝 2 3', '全部接受', '全部拒绝'), your reply MUST start with exactly "
+    "'__ADJUDICATE__ <requirement name> <draft id(s) or all> <accept|reject>' "
+    "on the first line, then you may add a short confirmation. If the user "
+    "mentions only draft numbers, infer the requirement from the last "
+    "gray-list context. Do NOT run any commands — the prefix adjudicates "
+    "automatically.\n\n"
     "Spec management rules (creating or modifying any spec.md):\n"
     "- First read ~/.qoder/skills/spec-session/SKILL.md and follow its workflow\n"
     "- ALWAYS run the grilling/grill-me skill first (every spec change, new or "
@@ -165,6 +176,85 @@ def _execute_history(name, registry, data_dir):
         lines.append(
             f"• {r['requirement']}：{r['end']}，{r['steps']} 步，"
             f"{r['duration_seconds']} 秒（{r['finished_at'][:16]}）")
+    return "\n".join(lines)
+
+
+def _pending_gray_drafts(registry, name="ALL"):
+    """Collect pending gray-list drafts across requirements. Returns
+    list of (req_name, draft) tuples."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    found = []
+    for req in registry:
+        if name != "ALL" and req.get("name") != name:
+            continue
+        try:
+            st = StateManager(req.get("root", "")).load()
+        except Exception:
+            continue
+        for d in st.get("gray_drafts", []):
+            if d.get("status") == "pending":
+                found.append((req.get("name", "?"), d))
+    return found
+
+
+def _execute_gray_list_view(name, registry, data_dir):
+    """List pending gray-list drafts with adjudication instructions."""
+    found = _pending_gray_drafts(registry, name)
+    if not found:
+        req = next((r for r in registry if r.get("name") == name), None)
+        if name != "ALL" and not req:
+            available = ", ".join(r.get("name", "?") for r in registry) or "无"
+            return f"没有找到需求：{name}（可用：{available}）"
+        return "当前没有待裁决的灰名单草稿。"
+    lines = []
+    for req_name, d in found:
+        lines.append(f"「{req_name}」草稿 {d['id']}："
+                     f"[{d.get('module', '-')}] {d.get('summary', '')}")
+    lines.append("回复「接受 <编号>」或「拒绝 <编号>」逐条裁决，"
+                 "或「全部接受」/「全部拒绝」")
+    return "\n".join(lines)
+
+
+def _execute_adjudicate(name, target, decision, registry, data_dir):
+    """Adjudicate gray-list drafts: target is 'all' or one/more draft ids."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    from machine import resolve_gray_draft
+    if decision not in ("accept", "reject"):
+        return "裁决命令应为 accept 或 reject"
+    req = next((r for r in registry if r.get("name") == name), None)
+    if not req:
+        available = ", ".join(r.get("name", "?") for r in registry) or "无"
+        return f"没有找到需求：{name}（可用：{available}）"
+    root = req["root"]
+    sm = StateManager(root)
+    st = sm.load()
+    drafts = st.get("gray_drafts", [])
+    pending = [d for d in drafts if d.get("status") == "pending"]
+    if target == "all":
+        ids = [d["id"] for d in pending]
+    else:
+        try:
+            ids = [int(t) for t in str(target).split(",") if t.strip()]
+        except ValueError:
+            return f"无法识别的草稿编号：{target}"
+    if not ids:
+        return "当前没有待裁决的草稿。"
+    messages = []
+    for draft_id in ids:
+        ok, msg = resolve_gray_draft(sm, draft_id, decision)
+        messages.append(msg)
+    st = sm.load()
+    remaining = [d for d in st.get("gray_drafts", [])
+                 if d.get("status") == "pending"]
+    lines = ["\n".join(messages)]
+    if not remaining:
+        lines.append(f"灰名单已全部裁决完毕。"
+                     f"回复「批准执行 {name}」继续执行")
+    else:
+        lines.append(f"还有 {len(remaining)} 条待裁决"
+                     f"（回复「查看灰名单」查看）")
     return "\n".join(lines)
 
 
@@ -343,6 +433,17 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     if reply.startswith("__HISTORY__"):
         name = reply[len("__HISTORY__"):].strip().splitlines()[0].strip() or "ALL"
         return _execute_history(name, registry, data_dir)
+    if reply.startswith("__GRAY_LIST__"):
+        name = reply[len("__GRAY_LIST__"):].strip().splitlines()[0].strip() or "ALL"
+        return _execute_gray_list_view(name, registry, data_dir)
+    if reply.startswith("__ADJUDICATE__"):
+        rest = reply[len("__ADJUDICATE__"):].strip().splitlines()[0].strip()
+        parts = rest.split()
+        if len(parts) != 3:
+            return ("格式错误：__ADJUDICATE__ <需求名> <编号|all> "
+                    "<accept|reject>")
+        return _execute_adjudicate(parts[0], parts[1], parts[2],
+                                   registry, data_dir)
     if reply.startswith("__SPEC_RESULT__"):
         rest = reply[len("__SPEC_RESULT__"):].strip().splitlines()[0].strip()
         parts = rest.split(None, 1)

@@ -334,6 +334,130 @@ def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
 
 
+def _seed_gray_drafts(root, drafts):
+    from state import StateManager
+    sm = StateManager(root)
+    st = sm.load()
+    st["gray_drafts"] = drafts
+    sm.save(st)
+
+
+def _gray_test(monkeypatch, tmp_path, llm_reply, registry_root):
+    from wecom_server import router
+    monkeypatch.setattr(router, "_get_session_id", lambda uid: ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply(llm_reply))
+    return dispatch("灰名单", [{"name": "req", "root": registry_root}],
+                    "/tmp", "u1")
+
+
+def test_gray_list_view_lists_pending_drafts(monkeypatch, tmp_path):
+    """__GRAY_LIST__ lists only pending drafts + adjudication instructions."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+        {"id": 2, "module": "chg1/m1", "summary": "warn B",
+         "status": "pending"},
+        {"id": 3, "module": "chg1/m1", "summary": "warn C",
+         "status": "accepted"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path, "__GRAY_LIST__ ALL", root)
+    reply = fn()
+
+    assert "草稿 1" in reply and "warn A" in reply
+    assert "草稿 2" in reply and "warn B" in reply
+    assert "warn C" not in reply
+    assert "接受" in reply and "拒绝" in reply
+    assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
+
+
+def test_gray_list_view_empty(monkeypatch, tmp_path):
+    """No pending drafts → clear message."""
+    root, _ = _make_spec_root(tmp_path)
+
+    fn = _gray_test(monkeypatch, tmp_path, "__GRAY_LIST__ ALL", root)
+    reply = fn()
+
+    assert "没有待裁决" in reply
+
+
+def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
+    """__ADJUDICATE__ accept marks the draft and reports remaining."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+        {"id": 2, "module": "chg1/m1", "summary": "warn B",
+         "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req 1 accept\n已接受", root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    assert st["gray_drafts"][0]["status"] == "accepted"
+    assert st["gray_drafts"][1]["status"] == "pending"
+    assert "已接受草稿 1" in reply
+    assert "还有 1 条待裁决" in reply
+
+
+def test_adjudicate_all_done_hints_approve(monkeypatch, tmp_path):
+    """Last draft adjudicated → tells user to approve to continue."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req all reject\n已拒绝", root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    assert st["gray_drafts"][0]["status"] == "rejected"
+    assert "已拒绝草稿 1" in reply
+    assert "全部裁决完毕" in reply
+    assert "批准执行 req" in reply
+
+
+def test_adjudicate_unknown_id(monkeypatch, tmp_path):
+    """Unknown draft id → helpful error, state untouched."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req 99 accept", root)
+    reply = fn()
+
+    assert "找不到草稿 99" in reply
+    assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
+
+
+def test_adjudicate_unknown_requirement(monkeypatch, tmp_path):
+    """Unknown requirement → helpful error."""
+    root, _ = _make_spec_root(tmp_path)
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ ghost 1 accept", root)
+    reply = fn()
+
+    assert "没有找到需求" in reply
+
+
 def test_spec_result_autocompletes_module_name(monkeypatch, tmp_path):
     """Bare module name resolves to the unique change_id/module_name."""
     from wecom_server import router

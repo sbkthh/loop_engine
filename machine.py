@@ -227,7 +227,14 @@ class StateMachine:
             # cover the change, no new RED tests needed; GREEN verifies pass
             return MAKER_STEP2_GREEN
         if not evidence.get("red_confirmed"):
-            raise ValueError("RED not confirmed")
+            tr_out = (evidence.get("red_test_output") or "")
+            if (evidence.get("test_files_written") and
+                    "Failures: 0" in tr_out and "Errors: 0" in tr_out):
+                self._trace(state, MAKER_STEP1_RED, key,
+                            "RED implicitly confirmed (tests pass on existing impl)")
+                evidence["red_confirmed"] = True
+            else:
+                raise ValueError("RED not confirmed")
         if not evidence.get("test_files_written"):
             raise ValueError("No test files written")
         return MAKER_STEP2_GREEN

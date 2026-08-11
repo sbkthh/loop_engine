@@ -515,6 +515,54 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         r = machine.commit()
         self.assertIn("No test files written", r.get("error", ""))
 
+    def test_red_implicit_confirm_when_tests_pass_on_existing_impl(self):
+        """red_confirmed=false with test files + 0 failures → auto-confirm."""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.set_current(state, self.key, MAKER_STEP1_RED)
+        sm.save(state)
+        machine = StateMachine(self.root)
+
+        self._write_result(
+            "---MAKER_OUTPUT---\n"
+            "STATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n"
+            "  test_files_written:\n"
+            "    - /src/test/FooTest.java\n"
+            "  red_test_output: |\n"
+            "    Tests run: 12, Failures: 0, Errors: 0\n"
+            "  red_confirmed: false\n"
+            "  tdd_skip: false\n"
+            "---END_MAKER_OUTPUT---"
+        )
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_STEP2_GREEN")
+
+    def test_red_implicit_confirm_rejected_when_tests_fail(self):
+        """red_confirmed=false with test failures → still rejected."""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.set_current(state, self.key, MAKER_STEP1_RED)
+        sm.save(state)
+        machine = StateMachine(self.root)
+
+        self._write_result(
+            "---MAKER_OUTPUT---\n"
+            "STATUS: SUCCESS\n"
+            "TDD_RED_EVIDENCE:\n"
+            "  test_files_written:\n"
+            "    - /src/test/FooTest.java\n"
+            "  red_test_output: |\n"
+            "    Tests run: 12, Failures: 2, Errors: 0\n"
+            "  red_confirmed: false\n"
+            "  tdd_skip: false\n"
+            "---END_MAKER_OUTPUT---"
+        )
+        r = machine.commit()
+        self.assertIn("RED not confirmed", r.get("error", ""))
+
 class TestCliSetStatus(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

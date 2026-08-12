@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants import CHECKER, MAKER_STEP0
+from constants import CHECKER, MAKER_STEP0, ALIGN_DOCS
 from directives import build
 
 
@@ -83,6 +83,48 @@ class TestMakerStep0Scope(unittest.TestCase):
         out = build(MAKER_STEP0, "chg1/m1", m, self.root)
         self.assertEqual(
             out["directives"]["context"]["prev_spec_hash"], "")
+
+
+class TestAlignDocsDirective(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _module(self):
+        return {
+            "change_id": "chg1",
+            "module_name": "m1",
+            "project_root": ".",
+            "spec_hash": "abc",
+            "files_created": ["src/main/java/A.java"],
+            "files_modified": ["src/main/java/B.java"],
+        }
+
+    def _rejected(self):
+        return [
+            {"id": 8, "summary": "Rule.java:236 weight 2000 vs spec 15000"},
+            {"id": 9, "summary": "Rule.java:236 weight threshold mismatch"},
+        ]
+
+    def test_align_docs_injects_rejected_drafts_per_item(self):
+        out = build(ALIGN_DOCS, "chg1/m1", self._module(), self.root,
+                    rejected_drafts=self._rejected())
+        ins = out["directives"]["instructions"]
+        self.assertIn("[8] Rule.java:236 weight 2000 vs spec 15000", ins)
+        self.assertIn("[9] Rule.java:236 weight threshold mismatch", ins)
+        self.assertIn("For EACH rejected warning above", ins)
+        self.assertIn("spec must become 2000", ins)
+        self.assertIn('"alignment_report"', out["directives"]["output_format"])
+        self.assertEqual(out["directives"]["context"]["rejected_drafts"],
+                         self._rejected())
+
+    def test_align_docs_empty_rejected_default(self):
+        out = build(ALIGN_DOCS, "chg1/m1", self._module(), self.root)
+        self.assertIn("For EACH rejected warning above", out["directives"]["instructions"])
+        self.assertEqual(out["directives"]["context"]["rejected_drafts"], [])
 
 
 if __name__ == '__main__':

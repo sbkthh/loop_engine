@@ -234,7 +234,11 @@ def parse_align_docs(text):
     _require_fields(data, "status", "updated_files")
     if data["status"] not in ("SUCCESS", "FAILED"):
         raise _format_error(f"status must be SUCCESS or FAILED (got {data['status']!r})")
-    return {"status": data["status"], "updated_files": data.get("updated_files", [])}
+    return {
+        "status": data["status"],
+        "updated_files": data.get("updated_files", []),
+        "alignment_report": data.get("alignment_report"),
+    }
 
 
 def parse(text, action):

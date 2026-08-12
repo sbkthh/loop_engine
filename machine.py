@@ -2,6 +2,7 @@
 
 import os
 import json
+import re
 import datetime
 
 from constants import (
@@ -24,6 +25,21 @@ import report
 
 _SYNCED = "_SYNCED_"
 _GRAY_LIST = "_GRAY_LIST_"
+
+# filename:lineno (or lineno range) inside a warning description, e.g.
+# "StockStrategyMaterialExclusionRule.java:236". Used to suppress repeat
+# checker findings for deviations the user already adjudicated as rejected.
+_FINGERPRINT_RE = re.compile(
+    r"([^/\s]+\.(?:java|py|ts|js|xml|go|rs|kt)):(\d+)(?:[-~–](\d+))?"
+)
+
+
+def _draft_fingerprints(drafts):
+    fps = set()
+    for d in drafts:
+        fps.update(m.group(0)
+                   for m in _FINGERPRINT_RE.finditer(d.get("summary", "")))
+    return fps
 
 
 def resolve_gray_draft(sm, draft_id, decision):
@@ -73,7 +89,7 @@ class StateMachine:
         if mid:
             module_key, module, action = mid
             self.sm.save(state)
-            return directives.build(action, module_key, module, self.root_dir)
+            return self._build(state, action, module_key, module)
 
         for key, module in list(state["modules"].items()):
             if module["status"] == SYNCED:
@@ -91,8 +107,8 @@ class StateMachine:
                     self._trace(state, "SCAN", key,
                                 f"spec hash changed -> PARTIAL")
                     self.sm.save(state)
-                    return directives.build(
-                        CLASSIFY_CHANGE, key, module, self.root_dir
+                    return self._build(
+                        state, CLASSIFY_CHANGE, key, module
                     )
 
         selected = StateManager.select_next_module(state)
@@ -115,7 +131,7 @@ class StateMachine:
             self._trace(state, "SCAN", module_key, "align done -> CHECKER")
             self.sm.save(state)
             module = state["modules"][module_key]
-            return directives.build(CHECKER, module_key, module, self.root_dir)
+            return self._build(state, CHECKER, module_key, module)
 
         gray_resume = module.get("_gray_resume")
         if gray_resume:
@@ -147,7 +163,7 @@ class StateMachine:
                         f"gray resume -> {action}")
             self.sm.save(state)
             module = state["modules"][module_key]
-            return directives.build(action, module_key, module, self.root_dir)
+            return self._build(state, action, module_key, module)
         if module["status"] == PARTIAL:
             action = CLASSIFY_CHANGE
         elif module["status"] == READY:
@@ -169,7 +185,16 @@ class StateMachine:
         self._trace(state, "SCAN", module_key, f"routed to {action}")
         self.sm.save(state)
         module = state["modules"][module_key]
-        return directives.build(action, module_key, module, self.root_dir)
+        return self._build(state, action, module_key, module)
+
+    def _build(self, state, action, module_key, module):
+        rejected = [
+            {"id": d.get("id"), "summary": d.get("summary", "")}
+            for d in state.get("gray_drafts", [])
+            if d.get("status") == "rejected" and d.get("module") == module_key
+        ]
+        return directives.build(action, module_key, module,
+                                self.root_dir, rejected)
 
     def commit(self):
         state = self.sm.load()
@@ -315,13 +340,25 @@ class StateMachine:
             raise ValueError("Output format error: No CHECKER_OUTPUT block found")
         hard = parsed.get("hard_error_count") or 0
         raw_soft = parsed.get("soft_warning_count") or 0
-        rejected_summaries = {
-            d["summary"] for d in state.get("gray_drafts", [])
+        rejected = [
+            d for d in state.get("gray_drafts", [])
             if d.get("status") == "rejected" and d.get("module") == key
-        }
-        module["hard_errors"] = [
+        ]
+        rejected_summaries = {d.get("summary", "") for d in rejected}
+        rejected_fingerprints = _draft_fingerprints(rejected)
+
+        def suppressed(desc):
+            return (desc in rejected_summaries
+                    or any(fp in desc for fp in rejected_fingerprints))
+
+        hard_errors = [
             d for d in parsed.get("discrepancies", [])
             if d.get("severity") == "HARD_ERROR"
+        ]
+        suppressed_hard = [d for d in hard_errors
+                           if suppressed(d.get("description", ""))]
+        module["hard_errors"] = [
+            d for d in hard_errors if d not in suppressed_hard
         ]
         parsed_soft = [
             d for d in parsed.get("discrepancies", [])
@@ -329,13 +366,24 @@ class StateMachine:
         ]
         filtered = [
             d for d in parsed_soft
-            if d.get("description", "") not in rejected_summaries
+            if not suppressed(d.get("description", ""))
         ]
+        suppressed_soft = [d for d in parsed_soft
+                           if suppressed(d.get("description", ""))]
         module["soft_warnings"] = filtered
-        # if some warnings were unparseable, defer to raw count so
-        # _execute_gray_list creates the fallback draft; otherwise use filtered
+        if suppressed_hard or suppressed_soft:
+            module["suppressed_checker"] = [
+                {"description": d.get("description", "")}
+                for d in suppressed_hard + suppressed_soft
+            ]
+            self._trace(state, CHECKER, key,
+                        f"suppressed {len(suppressed_hard)} hard + "
+                        f"{len(suppressed_soft)} soft (rejected fingerprints)")
+        # unparseable findings cannot be fingerprint-matched, so keep their
+        # raw count; suppressed ones only reduce the parseable portion
+        hard -= len(suppressed_hard)
         if raw_soft > len(parsed_soft):
-            soft = raw_soft
+            soft = max(raw_soft - len(suppressed_soft), len(filtered))
         else:
             soft = len(filtered)
         if hard > 0 and module.get("maker_attempt", 0) < MAX_MAKER_ATTEMPTS:
@@ -368,6 +416,8 @@ class StateMachine:
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Align docs failed: {parsed.get('status')}")
         module["_align_done"] = True
+        if parsed.get("alignment_report"):
+            module["alignment_report"] = parsed["alignment_report"]
         return CHECKER
 
     def _commit_code_review(self, state, key, module, text):

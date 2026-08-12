@@ -14,7 +14,7 @@ from spec_utils import (
 )
 
 
-def build(action, module_key, module, root_dir="."):
+def build(action, module_key, module, root_dir=".", rejected_drafts=None):
     change_id = module["change_id"]
     module_name = module["module_name"]
     spec_path = derive_spec_path(change_id, module_name, root_dir)
@@ -264,14 +264,26 @@ def build(action, module_key, module, root_dir="."):
         d["plan_path"] = module.get("plan_path") or plan_path
         changed_files = (module.get("files_created", [])
                          + module.get("files_modified", []))
+        rejected = rejected_drafts or []
+        rejected_lines = "\n".join(
+            f"- [{r.get('id')}] {r.get('summary', '')}" for r in rejected
+        )
         d["instructions"] = (
             "The user rejected checker warnings — the code is correct, "
             "but spec/plan documents are outdated.\n"
             "Read the code files listed below (files_created / files_modified). "
             "Update spec.md and plan.md to accurately reflect the actual "
             "implementation.\n"
+            "Rejected warnings you MUST resolve by aligning spec.md to the code "
+            "(every rejected warning = the spec text disagrees with the code, "
+            "and the code wins):\n"
+            f"{rejected_lines or '(none listed)'}\n"
             "Rules:\n"
             "- Do NOT modify any code files.\n"
+            "- For EACH rejected warning above, change the spec.md text it "
+            "points at so it matches the code EXACTLY (e.g. if the warning "
+            "says spec requires 15000 but code uses 2000, spec must become "
+            "2000). Do NOT keep spec text that still contradicts the code.\n"
             "- Update spec Scenarios, API contracts, field tables to match code.\n"
             "- Update plan TDD table, file ownership, data flow to match code.\n"
             "- IMPORTANT: All descriptions MUST be written in Chinese.\n"
@@ -282,12 +294,18 @@ def build(action, module_key, module, root_dir="."):
             "no code fences, no commentary:\n"
             '{"status": "SUCCESS",\n'
             ' "updated_files": ["openspec/changes/.../spec.md", '
-            '"openspec/changes/.../plan.md"]}\n'
+            '"openspec/changes/.../plan.md"],\n'
+            ' "alignment_report": [{"id": 8, "aligned": true, '
+            '"note": "spec L111 changed 15000 -> 2000"}]}\n'
             "status: SUCCESS or FAILED. "
-            "updated_files: relative paths of spec and plan files updated."
+            "updated_files: relative paths of spec and plan files updated. "
+            "alignment_report: one entry per rejected warning id; "
+            "aligned=false only when the warning was not applicable "
+            "and explain why in note."
         )
         d["context"]["files_created"] = module.get("files_created", [])
         d["context"]["files_modified"] = module.get("files_modified", [])
+        d["context"]["rejected_drafts"] = rejected
 
     # Machine-local environment context (databases, nacos, gateways), gitignored.
     ctx_path = os.path.join(root_dir, ".loop", "context.json")

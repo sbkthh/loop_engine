@@ -512,6 +512,53 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(len(state["gray_drafts"]), 1)
 
+    def test_checker_fingerprint_suppresses_reworded_findings(self):
+        """Rejected fingerprint (file:line) suppresses repeat findings even
+        when the LLM rewords the description (exact-match filter misses it)."""
+        from state import StateManager
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        sm = StateManager(self.root)
+        st = sm.load()
+        st.setdefault("gray_drafts", []).append({
+            "id": 99, "module": self.key, "status": "rejected",
+            "summary": "Rule.java:236 weight threshold 2000 vs spec 15000",
+        })
+        sm.save(st)
+
+        self._drive_to_green(machine)
+
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 2,
+            "hard_error_count": 1,
+            "soft_warning_count": 1,
+            "info_count": 0,
+            "discrepancies": [
+                {"severity": "HARD_ERROR", "type": "A",
+                 "description": "spec L111 requires 15000 but "
+                                 "Rule.java:236 uses 2000"},
+                {"severity": "SOFT_WARNING", "type": "B",
+                 "description": "weight mismatch at Rule.java:236 "
+                                 "(spec L111/L513)"},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 5, "failed": 0, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        # hard suppressed -> no MAKER_FIX; soft suppressed -> no GRAY_LIST
+        self.assertEqual(r["next_action"], "CODE_REVIEW")
+        state = sm.load()
+        self.assertEqual(state["modules"][self.key]["hard_errors"], [])
+        self.assertEqual(state["modules"][self.key]["soft_warnings"], [])
+        self.assertEqual(
+            len(state["modules"][self.key]["suppressed_checker"]), 2)
+        self.assertEqual(len(state["gray_drafts"]), 1)
+
     def test_commit_no_mid_progress(self):
         machine = StateMachine(self.root)
         r = machine.commit()

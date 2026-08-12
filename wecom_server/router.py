@@ -480,6 +480,9 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     sm.save(st)
     _audit_line(f"SPEC {name} {module_key} {old_hash}->{new_hash} "
                 f"backup={backup_note}")
+    # Refresh pending.json so approve works immediately
+    import scheduler as _sched
+    _sched.poll()
     return (f"spec 变更已登记：{module_key}\n"
             f"旧 hash: {old_hash[:8]}  新 hash: {new_hash[:8]}\n"
             f"备份: {backup_note}\n"

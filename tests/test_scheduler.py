@@ -1045,7 +1045,7 @@ class TestNotify(SchedulerBase):
         text = nt.call_args.args[0]
         self.assertIn("灰名单问题待裁决", text)
         self.assertIn("「查看灰名单」", text)
-        self.assertIn("裁决后回复「批准执行 req-a」继续执行", text)
+        self.assertNotIn("批准执行", text)
         self.assertNotIn("即可开始执行", text)
 
     def test_notify_text_skips_without_config(self):
@@ -1108,7 +1108,7 @@ class TestNotify(SchedulerBase):
         self.assertIn("执行暂停", msg)
         self.assertIn("灰名单", msg)
         self.assertIn("查看灰名单", msg)
-        self.assertIn("批准执行 req", msg)
+        self.assertNotIn("批准执行 req", msg)
         self.assertNotIn("gray_list", msg)
 
     def test_end_message_no_advance_reports_reason(self):

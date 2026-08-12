@@ -54,6 +54,15 @@ _TRIGGER_FOR_STATUS = {
 }
 _TRIGGER_PRIORITY = (PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT)
 
+_TRIGGER_LABELS = {
+    GRAY_LIST: "灰名单",
+    SPEC_CHANGED: "Spec变更",
+    READY_PENDING: "待执行",
+    NEEDS_REFINEMENT: "待完善",
+    BLOCKED: "阻塞",
+    DRAFT: "新模块",
+}
+
 DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 
 LOOP_AGENT_PROMPT = (
@@ -269,9 +278,10 @@ def approve(name=None, all_=False, approved_by=None):
     if not entry:
         raise ValueError(_no_pending_message(name))
     if entry.get("trigger") not in AUTO_EXECUTABLE:
+        tlabel = _TRIGGER_LABELS.get(entry.get("trigger"),
+                                     entry.get("trigger", "UNKNOWN"))
         raise ValueError(
-            f"{name} ({entry.get('trigger')}) is report-only — "
-            "needs spec session work, not auto-execution")
+            f"{name}（{tlabel}）为报告状态，需先完成 spec 相关工作，不支持自动执行")
     if entry.get("approved"):
         return 0
     entry["approved"] = True
@@ -340,13 +350,13 @@ def notify_pending(fresh_entries):
         trigger = entry.get("trigger", "UNKNOWN")
         modules = entry.get("modules", [])
         names = ", ".join(m.get("key", "?") for m in modules)
-        lines.append(f"• {entry['requirement']} ({trigger}): {names}")
+        label = _TRIGGER_LABELS.get(trigger, trigger)
+        lines.append(f"• {entry['requirement']}（{label}）：{names}")
         if trigger in AUTO_EXECUTABLE:
             if trigger == GRAY_LIST:
                 advice.append(
                     f"「{entry['requirement']}」有灰名单问题待裁决，"
-                    f"请回复「查看灰名单」逐条裁决（接受/拒绝/修复），"
-                    f"裁决后回复「批准执行 {entry['requirement']}」继续执行")
+                    f"请回复「查看灰名单」了解详情")
             else:
                 advice.append(
                     f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
@@ -604,8 +614,7 @@ def _end_message(name, end, steps, elapsed_min, failure_detail, root):
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
     if end == "gray_list":
         return (f"{base}执行暂停：Checker 发现待人工裁决的问题（灰名单）。"
-                f"微信回复「查看灰名单」逐条裁决（接受/拒绝/修复），"
-                f"裁决后回复「批准执行 {name}」继续执行")
+                f"微信回复「查看灰名单」了解详情")
     if end == "no_advance":
         reason = _no_advance_reason(root)
         next_hint = ("处理完成后回复「批准执行 {name}」继续"

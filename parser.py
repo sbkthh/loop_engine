@@ -227,10 +227,21 @@ def parse_code_review(text):
     return _review_from_json(data)
 
 
+def parse_align_docs(text):
+    data = _parse_json_output(text)
+    if data is None:
+        return None
+    _require_fields(data, "status", "updated_files")
+    if data["status"] not in ("SUCCESS", "FAILED"):
+        raise _format_error(f"status must be SUCCESS or FAILED (got {data['status']!r})")
+    return {"status": data["status"], "updated_files": data.get("updated_files", [])}
+
+
 def parse(text, action):
     from constants import (
         SCORE, CLASSIFY_CHANGE, MAKER_STEP0, MAKER_STEP1_RED,
         MAKER_STEP2_GREEN, MAKER_FIX, CHECKER, CODE_REVIEW, CODE_REVIEW_FIX,
+        ALIGN_DOCS,
     )
     maker_actions = (MAKER_STEP0, MAKER_STEP1_RED, MAKER_STEP2_GREEN,
                      MAKER_FIX, CODE_REVIEW_FIX)
@@ -244,4 +255,6 @@ def parse(text, action):
         return parse_classify_change(text)
     if action == CODE_REVIEW:
         return parse_code_review(text)
+    if action == ALIGN_DOCS:
+        return parse_align_docs(text)
     raise ValueError(f"Unknown action: {action}")

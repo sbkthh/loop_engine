@@ -67,7 +67,10 @@ _LLM_SYSTEM_PROMPT = (
     "When the user wants to adjudicate gray-list drafts (e.g. '接受 1', "
     "'拒绝 2 3', '全部接受', '全部拒绝'), your reply MUST start with exactly "
     "'__ADJUDICATE__ <requirement name> <draft id(s) or all> <accept|reject>' "
-    "on the first line, then you may add a short confirmation. If the user "
+    "(or '__ADJUDICATE__ ALL <draft id(s) or all> <accept|reject>' when no "
+    "requirement is mentioned) on the first line, then you may add a short "
+    "confirmation. Do NOT omit the requirement name — use ALL as the name when "
+    "the user didn't say which requirement. If the user "
     "mentions only draft numbers, infer the requirement from the last "
     "gray-list context. Do NOT run any commands — the prefix adjudicates "
     "automatically.\n\n"
@@ -245,8 +248,10 @@ def _execute_gray_list_view(name, registry, data_dir):
         return "当前没有待裁决的灰名单草稿。"
     lines = []
     for req_name, d in found:
+        label = d.get("type_label", "")
+        summary = d.get("summary", "")
         lines.append(f"「{req_name}」草稿 {d['id']}："
-                     f"[{d.get('module', '-')}] {d.get('summary', '')}")
+                     f"[{label}] {summary}")
         lines.append(f"→ 回复「接受 {d['id']}」或「拒绝 {d['id']}」裁决该条")
     lines.append("多条可一起处理：「全部接受」/「全部拒绝」")
     return "\n".join(lines)
@@ -259,6 +264,10 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
     from machine import resolve_gray_draft
     if decision not in ("accept", "reject"):
         return "裁决命令应为 accept 或 reject"
+
+    if name == "ALL":
+        return _execute_adjudicate_all(target, decision, registry, data_dir)
+
     req = next((r for r in registry if r.get("name") == name), None)
     if not req:
         available = ", ".join(r.get("name", "?") for r in registry) or "无"
@@ -296,6 +305,52 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
         lines.append(f"还有 {len(remaining)} 条待裁决"
                      f"（回复「查看灰名单」查看）")
     return "\n".join(lines)
+
+
+def _execute_adjudicate_all(target, decision, registry, data_dir):
+    """Adjudicate drafts across all requirements with pending items."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    from machine import resolve_gray_draft
+    all_lines = []
+    for req in registry:
+        name = req.get("name", "?")
+        root = req.get("root", "")
+        if not root:
+            continue
+        sm = StateManager(root)
+        try:
+            st = sm.load()
+        except Exception:
+            continue
+        pending = [d for d in st.get("gray_drafts", [])
+                   if d.get("status") == "pending"]
+        if not pending:
+            continue
+        if target == "all":
+            ids = [d["id"] for d in pending]
+        else:
+            ids = [int(t) for t in str(target).split(",") if t.strip()]
+        messages = []
+        for draft_id in ids:
+            ok, msg = resolve_gray_draft(sm, draft_id, decision)
+            messages.append(msg)
+        st = sm.load()
+        remaining = [d for d in st.get("gray_drafts", [])
+                     if d.get("status") == "pending"]
+        all_lines.append(f"【{name}】 " + "; ".join(messages))
+        if not remaining:
+            import scheduler
+            scheduler.approve(name)
+            cfg = scheduler.load_config()
+            scheduler.dispatch(scheduler.load_pending()["pending"],
+                               max_concurrency=cfg.get("max_concurrency", 2))
+            all_lines.append(f"  → 灰名单已全部裁决完毕，继续执行 {name}")
+        else:
+            all_lines.append(f"  → 还有 {len(remaining)} 条待裁决（回复「查看灰名单」查看）")
+    if not all_lines:
+        return "当前没有待裁决的草稿。"
+    return "\n".join(all_lines)
 
 
 def _execute_approve(name, registry, data_dir, user_id=None):

@@ -236,7 +236,11 @@ loop_engine status --root ~/loop-work/cross-dock
 
 ```
 SCORE → CLASSIFY_CHANGE → MAKER_STEP0 → STEP1_RED → STEP2_GREEN
-  → CHECKER → MAKER_FIX(可选) → CODE_REVIEW → CODE_REVIEW_FIX(可选) → SYNCED
+  → CHECKER ─→ 不一致 → GRAY_LIST（微信裁决）
+  │               ├─ 全部接受 → MAKER_FIX → CHECKER
+  │               ├─ 全部拒绝 → ALIGN_DOCS → CHECKER
+  │               └─ 混合     → MAKER_FIX → ALIGN_DOCS → CHECKER
+  → CHECKER ─→ 一致 → CODE_REVIEW → CODE_REVIEW_FIX(可选) → SYNCED
 ```
 
 ---
@@ -515,16 +519,20 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │  crontab  (*/10 * * * * loop_engine poll)  ← 周期轮询触发器         │
+│  → scheduler.poll() = 读 state.json → 合并 pending.json → 微信通知  │
+│  → dispatch 兜底（仅捡起已 approved 但未启动的）                    │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │
                            ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  A: loop_engine CLI 主进程（cmd_poll = poll() + dispatch 兜底）     │
+│  A: loop_engine CLI 主进程（argparse 分发）                         │
+│     cmd_poll = scheduler.poll() + dispatch(已 approved 项) 兜底     │
 │     poll / pending / approve / run / schedule / session-clean /    │
-│     manual-begin|end / wecom ...（argparse 分发）                   │
+│     manual-begin|end / wecom ...                                   │
+│     approve 不含 dispatch → dispatch 由各触发者各自负责              │
 └──────┬──────────────────────────────────────┬──────────────────────┘
-       │ poll 检测到已批准项 → dispatch        │ manual-begin/end
-       ▼（兜底启动，通常已被 G 抢先）          ▼（手动循环接管锁）
+       │ dispatch 兜底（通常已被 G 抢先）       │ manual-begin/end
+       ▼（仅捡 approved 但未被 G 启动的）      ▼（手动循环接管锁）
 ┌────────────────────────────────────────────────────────────────────┐
 │  B: run_requirement 子进程（G 或 A fork，start_new_session）        │
 │     循环: next → qodercli → commit → next → ... → IDLE             │
@@ -544,27 +552,35 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 
 ┌────────────────────────────────────────────────────────────────────┐
 │  F: wecom_server 守护进程（端口 5000，A fork 常驻）                  │
-│     微信回调 → 立即返回 "success" → 后台处理 → API 推送结果          │
+│     微信回调 → 立即返回 "success" → 后台 LLM 处理 → API 推送结果     │
+│     识别前缀路由: __APPROVE__ / __HISTORY__ / __GRAY_LIST__ /       │
+│     __ADJUDICATE__ / __SPEC_RESULT__ → 进程内执行对应 handler       │
 └──────┬─────────────────────────────────────────────────────────────┘
-       │ 每个消息派生一个
+       │ 每个消息派生一个 G
        ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │  G: qodercli 子进程（每个微信消息一次）                              │
-│     --session-id/--resume <按用户稳定的会话>（对话记忆）             │
+│     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
-│     特殊前缀: __APPROVE__ / __HISTORY__ / __SPEC_RESULT__           │
-│     __APPROVE__ → 进程内 approve + dispatch → 直接 fork B（即时）   │
-│     __SPEC_RESULT__ → 校验/备份/置 PARTIAL → 等待用户批准           │
+│                                                                     │
+│     前缀路由（F 根据 LLM 回复的第一行识别，不经过二次 LLM）：          │
+│     __APPROVE__ <name>         → approve + dispatch → fork B       │
+│     __HISTORY__ <name|ALL>     → 读取执行历史                       │
+│     __GRAY_LIST__ <name|ALL>   → 列出待裁决灰名单草稿                │
+│     __ADJUDICATE__ <name> <ids|all> <accept|reject>                │
+│                                → 裁决草稿；全部裁决完毕自动          │
+│                                  approve + dispatch → fork B        │
+│     __SPEC_RESULT__ <name> <key> → 校验/备份/置 PARTIAL → 等批准    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
-| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end 锁 |
-| B | run_requirement | G (微信批准，即时) / A (poll 兜底) | 循环驱动；锁 + 心跳 + 重试；并发上限 max_concurrency |
+| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end 锁；scheduler.poll() 只检测不启动 |
+| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；锁 + 心跳 + 重试；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
-| F | wecom_server | A (wecom start) | 常驻 :5000；同步返回 success |
-| G | qodercli | F（每消息） | 按用户共用会话；audit hook 审计；__APPROVE__ 进程内 fork B |
+| F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → 前缀路由 → handler 进程内执行 |
+| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；5 种前缀触发不同 handler |
 
 ```
 ~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）

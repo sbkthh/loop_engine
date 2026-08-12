@@ -394,7 +394,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm.save(state)
 
         r = machine.next()
-        self.assertEqual(r["action"], "CODE_REVIEW")
+        self.assertEqual(r["action"], "ALIGN_DOCS")
         self.assertEqual(r["module"], self.key)
         state = sm.load()
         self.assertNotIn("_gray_resume", state["modules"].get(self.key, {}))

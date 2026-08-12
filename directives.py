@@ -6,6 +6,7 @@ import os
 from constants import (
     SCORE, CLASSIFY_CHANGE, MAKER_STEP0, MAKER_STEP1_RED,
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
+    ALIGN_DOCS,
 )
 from spec_utils import (
     derive_spec_path, derive_plan_path, read_test_command,
@@ -156,7 +157,8 @@ def build(action, module_key, module, root_dir="."):
             "type consistency, import completeness, task status, cross-plan dependencies.\n"
             "Classify each discrepancy as HARD_ERROR (compile/logic failure),\n"
             "SOFT_WARNING (logic error/description inaccurate), or INFO (precision suggestion).\n"
-            "Do NOT modify any files."
+            "Do NOT modify any files.\n"
+            "IMPORTANT: All descriptions MUST be written in Chinese."
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -248,6 +250,35 @@ def build(action, module_key, module, root_dir="."):
         )
         d["context"]["review_issues"] = review_issues
         d["context"]["test_command"] = test_cmd
+
+    elif action == ALIGN_DOCS:
+        d["plan_path"] = module.get("plan_path") or plan_path
+        changed_files = (module.get("files_created", [])
+                         + module.get("files_modified", []))
+        d["instructions"] = (
+            "The user rejected checker warnings — the code is correct, "
+            "but spec/plan documents are outdated.\n"
+            "Read the code files listed below (files_created / files_modified). "
+            "Update spec.md and plan.md to accurately reflect the actual "
+            "implementation.\n"
+            "Rules:\n"
+            "- Do NOT modify any code files.\n"
+            "- Update spec Scenarios, API contracts, field tables to match code.\n"
+            "- Update plan TDD table, file ownership, data flow to match code.\n"
+            "- IMPORTANT: All descriptions MUST be written in Chinese.\n"
+            "- Keep the original structure and level of detail."
+        )
+        d["output_format"] = (
+            "Write to .loop/result.md ONLY a single JSON object — no markdown, "
+            "no code fences, no commentary:\n"
+            '{"status": "SUCCESS",\n'
+            ' "updated_files": ["openspec/changes/.../spec.md", '
+            '"openspec/changes/.../plan.md"]}\n'
+            "status: SUCCESS or FAILED. "
+            "updated_files: relative paths of spec and plan files updated."
+        )
+        d["context"]["files_created"] = module.get("files_created", [])
+        d["context"]["files_modified"] = module.get("files_modified", [])
 
     # Machine-local environment context (databases, nacos, gateways), gitignored.
     ctx_path = os.path.join(root_dir, ".loop", "context.json")

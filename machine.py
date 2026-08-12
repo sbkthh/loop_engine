@@ -8,6 +8,7 @@ from constants import (
     SYNCED, PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT,
     SCORE, CLASSIFY_CHANGE, MAKER_STEP0, MAKER_STEP1_RED,
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
+    ALIGN_DOCS,
     SCORE_THRESHOLD, MAX_MAKER_ATTEMPTS, MAX_REVIEW_FIX_CYCLES,
     TRACE_RETENTION, AUDIT_RETENTION, RESULT_FILE,
 )
@@ -16,6 +17,7 @@ from spec_utils import discover_modules, compute_spec_hash, derive_spec_path
 from parser import (
     parse_maker_output, parse_checker_output,
     parse_score, parse_classify_change, parse_code_review,
+    parse_align_docs,
 )
 import directives
 import report
@@ -52,6 +54,7 @@ class StateMachine:
             MAKER_FIX: self._commit_maker_fix,
             CODE_REVIEW: self._commit_code_review,
             CODE_REVIEW_FIX: self._commit_code_review_fix,
+            ALIGN_DOCS: self._commit_align_docs,
         }
 
     def next(self):
@@ -96,18 +99,42 @@ class StateMachine:
             return {"action": "IDLE", "message": "所有模块同步，无待处理项"}
 
         module_key, module = selected
+
+        # ALIGN_DOCS completed: skip MAKER steps, go directly to CHECKER
+        if module.get("_align_done"):
+            del module["_align_done"]
+            spec_path = derive_spec_path(
+                module["change_id"], module["module_name"], self.root_dir)
+            new_hash = compute_spec_hash(spec_path)
+            if new_hash:
+                module["spec_hash"] = new_hash
+            action = CHECKER
+            StateManager.set_current(state, module_key, action)
+            self._trace(state, "SCAN", module_key, "align done -> CHECKER")
+            self.sm.save(state)
+            module = state["modules"][module_key]
+            return directives.build(CHECKER, module_key, module, self.root_dir)
+
         gray_resume = module.get("_gray_resume")
         if gray_resume:
             pending = [d for d in state.get("gray_drafts", [])
                        if d.get("status") == "pending"
-                       and d.get("module", "").startswith(module["change_id"])]
+                       and d.get("module") == module_key]
             if not pending:
                 del module["_gray_resume"]
-                # any accepted draft → need MAKER_FIX; all rejected → CODE_REVIEW only
                 any_accepted = any(d.get("status") == "accepted"
                                    for d in state.get("gray_drafts", [])
-                                   if d.get("module", "").startswith(module["change_id"]))
-                action = MAKER_FIX if any_accepted else CODE_REVIEW
+                                   if d.get("module") == module_key)
+                any_rejected = any(d.get("status") == "rejected"
+                                   for d in state.get("gray_drafts", [])
+                                   if d.get("module") == module_key)
+                if any_accepted and any_rejected:
+                    action = MAKER_FIX
+                    module["_pending_align"] = True
+                elif any_accepted:
+                    action = MAKER_FIX
+                else:
+                    action = ALIGN_DOCS
             else:
                 action = None
         else:
@@ -327,6 +354,18 @@ class StateMachine:
         tr = parsed.get("test_results", {})
         if (tr.get("passed") or 0) <= 0:
             raise ValueError("No tests passed after fix")
+        if module.get("_pending_align"):
+            del module["_pending_align"]
+            return ALIGN_DOCS
+        return CHECKER
+
+    def _commit_align_docs(self, state, key, module, text):
+        parsed = parse_align_docs(text)
+        if not parsed:
+            raise ValueError("Output format error: No ALIGN_DOCS block found")
+        if parsed.get("status") != "SUCCESS":
+            raise ValueError(f"Align docs failed: {parsed.get('status')}")
+        module["_align_done"] = True
         return CHECKER
 
     def _commit_code_review(self, state, key, module, text):
@@ -369,17 +408,35 @@ class StateMachine:
             state["audit_trail"] = trail[-AUDIT_RETENTION:]
 
     def _execute_gray_list(self, state, key, module):
+        TYPE_LABELS = {
+            "plan deviation": "方案偏离",
+            "test-coverage": "测试覆盖",
+            "precision": "精确度",
+            "type inconsistency": "类型不一致",
+            "method signature": "方法签名",
+            "import": "导入依赖",
+            "module dependency": "模块依赖",
+            "line reference": "引用位置",
+        }
         warnings = module.get("soft_warnings", [])
         if not warnings:
             warnings = [{
+                "type": "unknown",
                 "description": ("Checker 报告软警告但条目未按格式解析，"
                                 "详见 .loop/result-CHECKER.md 存档"),
             }]
+        drafts = state.setdefault("gray_drafts", [])
+        next_id = max((d.get("id", 0) for d in drafts), default=0)
         for warning in warnings:
-            state.setdefault("gray_drafts", []).append({
-                "id": len(state.get("gray_drafts", [])) + 1,
+            next_id += 1
+            wt = warning.get("type", "")
+            label = TYPE_LABELS.get(wt, wt.replace("_", " ") if wt else "其他")
+            summary = warning.get("description", "")
+            drafts.append({
+                "id": next_id,
                 "module": key,
-                "summary": warning.get("description", ""),
+                "type_label": label,
+                "summary": summary,
                 "status": "pending",
             })
 

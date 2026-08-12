@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants import CHECKER
+from constants import CHECKER, MAKER_STEP0
 from directives import build
 
 
@@ -48,6 +48,41 @@ class TestCheckerDirective(unittest.TestCase):
         m["files_modified"] = []
         out = build(CHECKER, "chg1/m1", m, self.root)
         self.assertIn("Run 'mvn test'", out["directives"]["instructions"])
+
+
+class TestMakerStep0Scope(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _module(self):
+        return {
+            "change_id": "chg1",
+            "module_name": "m1",
+            "project_root": ".",
+            "spec_hash": "newhash",
+            "prev_spec_hash": "oldhash",
+            "maker_attempt": 0,
+        }
+
+    def test_maker_step0_plan_scoped_to_current_change_only(self):
+        out = build(MAKER_STEP0, "chg1/m1", self._module(), self.root)
+        ins = out["directives"]["instructions"]
+        self.assertIn("ONLY the current spec change", ins)
+        self.assertIn("OUT OF SCOPE", ins)
+        self.assertIn("do NOT list them as tasks", ins)
+        self.assertEqual(
+            out["directives"]["context"]["prev_spec_hash"], "oldhash")
+
+    def test_maker_step0_prev_hash_empty_when_absent(self):
+        m = self._module()
+        del m["prev_spec_hash"]
+        out = build(MAKER_STEP0, "chg1/m1", m, self.root)
+        self.assertEqual(
+            out["directives"]["context"]["prev_spec_hash"], "")
 
 
 if __name__ == '__main__':

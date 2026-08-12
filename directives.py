@@ -81,6 +81,14 @@ def build(action, module_key, module, root_dir="."):
         d["plan_path"] = plan_path
         d["instructions"] = (
             "Planning Mode. Read the spec file and AGENTS.md.\n"
+            "Scope: ONLY the current spec change. Compare the spec with the "
+            "previous version to identify what THIS change requires "
+            "(find the newest backup file .loop/backup/spec-<module>-*.md, "
+            "or use prev_spec_hash for reference). The plan must include "
+            "ONLY tasks required by this change.\n"
+            "Pre-existing spec↔code deviations NOT introduced by this change "
+            "are OUT OF SCOPE: do NOT list them as tasks, do NOT plan fixes "
+            "for them — the CHECKER detects them independently.\n"
             "Generate an implementation plan at the plan_path. The plan must include:\n"
             "- File list: each file to create/modify with its package path\n"
             "- Class responsibilities: one sentence per class\n"
@@ -90,6 +98,7 @@ def build(action, module_key, module, root_dir="."):
             "- Test strategy: what each test class covers\n"
             "Do NOT write any test or implementation code."
         )
+        d["context"]["prev_spec_hash"] = module.get("prev_spec_hash", "")
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
             "no code fences, no commentary:\n"

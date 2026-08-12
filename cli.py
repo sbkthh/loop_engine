@@ -47,8 +47,9 @@ def cmd_status(args):
             h = (m.get("spec_hash") or "")[:8]
             print(f"{key:<45} {m['status']:<20} {h}")
     drafts = state.get("gray_drafts", [])
-    if drafts:
-        print(f"\nGray-list drafts: {len(drafts)} pending")
+    pending = [d for d in drafts if d.get("status") == "pending"]
+    if pending:
+        print(f"\nGray-list drafts: {len(pending)} pending")
 
 
 def cmd_init(args):

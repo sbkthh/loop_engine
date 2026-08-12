@@ -85,6 +85,8 @@ class StateMachine:
                     module["prev_spec_hash"] = module.get("spec_hash")
                     module["spec_hash"] = current_hash
                     module["status"] = PARTIAL
+                    module["maker_attempt"] = 0
+                    module["review_fix_attempt"] = 0
                     StateManager.set_current(state, key, CLASSIFY_CHANGE)
                     self._trace(state, "SCAN", key,
                                 f"spec hash changed -> PARTIAL")

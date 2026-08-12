@@ -477,6 +477,8 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         backup_note = backup_path + " (pre-edit snapshot, no git HEAD)"
     sm.set_module_field(st, module_key, "spec_hash", new_hash)
     sm.set_module_field(st, module_key, "status", PARTIAL)
+    sm.set_module_field(st, module_key, "maker_attempt", 0)
+    sm.set_module_field(st, module_key, "review_fix_attempt", 0)
     sm.save(st)
     _audit_line(f"SPEC {name} {module_key} {old_hash}->{new_hash} "
                 f"backup={backup_note}")

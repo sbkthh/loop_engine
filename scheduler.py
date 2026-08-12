@@ -19,6 +19,8 @@ import uuid
 
 import requests  # noqa: E402 — used by notify_pending()
 
+from constants import MAX_MAKER_ATTEMPTS
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 REGISTRY_PATH = os.path.join(DATA_DIR, "requirements.json")
@@ -595,6 +597,11 @@ def _no_advance_reason(root):
     except (OSError, ValueError):
         return "状态机未推进"
     statuses = [m.get("status") for m in state.get("modules", {}).values()]
+    for key, m in state.get("modules", {}).items():
+        if m.get("hard_errors") and m.get("maker_attempt", 0) >= MAX_MAKER_ATTEMPTS:
+            return (f"Checker 硬性偏差未解决且 MAKER_FIX 已用尽 "
+                    f"（{MAX_MAKER_ATTEMPTS}/{MAX_MAKER_ATTEMPTS}），"
+                    f"需人工处理：修改代码对齐 spec，或调整 spec 后重新登记")
     if NEEDS_REFINEMENT in statuses:
         return "SCORE 评分不足（<90），需要完善 spec"
     if BLOCKED in statuses:

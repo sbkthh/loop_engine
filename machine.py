@@ -338,6 +338,7 @@ class StateMachine:
         parsed = parse_checker_output(text)
         if not parsed:
             raise ValueError("Output format error: No CHECKER_OUTPUT block found")
+        module.pop("_align_done", None)  # consumed on success: commit routes to CHECKER directly
         hard = parsed.get("hard_error_count") or 0
         raw_soft = parsed.get("soft_warning_count") or 0
         rejected = [

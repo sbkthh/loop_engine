@@ -399,6 +399,59 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertNotIn("_gray_resume", state["modules"].get(self.key, {}))
 
+    def test_align_docs_flag_consumed_by_checker_commit(self):
+        """_align_done must not survive CHECKER commit, else next() re-dispatches
+        a redundant CHECKER after the module reaches SYNCED."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 1,
+            "hard_error_count": 0,
+            "soft_warning_count": 1,
+            "info_count": 0,
+            "discrepancies": [
+                {"severity": "SOFT_WARNING", "type": "B",
+                 "description": "method mismatch"},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 5, "failed": 0, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
+        sm = StateManager(self.root)
+        state = sm.load()
+        for d in state["gray_drafts"]:
+            d["status"] = "rejected"
+        sm.save(state)
+
+        # ALIGN_DOCS -> CHECKER route
+        r = machine.next()
+        self.assertEqual(r["action"], "ALIGN_DOCS")
+        self._write_result(json.dumps({
+            "status": "SUCCESS",
+            "updated_files": ["openspec/changes/chg/specs/m/spec.md"],
+            "alignment_report": [{"id": 1, "aligned": True, "note": "ok"}],
+        }))
+        machine.commit()
+        state = sm.load()
+        self.assertTrue(state["modules"][self.key].get("_align_done"))
+
+        # CHECKER commit consumes the flag
+        self._write_checker_consistent()
+        machine.commit()
+        state = sm.load()
+        self.assertNotIn("_align_done", state["modules"][self.key])
+        # and a later next() must NOT re-dispatch CHECKER from the stale flag
+        r = machine.next()
+        self.assertEqual(r["action"], "CODE_REVIEW")
+
     def test_checker_gray_list_fallback_when_warnings_unparsed(self):
         """When SOFT_WARNING_COUNT > 0 but no parseable discrepancies,
         fall back to raw count for gray-list routing."""

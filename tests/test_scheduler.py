@@ -256,6 +256,49 @@ class TestPoll(SchedulerBase):
         self.assertTrue(entries[0]["approved"])
         self.assertEqual(entries[0]["detected_at"], first["detected_at"])
 
+    def test_poll_carries_approved_entry_while_locked(self):
+        """Mid-execution polls must not drop the approved entry — a
+        gray_list pause stays resumable only if the entry survives the run."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        scheduler.poll()
+        scheduler.approve("req")
+        # run in progress: lock held + current.action set → _poll_requirement
+        # returns None, but the approved entry must be carried over
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    current={"module": "c/m", "action": "CHECKER", "attempt": 0})
+        with open(os.path.join(root, ".loop", "lock"), "w") as f:
+            f.write(str(os.getpid()))
+
+        self.assertEqual(scheduler.poll(), [])
+        entries = scheduler.load_pending()["pending"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["requirement"], "req")
+        self.assertTrue(entries[0]["approved"])
+
+        # run finished (unlocked): re-detected, approval preserved
+        os.remove(os.path.join(root, ".loop", "lock"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        entries = scheduler.poll()
+        self.assertTrue(entries[0]["approved"])
+
+    def test_poll_drops_unapproved_entry_while_locked(self):
+        """Carry-over applies only to approved entries — an unapproved
+        entry must not be revived by a mid-execution poll."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        scheduler.poll()
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    current={"module": "c/m", "action": "CHECKER", "attempt": 0})
+        with open(os.path.join(root, ".loop", "lock"), "w") as f:
+            f.write(str(os.getpid()))
+
+        self.assertEqual(scheduler.poll(), [])
+        self.assertEqual(scheduler.load_pending()["pending"], [])
+
+
 
 class TestApprove(SchedulerBase):
     def test_approve_auto_executable(self):

@@ -229,6 +229,15 @@ def poll():
         if entry:
             fresh.append(entry)
     prev = load_pending()
+    fresh_names = {e["requirement"] for e in fresh}
+    # Carry over approved entries whose requirement is mid-execution:
+    # _poll_requirement returns None while the lock is held, but the approved
+    # entry must survive the run so a gray_list pause stays resumable — the
+    # run's finally block decides whether to clear it afterwards.
+    carried = [e for e in prev.get("pending", [])
+               if e.get("approved")
+               and is_locked(e.get("root", ""))
+               and e["requirement"] not in fresh_names]
     newly_detected = []
     for entry in fresh:
         old = _find_entry(prev, entry["requirement"])
@@ -237,7 +246,7 @@ def poll():
             entry["detected_at"] = old.get("detected_at", entry["detected_at"])
         elif not old:
             newly_detected.append(entry)
-    _save_pending({"pending": fresh})
+    _save_pending({"pending": fresh + carried})
     if newly_detected:
         notify_pending(newly_detected)
     return fresh

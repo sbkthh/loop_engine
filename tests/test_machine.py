@@ -526,7 +526,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertEqual(r["next_action"], "_GRAY_LIST_")
 
         state = sm.load()
-        self.assertEqual(len(state["gray_drafts"]), 2)
+        self.assertEqual(len(state["gray_drafts"]), 1)
 
     def test_checker_filters_all_rejected_skips_gray_list(self):
         """When all soft_warnings match rejected drafts, skip GRAY_LIST."""

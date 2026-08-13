@@ -491,6 +491,12 @@ class StateMachine:
                                 "详见 .loop/result-CHECKER.md 存档"),
             }]
         drafts = state.setdefault("gray_drafts", [])
+        # Remove previously resolved drafts for this module — the current
+        # batch is independent; old accepted/rejected should not re-trigger
+        # MAKER_FIX on a new gray_list cycle
+        drafts[:] = [d for d in drafts
+                     if not (d.get("module") == key
+                             and d.get("status") != "pending")]
         next_id = max((d.get("id", 0) for d in drafts), default=0)
         for warning in warnings:
             next_id += 1

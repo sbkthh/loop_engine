@@ -141,9 +141,11 @@ class StateMachine:
             if not pending:
                 del module["_gray_resume"]
                 any_accepted = any(d.get("status") == "accepted"
+                                   and not d.get("_archived")
                                    for d in state.get("gray_drafts", [])
                                    if d.get("module") == module_key)
                 any_rejected = any(d.get("status") == "rejected"
+                                   and not d.get("_archived")
                                    for d in state.get("gray_drafts", [])
                                    if d.get("module") == module_key)
                 if any_accepted and any_rejected:
@@ -192,11 +194,13 @@ class StateMachine:
             {"id": d.get("id"), "summary": d.get("summary", "")}
             for d in state.get("gray_drafts", [])
             if d.get("status") == "rejected" and d.get("module") == module_key
+            and not d.get("_archived")
         ]
         accepted = [
             {"id": d.get("id"), "summary": d.get("summary", "")}
             for d in state.get("gray_drafts", [])
             if d.get("status") == "accepted" and d.get("module") == module_key
+            and not d.get("_archived")
         ]
         return directives.build(action, module_key, module,
                                 self.root_dir, rejected, accepted)
@@ -491,12 +495,13 @@ class StateMachine:
                                 "详见 .loop/result-CHECKER.md 存档"),
             }]
         drafts = state.setdefault("gray_drafts", [])
-        # Remove previously resolved drafts for this module — the current
-        # batch is independent; old accepted/rejected should not re-trigger
-        # MAKER_FIX on a new gray_list cycle
-        drafts[:] = [d for d in drafts
-                     if not (d.get("module") == key
-                             and d.get("status") != "pending")]
+        # Archive previously resolved drafts for this module instead of
+        # deleting — the current batch is independent; old accepted/rejected
+        # should not re-trigger MAKER_FIX on a new gray_list cycle, but the
+        # audit trail is preserved for fingerprint suppression and history.
+        for d in drafts:
+            if d.get("module") == key and d.get("status") != "pending":
+                d["_archived"] = True
         next_id = max((d.get("id", 0) for d in drafts), default=0)
         for warning in warnings:
             next_id += 1

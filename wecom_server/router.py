@@ -7,6 +7,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,12 +66,22 @@ _LLM_SYSTEM_PROMPT = (
     "'__GRAY_LIST__ ALL' when no requirement is mentioned), then you may add "
     "a short intro. Do NOT run any commands.\n\n"
     "When the user wants to adjudicate gray-list drafts (e.g. '接受 1', "
-    "'拒绝 2 3', '全部接受', '全部拒绝'), your reply MUST start with exactly "
-    "'__ADJUDICATE__ <requirement name> <draft id(s) or all> <accept|reject>' "
-    "(or '__ADJUDICATE__ ALL <draft id(s) or all> <accept|reject>' when no "
+    "'拒绝 2 3', '接受 1，拒绝 2 3', '全部接受', '全部拒绝'), your reply MUST "
+    "start with exactly '__ADJUDICATE__ <requirement name> <target> <decision>' "
+    "(or '__ADJUDICATE__ ALL <target> <decision>' when no "
     "requirement is mentioned) on the first line, then you may add a short "
-    "confirmation. Do NOT omit the requirement name — use ALL as the name when "
-    "the user didn't say which requirement. If the user "
+    "confirmation.\n"
+    "<target> is 'all' for all pending, a comma-separated list of ids for "
+    "a single decision, or 'mixed' for different decisions per draft. "
+    "<decision> is 'accept'/'reject' for uniform decisions, or a "
+    "comma-separated 'id=decision,...' pairs for mixed mode "
+    "(e.g. '1=accept,2=reject,3=reject').\n"
+    "Examples:\n"
+    "  accept 1 2 → __ADJUDICATE__ req 1,2 accept\n"
+    "  接受 1，拒绝 2 3 → __ADJUDICATE__ req mixed 1=accept,2=reject,3=reject\n"
+    "  全部接受 → __ADJUDICATE__ req all accept\n"
+    "Do NOT omit the requirement name — use ALL as the name when the "
+    "user didn't say which requirement. If the user "
     "mentions only draft numbers, infer the requirement from the last "
     "gray-list context. Do NOT run any commands — the prefix adjudicates "
     "automatically.\n\n"
@@ -253,8 +264,26 @@ def _execute_gray_list_view(name, registry, data_dir):
         lines.append(f"「{req_name}」草稿 {d['id']}："
                      f"[{label}] {summary}")
         lines.append(f"→ 回复「接受 {d['id']}」或「拒绝 {d['id']}」裁决该条")
-    lines.append("多条可一起处理：「全部接受」/「全部拒绝」")
+    lines.append("多条可一起处理：「全部接受」/「全部拒绝」，"
+                 "或混合：「接受 1，拒绝 2 3」")
     return "\n".join(lines)
+
+
+def _parse_decision_pairs(text):
+    """Parse mixed adjudication '1=accept, 2=reject' into {id: decision}.
+
+    Returns None when any token is malformed, so callers can report a
+    format error instead of silently dropping decisions.
+    """
+    pairs = {}
+    for token in re.split(r"[\s,，]+", text.strip()):
+        if not token:
+            continue
+        m = re.fullmatch(r"(\d+)=(accept|reject)", token)
+        if not m:
+            return None
+        pairs[int(m.group(1))] = m.group(2)
+    return pairs
 
 
 def _execute_adjudicate(name, target, decision, registry, data_dir):
@@ -262,8 +291,6 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from state import StateManager
     from machine import resolve_gray_draft
-    if decision not in ("accept", "reject"):
-        return "裁决命令应为 accept 或 reject"
 
     if name == "ALL":
         return _execute_adjudicate_all(target, decision, registry, data_dir)
@@ -277,18 +304,27 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
     st = sm.load()
     drafts = st.get("gray_drafts", [])
     pending = [d for d in drafts if d.get("status") == "pending"]
-    if target == "all":
-        ids = [d["id"] for d in pending]
+    if decision in ("accept", "reject"):
+        if target == "all":
+            ids = [d["id"] for d in pending]
+        else:
+            try:
+                ids = [int(t) for t in str(target).split(",") if t.strip()]
+            except ValueError:
+                return f"无法识别的草稿编号：{target}"
+        pairs = {i: decision for i in ids}
+    elif target == "mixed":
+        pairs = _parse_decision_pairs(decision)
+        if not pairs:
+            return (f"无法识别的混合裁决格式：{decision}"
+                    f"（应为 1=accept,2=reject 形式）")
     else:
-        try:
-            ids = [int(t) for t in str(target).split(",") if t.strip()]
-        except ValueError:
-            return f"无法识别的草稿编号：{target}"
-    if not ids:
+        return f"无法识别的草稿编号：{target}"
+    if not pairs:
         return "当前没有待裁决的草稿。"
     messages = []
-    for draft_id in ids:
-        ok, msg = resolve_gray_draft(sm, draft_id, decision)
+    for draft_id, draft_decision in pairs.items():
+        ok, msg = resolve_gray_draft(sm, draft_id, draft_decision)
         messages.append(msg)
     st = sm.load()
     remaining = [d for d in st.get("gray_drafts", [])
@@ -296,7 +332,11 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
     lines = ["\n".join(messages)]
     if not remaining:
         import scheduler
-        scheduler.approve(name)
+        try:
+            scheduler.approve(name)
+        except ValueError:
+            scheduler.poll()
+            scheduler.approve(name)
         cfg = scheduler.load_config()
         scheduler.dispatch(scheduler.load_pending()["pending"],
                            max_concurrency=cfg.get("max_concurrency", 2))
@@ -309,6 +349,8 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
 
 def _execute_adjudicate_all(target, decision, registry, data_dir):
     """Adjudicate drafts across all requirements with pending items."""
+    if decision not in ("accept", "reject"):
+        return "跨需求裁决仅支持单一决策（accept/reject）"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from state import StateManager
     from machine import resolve_gray_draft
@@ -341,7 +383,11 @@ def _execute_adjudicate_all(target, decision, registry, data_dir):
         all_lines.append(f"【{name}】 " + "; ".join(messages))
         if not remaining:
             import scheduler
-            scheduler.approve(name)
+            try:
+                scheduler.approve(name)
+            except ValueError:
+                scheduler.poll()
+                scheduler.approve(name)
             cfg = scheduler.load_config()
             scheduler.dispatch(scheduler.load_pending()["pending"],
                                max_concurrency=cfg.get("max_concurrency", 2))
@@ -577,10 +623,20 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     if reply.startswith("__ADJUDICATE__"):
         rest = reply[len("__ADJUDICATE__"):].strip().splitlines()[0].strip()
         parts = rest.split()
-        if len(parts) != 3:
-            return ("格式错误：__ADJUDICATE__ <需求名> <编号|all> "
-                    "<accept|reject>")
-        return _execute_adjudicate(parts[0], parts[1], parts[2],
+        if len(parts) < 2:
+            return ("格式错误：__ADJUDICATE__ <需求名> "
+                    "<编号|all|mixed> <accept|reject>")
+        name = parts[0]
+        if parts[1] == "mixed":
+            if len(parts) < 3:
+                return "格式错误：mixed 需要 id=accept,id=reject 决策对"
+            target, decision = "mixed", " ".join(parts[2:])
+        else:
+            if len(parts) != 3:
+                return ("格式错误：__ADJUDICATE__ <需求名> "
+                        "<编号|all|mixed> <accept|reject>")
+            target, decision = parts[1], parts[2]
+        return _execute_adjudicate(name, target, decision,
                                    registry, data_dir)
     if reply.startswith("__SPEC_RESULT__"):
         rest = reply[len("__SPEC_RESULT__"):].strip().splitlines()[0].strip()

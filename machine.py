@@ -193,8 +193,13 @@ class StateMachine:
             for d in state.get("gray_drafts", [])
             if d.get("status") == "rejected" and d.get("module") == module_key
         ]
+        accepted = [
+            {"id": d.get("id"), "summary": d.get("summary", "")}
+            for d in state.get("gray_drafts", [])
+            if d.get("status") == "accepted" and d.get("module") == module_key
+        ]
         return directives.build(action, module_key, module,
-                                self.root_dir, rejected)
+                                self.root_dir, rejected, accepted)
 
     def commit(self):
         state = self.sm.load()
@@ -419,6 +424,13 @@ class StateMachine:
         module["_align_done"] = True
         if parsed.get("alignment_report"):
             module["alignment_report"] = parsed["alignment_report"]
+        # ALIGN_DOCS may have edited spec.md: sync the hash so the follow-up
+        # CHECKER/scan compare against the new spec instead of a stale hash
+        spec_path = derive_spec_path(
+            module["change_id"], module["module_name"], self.root_dir)
+        new_hash = compute_spec_hash(spec_path)
+        if new_hash:
+            module["spec_hash"] = new_hash
         return CHECKER
 
     def _commit_code_review(self, state, key, module, text):

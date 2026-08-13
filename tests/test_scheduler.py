@@ -16,14 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scheduler
 
 
-def _make_state(root, modules, current=None):
+def _make_state(root, modules, current=None, drafts=None):
     os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
     state = {
         "version": 1,
         "root_dir": root,
         "current": current or {"module": None, "action": None, "attempt": 0},
         "modules": modules,
-        "gray_drafts": [],
+        "gray_drafts": drafts if drafts is not None else [],
         "trace": [],
         "audit_trail": [],
     }
@@ -294,6 +294,37 @@ class TestApprove(SchedulerBase):
         self.assertEqual(scheduler.approve(all_=True), 1)
         pending = scheduler.load_pending()["pending"]
         by_name = {e["requirement"]: e for e in pending}
+        self.assertTrue(by_name["req-a"]["approved"])
+        self.assertFalse(by_name["req-b"]["approved"])
+
+    def test_approve_blocked_by_pending_gray_drafts(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    drafts=[{"id": 1, "module": "c/m", "status": "pending",
+                             "summary": "s", "type_label": "SOFT_WARNING"}])
+        scheduler.poll()
+
+        with self.assertRaises(ValueError) as ctx:
+            scheduler.approve("req")
+        self.assertIn("灰名单", str(ctx.exception))
+        entry = scheduler.load_pending()["pending"][0]
+        self.assertFalse(entry["approved"])
+
+    def test_approve_all_skips_pending_gray_drafts(self):
+        r1 = self.register("req-a", os.path.join(self.tmp.name, "req-a"))
+        _make_spec(r1, "c", "m")
+        _make_state(r1, {"c/m": _module("c", "m", "READY")})
+        r2 = self.register("req-b", os.path.join(self.tmp.name, "req-b"))
+        _make_spec(r2, "c", "m")
+        _make_state(r2, {"c/m": _module("c", "m", "READY")},
+                    drafts=[{"id": 1, "module": "c/m", "status": "pending",
+                             "summary": "s", "type_label": "SOFT_WARNING"}])
+        scheduler.poll()
+
+        self.assertEqual(scheduler.approve(all_=True), 1)
+        by_name = {e["requirement"]: e
+                   for e in scheduler.load_pending()["pending"]}
         self.assertTrue(by_name["req-a"]["approved"])
         self.assertFalse(by_name["req-b"]["approved"])
 

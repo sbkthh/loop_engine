@@ -5,3 +5,4 @@ __pycache__/
 pending.json
 requirements.json
 schedule.json
+docs/

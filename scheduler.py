@@ -261,13 +261,29 @@ def _no_pending_message(name):
     return f"{name} 当前没有待执行工作（等待下次 poll 检测）"
 
 
+def _has_pending_gray_drafts(root):
+    """True if the project at *root* has any uncleared gray-list draft."""
+    state_path = os.path.join(root, ".loop", "state.json")
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return any(
+        d.get("status") == "pending"
+        for d in state.get("gray_drafts", [])
+    )
+
+
 def approve(name=None, all_=False, approved_by=None):
     data = load_pending()
     entries = data.get("pending", [])
     if all_:
         count = 0
         for e in entries:
-            if e.get("trigger") in AUTO_EXECUTABLE and not e.get("approved"):
+            if (e.get("trigger") in AUTO_EXECUTABLE
+                    and not e.get("approved")
+                    and not _has_pending_gray_drafts(e.get("root", ""))):
                 e["approved"] = True
                 if approved_by:
                     e["approved_by"] = approved_by
@@ -286,6 +302,9 @@ def approve(name=None, all_=False, approved_by=None):
             f"{name}（{tlabel}）为报告状态，需先完成 spec 相关工作，不支持自动执行")
     if entry.get("approved"):
         return 0
+    if _has_pending_gray_drafts(entry.get("root", "")):
+        raise ValueError(
+            f"{name} 有灰名单草稿待裁决，请先处理后再批准执行")
     entry["approved"] = True
     if approved_by:
         entry["approved_by"] = approved_by
@@ -847,7 +866,8 @@ def run_requirement(name):
         return {"requirement": name, "steps": steps, "end": end}
     finally:
         release_lock(root)
-        _clear_approval(name)
+        if end != "gray_list":
+            _clear_approval(name)
         finished_at = time.time()
         elapsed_min = int((finished_at - start) // 60)
         _record_run(name, end, steps, start, finished_at)

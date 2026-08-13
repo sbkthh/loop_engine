@@ -14,7 +14,8 @@ from spec_utils import (
 )
 
 
-def build(action, module_key, module, root_dir=".", rejected_drafts=None):
+def build(action, module_key, module, root_dir=".", rejected_drafts=None,
+          accepted_drafts=None):
     change_id = module["change_id"]
     module_name = module["module_name"]
     spec_path = derive_spec_path(change_id, module_name, root_dir)
@@ -198,10 +199,35 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None):
     elif action == MAKER_FIX:
         d["plan_path"] = module.get("plan_path") or plan_path
         hard_errors = module.get("hard_errors", [])
+        accepted_lines = "\n".join(
+            f"- [{a.get('id')}] {a.get('summary', '')}" for a in (accepted_drafts or [])
+        ) if accepted_drafts else ""
+        if hard_errors and accepted_lines:
+            fix_items = (
+                "Fix these discrepancies:\n"
+                "HARD_ERROR (spec says code is wrong):\n"
+                + "\n".join(f"  [{e.get('type','?')}] {e.get('description','')}"
+                           for e in hard_errors)
+                + "\nSOFT_WARNING (user accepted these gray-list items):\n"
+                + accepted_lines
+            )
+        elif hard_errors:
+            fix_items = (
+                "Fix these HARD_ERROR discrepancies:\n"
+                + "\n".join(f"  [{e.get('type','?')}] {e.get('description','')}"
+                           for e in hard_errors)
+            )
+        elif accepted_lines:
+            fix_items = (
+                "Fix these gray-list items the user accepted:\n" + accepted_lines
+            )
+        else:
+            fix_items = "No specific discrepancies reported."
         d["instructions"] = (
-            "Fix Mode. Fix ONLY the reported HARD_ERROR discrepancies.\n"
+            "Fix Mode.\n"
             "Do NOT redesign, add features, or modify spec files.\n"
             "If fix requires test changes: mini TDD cycle (RED first, then GREEN).\n"
+            f"{fix_items}\n"
             f"Run '{test_cmd}'."
         )
         d["output_format"] = (
@@ -215,6 +241,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None):
             "status: SUCCESS or FAILED."
         )
         d["context"]["hard_errors"] = hard_errors
+        d["context"]["accepted_warnings"] = (accepted_drafts or [])
         d["context"]["test_command"] = test_cmd
 
     elif action == CODE_REVIEW:

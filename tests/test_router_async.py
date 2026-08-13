@@ -463,6 +463,104 @@ def test_adjudicate_unknown_id(monkeypatch, tmp_path):
     assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
 
 
+def test_adjudicate_mixed_decisions(monkeypatch, tmp_path):
+    """__ADJUDICATE__ mixed applies per-draft decisions in one message."""
+    import scheduler as sched_mod
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+        {"id": 2, "module": "chg1/m1", "summary": "warn B",
+         "status": "pending"},
+        {"id": 3, "module": "chg1/m1", "summary": "warn C",
+         "status": "pending"},
+    ])
+
+    approve_called = False
+    dispatch_called = False
+    def _fake_approve(name, **kw):
+        nonlocal approve_called
+        approve_called = True
+        return 1
+    def _fake_dispatch(pending, **kw):
+        nonlocal dispatch_called
+        dispatch_called = True
+        return {"req": None}
+    monkeypatch.setattr(sched_mod, "approve", _fake_approve)
+    monkeypatch.setattr(sched_mod, "dispatch", _fake_dispatch)
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req mixed 1=accept, 2=reject,3=reject\n"
+                    "已处理", root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    statuses = {d["id"]: d["status"] for d in st["gray_drafts"]}
+    assert statuses == {1: "accepted", 2: "rejected", 3: "rejected"}
+    assert "已接受草稿 1" in reply
+    assert "已拒绝草稿 2" in reply
+    assert "已拒绝草稿 3" in reply
+    assert "全部裁决完毕" in reply
+    assert approve_called
+    assert dispatch_called
+
+
+def test_adjudicate_mixed_last_remaining_reports(monkeypatch, tmp_path):
+    """Mixed adjudication leaving drafts pending reports the remainder."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+        {"id": 2, "module": "chg1/m1", "summary": "warn B",
+         "status": "pending"},
+        {"id": 3, "module": "chg1/m1", "summary": "warn C",
+         "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req mixed 1=accept,2=reject", root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    statuses = {d["id"]: d["status"] for d in st["gray_drafts"]}
+    assert statuses == {1: "accepted", 2: "rejected", 3: "pending"}
+    assert "还有 1 条待裁决" in reply
+
+
+def test_adjudicate_mixed_bad_format(monkeypatch, tmp_path):
+    """Malformed mixed spec → helpful error, state untouched."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 1, "module": "chg1/m1", "summary": "warn A",
+         "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ req mixed 1=maybe", root)
+    reply = fn()
+
+    assert "混合裁决格式" in reply
+    assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
+
+
+def test_adjudicate_all_requires_single_decision(monkeypatch, tmp_path):
+    """Cross-requirement ALL adjudication rejects mixed mode."""
+    root, _ = _make_spec_root(tmp_path)
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    "__ADJUDICATE__ ALL mixed 1=accept,2=reject", root)
+    reply = fn()
+
+    assert "单一决策" in reply
+
+
+
 def test_adjudicate_unknown_requirement(monkeypatch, tmp_path):
     """Unknown requirement → helpful error."""
     root, _ = _make_spec_root(tmp_path)

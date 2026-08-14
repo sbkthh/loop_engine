@@ -56,7 +56,7 @@ CLI          OK       available
 Skill        OK       /Users/.../spec-session/SKILL.md
 Data dir     OK       /Users/.../.qoder/loop_engine
 Registry     OK       0 requirement(s) registered
-Tests        OK       176 passed in 6.57s
+Tests        OK       261 passed in 13.42s
 
 System ready.
 ```
@@ -149,7 +149,7 @@ loop_engine requirement-add cross-dock-system \
 4. 初始化 `.loop/state.json`，所有模块状态为 DRAFT
 5. 注册到 registry
 
-**下一步**：在 qodercli 中用 grilling + openspec-propose 技能精炼 spec，然后启动 SCORE 往返。
+**下一步**：在 qodercli 中用 brainstorming 技能进行完整的设计流程（需求分析 → 方案设计 → 文档），然后启动 SCORE 往返。
 
 ### 查看所有已注册需求
 
@@ -235,12 +235,19 @@ loop_engine status --root ~/loop-work/cross-dock
 ### 完整链路预览
 
 ```
-SCORE → CLASSIFY_CHANGE → MAKER_STEP0 → STEP1_RED → STEP2_GREEN
-  → CHECKER ─→ 不一致 → GRAY_LIST（微信裁决）
-  │               ├─ 全部接受 → MAKER_FIX → CHECKER
-  │               ├─ 全部拒绝 → ALIGN_DOCS → CHECKER
-  │               └─ 混合     → MAKER_FIX → ALIGN_DOCS → CHECKER
-  → CHECKER ─→ 一致 → CODE_REVIEW → CODE_REVIEW_FIX(可选) → SYNCED
+SPEC_CHANGED → CLASSIFY_CHANGE ─→ 轻量 → CHECKER
+                                └→ 重量 → SCORE ─→ MAKER_STEP0
+
+READY → MAKER_STEP0 → STEP1_RED → STEP2_GREEN → CHECKER
+
+CHECKER ─→ 硬错误 → MAKER_FIX ─→ CHECKER（最多重试 3 次）
+        │
+        ├→ 软警告 → GRAY_LIST（微信裁决）
+        │             ├─ 全部接受 → MAKER_FIX → CHECKER
+        │             ├─ 全部拒绝 → ALIGN_DOCS → CHECKER
+        │             └─ 混合     → MAKER_FIX → ALIGN_DOCS → CHECKER
+        │
+        └→ 一致 → CODE_REVIEW → CODE_REVIEW_FIX(可选) → SYNCED
 ```
 
 ---
@@ -354,6 +361,12 @@ loop_engine add-blocker --root <path> <module> <description>
 
 # 解决 DRAFT 决议
 loop_engine resolve-draft --root <path> <id> accept|reject
+
+# 手动接管锁（调试用）：开始手动循环
+loop_engine manual-begin --root <path>
+
+# 手动结束循环，释放锁
+loop_engine manual-end --root <path>
 ```
 
 ---
@@ -372,7 +385,7 @@ loop_engine requirement-add strategic-stockup-system-upgrade \
   --projects backend=~/IdeaProjects/zkh-opc-sna
 
 # 2. 在 qodercli 中用 AI 技能精炼 spec
-#    @grilling → @openspec-propose → SCORE 往返
+#    brainstorming 设计 → SCORE 往返
 
 # 3. 手动运行第一轮 SCORE
 loop_engine status --root ~/loop-work/stockup
@@ -606,8 +619,15 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
     ├── test_directives.py
     ├── test_spec_utils.py
     ├── test_setup.py
-    ├── test_scheduler.py       # 调度器 29 个测试
-    └── test_session_clean.py
+    ├── test_scheduler.py
+    ├── test_session_clean.py
+    ├── test_audit_hook.py
+    ├── test_context.py
+    ├── test_registry.py
+    ├── test_router_async.py
+    ├── test_wecom_api.py
+    ├── test_wecom_crypto.py
+    └── test_wecom_handlers.py
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
 ├── requirements.json           # 需求注册表

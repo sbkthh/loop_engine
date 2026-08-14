@@ -149,7 +149,7 @@ loop_engine requirement-add cross-dock-system \
 4. 初始化 `.loop/state.json`，所有模块状态为 DRAFT
 5. 注册到 registry
 
-**下一步**：在 qodercli 中用 brainstorming 技能进行完整的设计流程（需求分析 → 方案设计 → 文档），然后启动 SCORE 往返。
+**下一步**：在 qodercli 中用 grill-me 技能精炼设计，然后启动 SCORE 往返。
 
 ### 查看所有已注册需求
 
@@ -384,8 +384,7 @@ loop_engine requirement-add strategic-stockup-system-upgrade \
   --change ssu-001 \
   --projects backend=~/IdeaProjects/zkh-opc-sna
 
-# 2. 在 qodercli 中用 AI 技能精炼 spec
-#    brainstorming 设计 → SCORE 往返
+# 2. 在 qodercli 中用 grill-me 技能精炼 spec，然后启动 SCORE 往返
 
 # 3. 手动运行第一轮 SCORE
 loop_engine status --root ~/loop-work/stockup

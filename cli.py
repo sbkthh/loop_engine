@@ -177,9 +177,8 @@ def cmd_requirement_add(args):
         print(f"  PRD:      {result['prd']}")
         print()
         print("Next steps:")
-        print("  1. In qodercli, run '@grilling' to refine requirements from the PRD")
-        print("  2. Run '@openspec-propose' to formalize specs with proper artifacts")
-        print("  3. Run 'loop_engine next --root <path>' to start SCORE round-trip")
+        print("  1. In qodercli, run '/prd-to-spec' to generate OpenSpec artifacts from the PRD")
+        print("  2. Then run '@spec-session' to start SCORE round-trip")
         return
     try:
         entry = registry.add_requirement(args.name, args.root_path,

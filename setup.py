@@ -6,13 +6,13 @@ import subprocess
 
 from constants import STATE_FILE
 from state import StateManager
-from spec_utils import parse_prd_sections, generate_spec_from_prd, compute_spec_hash
+from spec_utils import parse_prd_sections, write_prd_summary
 import registry
 import report
 
 
 def init_from_prd(name, root, change_id, projects, prd_path, modules=None, context=None):
-    """Full PRD-driven setup: parse PRD → worktrees → init → generate specs → register."""
+    """Full PRD-driven setup: parse PRD → worktrees → init → write summary → register."""
     root = os.path.abspath(root)
     os.makedirs(root, exist_ok=True, mode=0o755)
     sections = parse_prd_sections(prd_path)
@@ -37,17 +37,13 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
         module_name = heading.lower().replace(" ", "-").replace("/", "-")
         spec_dir = os.path.join(root, "openspec", "changes", change_id, "specs", module_name)
         os.makedirs(spec_dir, exist_ok=True, mode=0o755)
-        spec_path = os.path.join(spec_dir, "spec.md")
-        if not os.path.exists(spec_path):
-            spec_content = generate_spec_from_prd(heading, content)
-            with open(spec_path, "w") as f:
-                f.write(spec_content)
         key = StateManager.module_key(change_id, module_name)
         if key not in state["modules"]:
-            spec_hash = compute_spec_hash(spec_path)
-            StateManager.add_module(state, key, change_id, module_name, spec_hash=spec_hash)
+            StateManager.add_module(state, key, change_id, module_name)
         created.append(module_name)
 
+    write_prd_summary(root, change_id, name, sections, prd_path,
+                      projects=[{"name": n, "source": s} for n, s in projects])
     sm.save(state)
     projects_data = [{"name": n, "source": s} for n, s in projects]
     entry = registry.add_requirement(name, root, projects=projects_data,

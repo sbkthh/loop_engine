@@ -2,6 +2,7 @@
 
 import glob
 import hashlib
+import json
 import os
 import re
 
@@ -34,20 +35,36 @@ def parse_prd_sections(prd_path):
     return sections
 
 
-def generate_spec_from_prd(module_name, section_content):
-    """Generate an initial spec.md from PRD section content."""
-    return f"""## ADDED Requirements
+def write_prd_summary(root, change_id, requirement_name, sections, prd_path, projects=None):
+    """Write .loop/prd_summary.json from parsed PRD sections.
 
-### Requirement: {module_name}
-
-{section_content.strip()}
-
-#### Scenario: Basic flow
-
-- **WHEN** the system processes {module_name}
-- **THEN** it performs the expected behavior
-
-"""
+    The /prd-to-spec skill reads this file to bootstrap openspec-propose
+    artifacts (proposal → design → specs → tasks) with the actual PRD
+    content, instead of asking the user what to build.
+    """
+    modules = []
+    for heading, content in sections:
+        module_name = heading.lower().replace(" ", "-").replace("/", "-")
+        spec_path = derive_spec_path(change_id, module_name, root)
+        modules.append({
+            "name": module_name,
+            "heading": heading,
+            "prd_content": content,
+            "spec_path": spec_path,
+        })
+    summary = {
+        "prd_path": os.path.abspath(prd_path),
+        "change_id": change_id,
+        "requirement_name": requirement_name,
+        "root": os.path.abspath(root),
+        "projects": projects or [],
+        "modules": modules,
+    }
+    summary_path = os.path.join(root, ".loop", "prd_summary.json")
+    os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    return summary_path
 
 
 def derive_spec_path(change_id, module_name, root="."):

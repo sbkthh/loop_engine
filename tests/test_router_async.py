@@ -17,13 +17,14 @@ def test_dispatch_always_returns_callable():
 
 
 def test_system_prompt_has_prd_bootstrap_rules():
-    """G prompt must reference prd-to-spec so PRD-registered requirements
-    can be bootstrapped entirely from WeCom."""
+    """G prompt must support PRD registration + bootstrap entirely from WeCom."""
     from wecom_server import router
 
     assert "prd-to-spec" in router._LLM_SYSTEM_PROMPT
     assert ".loop/prd_summary.json" in router._LLM_SYSTEM_PROMPT
     assert "openspec new" in router._LLM_SYSTEM_PROMPT
+    assert "requirement-add" in router._LLM_SYSTEM_PROMPT
+    assert "--prd" in router._LLM_SYSTEM_PROMPT
 
 
 def _fake_llm_reply(stdout):

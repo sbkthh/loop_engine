@@ -149,7 +149,7 @@ loop_engine requirement-add cross-dock-system \
 4. 初始化 `.loop/state.json`，所有模块状态为 DRAFT
 5. 注册到 registry
 
-**下一步**：在 qodercli 中用 grill-me 技能精炼设计，然后启动 SCORE 往返。
+**下一步**：在 qodercli 中唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
 
 ### 查看所有已注册需求
 
@@ -330,7 +330,8 @@ Skill 会自动：
 1. 读取所有已注册需求
 2. 展示 Dashboard（需求 → 模块 → 状态）
 3. 高亮需要关注的项目（NEEDS_REFINEMENT / BLOCKED / DRAFT）
-4. 执行 SCORE 往返、精炼 spec、跨模块一致性检查
+4. 对 DRAFT 模块自动调用 grill-me 逐个追问澄清需求，确认后编辑 spec.md
+5. 执行 SCORE 往返（next → 打分 → commit）、跨模块一致性检查
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -384,7 +385,7 @@ loop_engine requirement-add strategic-stockup-system-upgrade \
   --change ssu-001 \
   --projects backend=~/IdeaProjects/zkh-opc-sna
 
-# 2. 在 qodercli 中用 grill-me 技能精炼 spec，然后启动 SCORE 往返
+# 2. 在 qodercli 中用 @spec-session 管理 spec：grill-me 澄清 → SCORE 往返 → READY
 
 # 3. 手动运行第一轮 SCORE
 loop_engine status --root ~/loop-work/stockup

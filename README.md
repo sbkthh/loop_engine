@@ -88,14 +88,14 @@ loop_engine requirement-add <requirement-name> /path/to/root \
 
 ### 从 PRD 文档一键初始化（推荐）
 
-一条命令完成：解析 PRD → 创建 worktree → 生成 spec → 注册。
+一条命令完成：解析 PRD → 创建 worktree → 写 PRD 摘要 → 注册。
 
 ```bash
 loop_engine requirement-add <name> <root-path> \
   --prd doc.md \
   --change <change-id> \
   --projects name=path,name=path \
-  --modules "模块A,模块B"    # 可选：只生成指定模块，默认从 ## 标题推断
+  --modules "模块A,模块B"    # 可选：只注册指定模块，默认从 ## 标题推断
 ```
 
 `--projects` 的 `name=path` 中：
@@ -117,8 +117,10 @@ loop_engine requirement-add strategic-stockup-system-upgrade \
 ```
 ~/loop-work/stockup/
 ├── backend/              ← Git worktree (feature/ssu-001), 源 = ~/IdeaProjects/zkh-opc-sna
-├── .loop/state.json
-└── openspec/changes/ssu-001/specs/
+├── .loop/
+│   ├── state.json        ← 模块状态
+│   └── prd_summary.json  ← PRD 摘要（/prd-to-spec 的输入）
+└── openspec/             ← /prd-to-spec 运行后生成 artifacts
 ```
 
 **多项目示例：**
@@ -137,19 +139,23 @@ loop_engine requirement-add cross-dock-system \
 ~/loop-work/cross-dock/
 ├── backend/              ← worktree from ~/repos/backend-service, branch feature/cd-001
 ├── frontend/             ← worktree from ~/repos/web-portal, branch feature/cd-001
-├── .loop/state.json
-└── openspec/changes/cd-001/specs/...
+├── .loop/
+│   ├── state.json
+│   └── prd_summary.json  ← PRD 摘要（/prd-to-spec 的输入）
+└── openspec/             ← /prd-to-spec 运行后生成 artifacts
 ```
 
 `--prd` 自动完成：
 
 1. 解析 PRD 中 `##` 标题作为模块（或用 `--modules` 指定）
 2. 为每个项目创建 Git worktree + feature branch
-3. 生成 `openspec/changes/<change-id>/specs/<module>/spec.md`（含 PRD 内容）
-4. 初始化 `.loop/state.json`，所有模块状态为 DRAFT
+3. 初始化 `.loop/state.json`，所有模块状态为 DRAFT
+4. 写入 `.loop/prd_summary.json`（PRD 摘要：模块名 + 各节内容 + 项目信息）
 5. 注册到 registry
 
-**下一步**：在 qodercli 中唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
+> 注意：`--prd` 不再直接生成 spec 文件。spec 由 qodercli 侧的 `/prd-to-spec` skill 根据 PRD 摘要生成（见下）。
+
+**下一步**：在 qodercli 中运行 `/prd-to-spec`，它会读取 PRD 摘要并驱动 openspec 生成 artifacts（proposal → design → specs → tasks）；然后唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
 
 ### 查看所有已注册需求
 
@@ -325,6 +331,8 @@ crontab -e
 @spec-session 查看所有需求状态
 ```
 
+> 从 PRD 注册的新需求（`requirement-add --prd`）没有 spec 文件，先运行 `/prd-to-spec` 生成 OpenSpec artifacts，再进入本会话。
+
 Skill 会自动：
 
 1. 读取所有已注册需求
@@ -377,7 +385,7 @@ loop_engine manual-end --root <path>
 ### 方式一：从 PRD 文档开始（推荐，单项目）
 
 ```bash
-# 1. 一条命令：注册 + worktree + spec 初始化
+# 1. 一条命令：注册 + worktree + PRD 摘要
 #    根目录 ~/loop-work/stockup 自动创建，不依赖 cd
 loop_engine requirement-add strategic-stockup-system-upgrade \
   ~/loop-work/stockup \
@@ -385,18 +393,21 @@ loop_engine requirement-add strategic-stockup-system-upgrade \
   --change ssu-001 \
   --projects backend=~/IdeaProjects/zkh-opc-sna
 
-# 2. 在 qodercli 中用 @spec-session 管理 spec：grill-me 澄清 → SCORE 往返 → READY
+# 2. 在 qodercli 中运行 /prd-to-spec，从 PRD 摘要生成 OpenSpec artifacts
+#    （proposal / design / specs / tasks）
 
-# 3. 手动运行第一轮 SCORE
+# 3. 用 @spec-session 管理 spec：grill-me 澄清 → SCORE 往返 → READY
+
+# 4. 手动运行第一轮 SCORE
 loop_engine status --root ~/loop-work/stockup
 loop_engine next --root ~/loop-work/stockup
 # → 编辑 .loop/result.md（评分）
 loop_engine commit --root ~/loop-work/stockup
 
-# 4. 重复直到 SYNCED
+# 5. 重复直到 SYNCED
 loop_engine status --root ~/loop-work/stockup
 
-# 5. 或者让调度器自动跑
+# 6. 或者让调度器自动跑
 loop_engine poll
 loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
@@ -416,10 +427,10 @@ loop_engine requirement-add cross-dock-system \
 #   ~/loop-work/cross-dock/
 #     backend/    ← worktree, feature/cd-001
 #     frontend/   ← worktree, feature/cd-001
-#     .loop/state.json
+#     .loop/state.json + prd_summary.json
 #     openspec/...
 
-# 2-5. 后续步骤同方式一（status → next → commit → SYNCED）
+# 2-6. 后续步骤同方式一（/prd-to-spec → @spec-session → status → next → commit → SYNCED）
 ```
 
 ### 方式三：手动注册 + 初始化

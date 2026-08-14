@@ -155,7 +155,10 @@ loop_engine requirement-add cross-dock-system \
 
 > 注意：`--prd` 不再直接生成 spec 文件。spec 由 qodercli 侧的 `/prd-to-spec` skill 根据 PRD 摘要生成（见下）。
 
-**下一步**：在 qodercli 中运行 `/prd-to-spec`，它会读取 PRD 摘要并驱动 openspec 生成 artifacts（proposal → design → specs → tasks）；然后唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
+**下一步（两条路径，任选其一）：**
+
+- **终端**：在 qodercli 中运行 `/prd-to-spec`，它会读取 PRD 摘要并驱动 openspec 生成 artifacts（proposal → design → specs → tasks）；然后唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
+- **微信（推荐，全程微信闭环）**：注册本身也可以在微信里完成——直接发 PRD 路径 + 需求名/根目录/change-id/项目仓库（缺的参数 G 会逐个问），G 自动执行 `requirement-add --prd` 并汇报结果。之后说"按 PRD 生成 spec"生成 artifacts，G 自动进入 grill-me 澄清，定稿后 `__SPEC_RESULT__` 汇报，微信"批准执行"即进入调度器。全程无需打开终端/qodercli。
 
 ### 查看所有已注册需求
 
@@ -325,6 +328,8 @@ crontab -e
 
 ## 六、Layer 1 Spec Session（AI 管理会话）
 
+### 终端路径（qodercli）
+
 在 qodercli 中唤起 spec-session skill：
 
 ```
@@ -340,6 +345,17 @@ Skill 会自动：
 3. 高亮需要关注的项目（NEEDS_REFINEMENT / BLOCKED / DRAFT）
 4. 对 DRAFT 模块自动调用 grill-me 逐个追问澄清需求，确认后编辑 spec.md
 5. 执行 SCORE 往返（next → 打分 → commit）、跨模块一致性检查
+
+### 微信路径（推荐，spec 全程在微信完成）
+
+微信侧 G（qodercli 子进程）已内置同样的 spec 管理规则，无需手动唤起 skill：
+
+1. **注册**：发 PRD 路径 + 需求参数（缺啥 G 问啥）→ G 执行 `requirement-add --prd`
+2. **生成 artifacts**：说"按 PRD 生成 spec"→ G 按 prd-to-spec 流程生成 proposal/design/specs/tasks
+3. **澄清**：G 自动进入 grill-me 逐个追问，确认后编辑 spec.md
+4. **汇报**：编辑完 G 输出 `__SPEC_RESULT__` → 校验/备份/置 PARTIAL
+5. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
+6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 批准
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -413,6 +429,8 @@ loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
 ```
 
+> **微信替代**：第 1-5 步全部可在微信完成——发 PRD 路径 + 参数注册，说"按 PRD 生成 spec"，G 澄清后编辑 spec，`__SPEC_RESULT__` 汇报，回复"批准执行"即进入第 6 步。参见「六、Layer 1 Spec Session — 微信路径」。
+
 ### 方式二：从 PRD 文档开始（多项目）
 
 ```bash
@@ -481,6 +499,9 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 
 - `查状态` — 查看所有需求状态
 - `批准执行` — 批准待执行的需求
+- `注册需求`（发 PRD 路径 + 需求名/根目录/change-id/项目仓库）— 自动执行 `requirement-add --prd`
+- `按 PRD 生成 spec` — 生成 proposal/design/specs/tasks，然后自动进入 grill-me 澄清
+- 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
 - 其他自然语言问题 — LLM 自动理解并回答
 
 ### 配置
@@ -586,6 +607,8 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 │  G: qodercli 子进程（每个微信消息一次）                              │
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
+│     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │
+│     grill-me 澄清 / 编辑 spec.md                                   │
 │                                                                     │
 │     前缀路由（F 根据 LLM 回复的第一行识别，不经过二次 LLM）：          │
 │     __APPROVE__ <name>         → approve + dispatch → fork B       │
@@ -604,7 +627,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 | B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；锁 + 心跳 + 重试；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
 | F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → 前缀路由 → handler 进程内执行 |
-| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；5 种前缀触发不同 handler |
+| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种前缀触发不同 handler |
 
 ```
 ~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）

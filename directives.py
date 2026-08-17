@@ -29,9 +29,10 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         "action": action,
         "module": module_key,
         "attempt": attempt,
+        "project_root": project_root,
         "directives": {
             "spec_path": spec_path,
-            "context": {"spec_hash": spec_hash},
+            "context": {"spec_hash": spec_hash, "project_root": project_root},
         },
     }
     d = base["directives"]
@@ -90,8 +91,15 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "Pre-existing spec↔code deviations NOT introduced by this change "
             "are OUT OF SCOPE: do NOT list them as tasks, do NOT plan fixes "
             "for them — the CHECKER detects them independently.\n"
+            "CRITICAL — project root: all file paths in the plan MUST use "
+            "the project_root from the context field below as the base "
+            "directory. Do NOT guess or hardcode paths from your training "
+            "data. If a worktree directory exists at "
+            "<root_dir>/<project_name> (where root_dir is the requirement "
+            "root, e.g. /Users/chuan.li/loop-work/cross-dock), use the "
+            "worktree path; otherwise use project_root as-is.\n"
             "Generate an implementation plan at the plan_path. The plan must include:\n"
-            "- File list: each file to create/modify with its package path\n"
+            "- File list: each file to create/modify with its absolute path under project_root\n"
             "- Class responsibilities: one sentence per class\n"
             "- Data flow: Controller → Service → DAO → DB\n"
             "- TDD classification table: each method marked 'must TDD' or 'skip' with reason\n"

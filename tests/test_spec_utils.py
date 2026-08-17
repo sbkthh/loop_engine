@@ -73,5 +73,61 @@ class TestReadCheckerTestCommand(unittest.TestCase):
         self.assertEqual(cmd, "mvn test")
 
 
+class TestResolveProjectRoot(unittest.TestCase):
+    """projects[].name = real project name; module_to_project bridges module names."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        import registry as reg
+        self._orig_path = reg.REGISTRY_PATH
+        reg.REGISTRY_PATH = os.path.join(self.root, "requirements.json")
+        self.reg = reg
+
+    def tearDown(self):
+        self.reg.REGISTRY_PATH = self._orig_path
+        self.tmp.cleanup()
+
+    def _register(self, projects, module_to_project=None):
+        entry = {"name": "test-req", "root": self.root, "projects": projects}
+        if module_to_project:
+            entry["module_to_project"] = module_to_project
+        self.reg.save({"requirements": [entry]})
+
+    def test_mapping_prefers_worktree(self):
+        src = os.path.join(self.root, "src-repo")
+        wt = os.path.join(self.root, "kunhe-wms")
+        os.makedirs(src)
+        os.makedirs(wt)
+        self._register([{"name": "kunhe-wms", "source": src}],
+                       module_to_project={"seed-label-print": "kunhe-wms"})
+        from spec_utils import resolve_project_root
+        self.assertEqual(
+            resolve_project_root(self.root, "seed-label-print"), wt)
+
+    def test_mapping_falls_back_to_source(self):
+        src = os.path.join(self.root, "kunhe-order")
+        os.makedirs(src)
+        self._register([{"name": "kunhe-order", "source": src}],
+                       module_to_project={"cross-dock-persistence": "kunhe-order"})
+        from spec_utils import resolve_project_root
+        self.assertEqual(
+            resolve_project_root(self.root, "cross-dock-persistence"), src)
+
+    def test_legacy_name_match_without_mapping(self):
+        src = os.path.join(self.root, "legacy-proj")
+        os.makedirs(src)
+        self._register([{"name": "legacy-proj", "source": src}])
+        from spec_utils import resolve_project_root
+        self.assertEqual(resolve_project_root(self.root, "legacy-proj"), src)
+
+    def test_no_match_returns_none(self):
+        src = os.path.join(self.root, "other-proj")
+        os.makedirs(src)
+        self._register([{"name": "other-proj", "source": src}])
+        from spec_utils import resolve_project_root
+        self.assertIsNone(resolve_project_root(self.root, "unknown-module"))
+
+
 if __name__ == '__main__':
     unittest.main()

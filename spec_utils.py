@@ -108,18 +108,20 @@ def discover_modules(root="."):
 def resolve_project_root(root_dir, module_name):
     """Map a discovered module to its working copy via the registry.
 
-    Prefers the worktree (root/<name>) when it exists, else the source repo
-    path (direct development mode). Returns None when no registry project
-    matches the module name.
+    projects[].name is the real project/repo name; module_to_project maps
+    spec module names to those project names. Prefers the worktree
+    (root/<project name>) when it exists, else the source repo path.
+    Returns None when no registry project matches the module name.
     """
     root_dir = os.path.abspath(root_dir)
     for r in registry.list_requirements():
         if os.path.abspath(r.get("root", "")) != root_dir:
             continue
+        project_name = r.get("module_to_project", {}).get(module_name) or module_name
         for p in r.get("projects", []):
-            if p.get("name") != module_name:
+            if p.get("name") != project_name:
                 continue
-            worktree = os.path.join(root_dir, module_name)
+            worktree = os.path.join(root_dir, project_name)
             if os.path.isdir(worktree):
                 return worktree
             source = p.get("source")

@@ -862,6 +862,63 @@ class TestCliSetStatus(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cmd_set_project_root(args)
 
+
+class TestSetProjectRootRecordsMapping(unittest.TestCase):
+    """cmd_set_project_root auto-records module->project when path matches."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self._orig_registry = registry.REGISTRY_PATH
+        registry.REGISTRY_PATH = os.path.join(self.root, "requirements.json")
+        spec_dir = os.path.join(self.root,
+                                "openspec/changes/test-change/specs/test-module")
+        os.makedirs(spec_dir, exist_ok=True)
+        with open(os.path.join(spec_dir, "spec.md"), "w") as f:
+            f.write("# Test Spec\n")
+        self.key = StateManager.module_key("test-change", "test-module")
+        self.src = os.path.join(self.root, "src-kunhe-wms")
+        os.makedirs(self.src)
+        registry.add_requirement("test-change", self.root, projects=[
+            {"name": "kunhe-wms", "source": self.src, "branch": "feature/x"}])
+        StateMachine(self.root).next()
+
+    def tearDown(self):
+        registry.REGISTRY_PATH = self._orig_registry
+        self.tmp.cleanup()
+
+    def _bind(self, path):
+        from cli import cmd_set_project_root
+        import argparse
+        os.makedirs(path, exist_ok=True)
+        args = argparse.Namespace(root=self.root, module=self.key, path=path)
+        cmd_set_project_root(args)
+
+    def _mapping(self):
+        return registry.find_requirement("test-change").get(
+            "module_to_project", {})
+
+    def test_worktree_bind_records_mapping(self):
+        wt = os.path.join(self.root, "kunhe-wms")
+        self._bind(wt)
+        self.assertEqual(self._mapping(), {"test-module": "kunhe-wms"})
+
+    def test_source_bind_records_mapping(self):
+        self._bind(self.src)
+        self.assertEqual(self._mapping(), {"test-module": "kunhe-wms"})
+
+    def test_unmatched_path_records_nothing(self):
+        self._bind(os.path.join(self.root, "unrelated-dir"))
+        self.assertEqual(self._mapping(), {})
+
+    def test_rebind_overwrites_mapping(self):
+        self._bind(os.path.join(self.root, "kunhe-wms"))
+        other_src = os.path.join(self.root, "src-other")
+        os.makedirs(other_src)
+        registry.add_project("test-change", "other-proj", other_src)
+        self._bind(other_src)
+        self.assertEqual(self._mapping(), {"test-module": "other-proj"})
+
     def test_set_status_clears_mid_progress(self):
         machine = StateMachine(self.root)
         machine.next()

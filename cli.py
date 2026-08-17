@@ -117,8 +117,36 @@ def cmd_set_project_root(args):
     old = state["modules"][key].get("project_root", ".")
     state["modules"][key]["project_root"] = path
     sm.save(state)
+    _record_module_to_project(args.root, key, path)
     report.write(state, args.root)
     print(f"{key}: project_root {old} -> {path}")
+
+
+def _record_module_to_project(root, module_key, path):
+    """Auto-record module->project mapping when the bound path matches a
+    registered project (worktree at root/<name> or its source path), so
+    future __SPEC_RESULT__ registrations of the same module name can
+    resolve their project root without manual editing.
+    """
+    if "/" not in module_key:
+        return
+    module_name = module_key.split("/", 1)[1]
+    root = os.path.abspath(root)
+    path = os.path.abspath(path)
+    data = registry.load()
+    for r in data.get("requirements", []):
+        if os.path.abspath(r.get("root", "")) != root:
+            continue
+        for p in r.get("projects", []):
+            worktree = os.path.join(root, p.get("name", ""))
+            if path == os.path.abspath(worktree) or \
+               path == os.path.abspath(p.get("source", "")):
+                mapping = r.setdefault("module_to_project", {})
+                mapping[module_name] = p["name"]
+                registry.save(data)
+                print(f"module_to_project: {module_name} -> {p['name']} "
+                      f"(auto-recorded)")
+                return
 
 
 def cmd_resolve_draft(args):

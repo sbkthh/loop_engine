@@ -103,6 +103,24 @@ def cmd_set_status(args):
     print(f"{key}: {old} -> {args.status}")
 
 
+def cmd_set_project_root(args):
+    sm = StateManager(args.root)
+    state = sm.load()
+    key = args.module
+    if key not in state["modules"]:
+        print(f"Module not found: {key}")
+        sys.exit(1)
+    path = os.path.abspath(args.path)
+    if not os.path.isdir(path):
+        print(f"Directory does not exist: {path}")
+        sys.exit(1)
+    old = state["modules"][key].get("project_root", ".")
+    state["modules"][key]["project_root"] = path
+    sm.save(state)
+    report.write(state, args.root)
+    print(f"{key}: project_root {old} -> {path}")
+
+
 def cmd_resolve_draft(args):
     from machine import resolve_gray_draft
     ok, msg = resolve_gray_draft(StateManager(args.root), args.id,
@@ -630,6 +648,12 @@ def main():
     p.add_argument("status", choices=ALL_STATUSES,
                    help=f"One of: {', '.join(ALL_STATUSES)}")
     p.set_defaults(func=cmd_set_status)
+
+    p = sub.add_parser("set-project-root", parents=[common],
+                       help="Set module project_root (working copy path)")
+    p.add_argument("module", help="Module key (change_id/module_name)")
+    p.add_argument("path", help="Absolute path of the project working copy")
+    p.set_defaults(func=cmd_set_project_root)
 
     p = sub.add_parser("add-blocker", parents=[common])
     p.add_argument("module")

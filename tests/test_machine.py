@@ -830,6 +830,38 @@ class TestCliSetStatus(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cmd_set_status(args)
 
+    def test_set_project_root(self):
+        machine = StateMachine(self.root)
+        machine.next()
+        sm = StateManager(self.root)
+        self.assertEqual(sm.load()["modules"][self.key]["project_root"], ".")
+
+        proj_dir = os.path.join(self.root, "work-dir")
+        os.makedirs(proj_dir)
+        from cli import cmd_set_project_root
+        import argparse
+        args = argparse.Namespace(root=self.root, module=self.key, path=proj_dir)
+        cmd_set_project_root(args)
+
+        self.assertEqual(sm.load()["modules"][self.key]["project_root"],
+                         os.path.abspath(proj_dir))
+
+    def test_set_project_root_missing_dir(self):
+        from cli import cmd_set_project_root
+        import argparse
+        args = argparse.Namespace(root=self.root, module=self.key,
+                                  path=os.path.join(self.root, "ghost"))
+        with self.assertRaises(SystemExit):
+            cmd_set_project_root(args)
+
+    def test_set_project_root_unknown_module(self):
+        from cli import cmd_set_project_root
+        import argparse
+        args = argparse.Namespace(root=self.root, module="change/ghost",
+                                  path=self.root)
+        with self.assertRaises(SystemExit):
+            cmd_set_project_root(args)
+
     def test_set_status_clears_mid_progress(self):
         machine = StateMachine(self.root)
         machine.next()

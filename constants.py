@@ -10,9 +10,6 @@ DRAFT = "DRAFT"
 
 ALL_STATUSES = (SYNCED, PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT)
 
-# Priority order for module selection (highest first)
-PRIORITY_ORDER = (PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT, SYNCED)
-
 # Agent actions (specific steps the LLM executes)
 SCORE = "SCORE"
 CLASSIFY_CHANGE = "CLASSIFY_CHANGE"
@@ -30,6 +27,64 @@ ALL_ACTIONS = (
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
     ALIGN_DOCS,
 )
+
+# Declarative truth table: single source for status semantics consumed by
+# machine.py (routing), scheduler.py (triggers/auto-exec), router.py
+# (prefix permissions). Dict insertion order = priority order (highest first).
+STATUS_TABLE = {
+    PARTIAL: {
+        "next": CLASSIFY_CHANGE,
+        "auto_exec": True,
+        "trigger": "SPEC_CHANGED",
+        "label": "Spec变更",
+        "idle_msg": None,
+        "prefixes": frozenset({"APPROVE", "SPEC_RESULT"}),
+    },
+    READY: {
+        "next": SCORE,
+        "auto_exec": True,
+        "trigger": "READY_PENDING",
+        "label": "待执行",
+        "idle_msg": None,
+        "prefixes": frozenset({"APPROVE", "SPEC_RESULT"}),
+    },
+    NEEDS_REFINEMENT: {
+        "next": SCORE,
+        "auto_exec": False,
+        "trigger": "NEEDS_REFINEMENT",
+        "label": "待完善",
+        "idle_msg": None,
+        "prefixes": frozenset({"SPEC_RESULT"}),
+    },
+    BLOCKED: {
+        "next": None,
+        "auto_exec": False,
+        "trigger": "BLOCKED",
+        "label": "阻塞",
+        "idle_msg": "模块 {module_key} 被阻塞",
+        "prefixes": frozenset({"SPEC_RESULT"}),
+    },
+    DRAFT: {
+        "next": None,
+        "auto_exec": False,
+        "trigger": "DRAFT",
+        "label": "新模块",
+        "idle_msg": "模块 {module_key} 尚未登记执行（DRAFT）："
+                    "spec 完整后通过规范流程登记",
+        "prefixes": frozenset({"SPEC_RESULT"}),
+    },
+    SYNCED: {
+        "next": None,
+        "auto_exec": False,
+        "trigger": None,
+        "label": "同步",
+        "idle_msg": "所有模块同步，无待处理项",
+        "prefixes": frozenset({"SPEC_RESULT"}),
+    },
+}
+
+# Priority order for module selection (highest first), derived from table
+PRIORITY_ORDER = tuple(STATUS_TABLE)
 
 # Thresholds
 SCORE_THRESHOLD = 90

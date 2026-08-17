@@ -442,6 +442,31 @@ def _execute_adjudicate_all(target, decision, registry, data_dir):
     return "\n".join(all_lines)
 
 
+def _approve_prefix_block(name, registry):
+    """Fast reject __APPROVE__ when no module status in the requirement's
+    state permits APPROVE (per STATUS_TABLE prefixes), avoiding a full
+    scheduler.approve round-trip. Returns None when approval may proceed."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from constants import STATUS_TABLE
+    from state import StateManager
+    req = next((r for r in registry if r.get("name") == name), None)
+    if not req:
+        return None
+    try:
+        st = StateManager(req.get("root", "")).load()
+    except Exception:
+        return None
+    modules = st.get("modules", {})
+    if not modules:
+        return None
+    for m in modules.values():
+        if "APPROVE" in STATUS_TABLE.get(m.get("status"), {}).get(
+                "prefixes", ()):
+            return None
+    return (f"无法批准：{name} 当前没有可批准执行的工作"
+            f"（模块状态不支持自动执行）")
+
+
 def _execute_approve(name, registry, data_dir, user_id=None):
     """Approve + dispatch a requirement for real execution. Returns reply text."""
     req = next((r for r in registry if r.get("name") == name), None)
@@ -677,6 +702,9 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         reply = f"【{requirement}】\n{reply}"
     if reply.startswith("__APPROVE__"):
         name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
+        blocked = _approve_prefix_block(name, registry)
+        if blocked:
+            return blocked
         return _execute_approve(name, registry, data_dir, user_id)
     if reply.startswith("__HISTORY__"):
         name = reply[len("__HISTORY__"):].strip().splitlines()[0].strip() or "ALL"

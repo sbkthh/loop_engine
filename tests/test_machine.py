@@ -91,6 +91,26 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state["modules"][self.key]["status"] = READY
         sm.save(state)
 
+    def test_routes_all_statuses_from_table(self):
+        """next() routes every status per STATUS_TABLE (next / idle_msg)."""
+        from constants import STATUS_TABLE
+        for status, entry in STATUS_TABLE.items():
+            with self.subTest(status=status):
+                self._init_module_ready()
+                sm = StateManager(self.root)
+                state = sm.load()
+                state["modules"][self.key]["status"] = status
+                StateManager.clear_current(state)
+                sm.save(state)
+                r = StateMachine(self.root).next()
+                if entry["next"]:
+                    self.assertEqual(r["action"], entry["next"])
+                else:
+                    self.assertEqual(r["action"], "IDLE")
+                    self.assertIn(
+                        entry["idle_msg"].format(module_key=self.key),
+                        r["message"])
+
     def _write_result(self, content):
         result_path = os.path.join(self.root, RESULT_FILE)
         os.makedirs(os.path.dirname(result_path), exist_ok=True)

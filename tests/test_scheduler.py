@@ -56,6 +56,20 @@ def _module(change_id, name, status, spec_hash=None):
     }
 
 
+class TestStatusTableSemantics(unittest.TestCase):
+    def test_auto_exec_matches_old_trigger_semantics(self):
+        """STATUS_TABLE auto_exec preserves old AUTO_EXECUTABLE coverage:
+        only PARTIAL/READY (SPEC_CHANGED/READY_PENDING) are executable."""
+        from constants import STATUS_TABLE
+
+        auto = {s for s, v in STATUS_TABLE.items() if v["auto_exec"]}
+        self.assertEqual(auto, {scheduler.PARTIAL, scheduler.READY})
+        self.assertEqual(STATUS_TABLE[scheduler.PARTIAL]["trigger"],
+                         scheduler.SPEC_CHANGED)
+        self.assertEqual(STATUS_TABLE[scheduler.READY]["trigger"],
+                         scheduler.READY_PENDING)
+
+
 class SchedulerBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -200,7 +214,7 @@ class TestPoll(SchedulerBase):
 
         entries = scheduler.poll()
         self.assertEqual(entries[0]["trigger"], "NEEDS_REFINEMENT")
-        self.assertNotIn(entries[0]["trigger"], scheduler.AUTO_EXECUTABLE)
+        self.assertFalse(scheduler._entry_auto_exec(entries[0]))
 
     def test_poll_skips_mid_progress(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
@@ -1024,12 +1038,12 @@ class TestRun(SchedulerBase):
 
 
 class TestDispatch(SchedulerBase):
-    def _pending_entry(self, name, trigger, approved=True):
+    def _pending_entry(self, name, trigger, approved=True, status="READY"):
         return {
             "requirement": name,
             "root": os.path.join(self.tmp.name, name),
             "trigger": trigger,
-            "modules": [{"key": "c/m", "status": "READY"}],
+            "modules": [{"key": "c/m", "status": status}],
             "detected_at": "t",
             "approved": approved,
         }
@@ -1058,7 +1072,8 @@ class TestDispatch(SchedulerBase):
     def test_dispatch_skips_unapproved_and_report_only(self):
         entries = [
             self._pending_entry("req-a", "READY_PENDING", approved=False),
-            self._pending_entry("req-b", "NEEDS_REFINEMENT"),
+            self._pending_entry("req-b", "NEEDS_REFINEMENT",
+                                status="NEEDS_REFINEMENT"),
         ]
         with mock.patch.object(scheduler.subprocess, "Popen",
                                return_value=types.SimpleNamespace(pid=3)):
@@ -1099,9 +1114,9 @@ class TestNotify(SchedulerBase):
              mock.patch.object(scheduler, "notify_text") as nt:
             scheduler.notify_pending([
                 {"requirement": "req-a", "trigger": "SPEC_CHANGED",
-                 "modules": [{"key": "c/m"}]},
+                 "modules": [{"key": "c/m", "status": "PARTIAL"}]},
                 {"requirement": "req-b", "trigger": "NEEDS_REFINEMENT",
-                 "modules": [{"key": "c/m"}]},
+                 "modules": [{"key": "c/m", "status": "NEEDS_REFINEMENT"}]},
             ])
         text = nt.call_args.args[0]
         self.assertIn("微信回复「批准执行 req-a」即可开始执行", text)
@@ -1114,7 +1129,7 @@ class TestNotify(SchedulerBase):
              mock.patch.object(scheduler, "notify_text") as nt:
             scheduler.notify_pending([
                 {"requirement": "req-a", "trigger": "GRAY_LIST",
-                 "modules": [{"key": "c/m"}]},
+                 "modules": [{"key": "c/m", "status": "READY"}]},
             ])
         text = nt.call_args.args[0]
         self.assertIn("灰名单问题待裁决", text)

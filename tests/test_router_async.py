@@ -105,6 +105,73 @@ def test_approve_prefix_passes_user_id(monkeypatch):
     assert calls["approved_by"] == "u1"
 
 
+def test_approve_rejected_fast_via_status_table(monkeypatch, tmp_path):
+    """DRAFT-only requirement: __APPROVE__ rejected via STATUS_TABLE
+    prefixes before scheduler.approve is ever reached."""
+    import json
+    from wecom_server import router
+    import scheduler
+
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {"c/m": {"status": "DRAFT"}},
+        "current": None,
+    }))
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__APPROVE__ req"))
+    called = []
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        called.append(name) or 1)
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": str(root)}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert "无法批准" in reply
+    assert "DRAFT" not in reply
+    assert not called
+
+
+def test_approve_allows_ready_via_status_table(monkeypatch, tmp_path):
+    """READY module passes the STATUS_TABLE prefix check and reaches
+    scheduler.approve."""
+    import json
+    from wecom_server import router
+    import scheduler
+
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {"c/m": {"status": "READY"}},
+        "current": None,
+    }))
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__APPROVE__ req"))
+    called = []
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        called.append(name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": str(root)}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert called == ["req"]
+    assert "已批准并开始执行" in reply
+
+
 def test_approve_report_only_returns_error(monkeypatch):
     from wecom_server import router
     import scheduler

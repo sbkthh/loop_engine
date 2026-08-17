@@ -19,7 +19,7 @@ import uuid
 
 import requests  # noqa: E402 — used by notify_pending()
 
-from constants import MAX_MAKER_ATTEMPTS
+from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
@@ -45,25 +45,14 @@ SPEC_CHANGED = "SPEC_CHANGED"
 READY_PENDING = "READY_PENDING"
 GRAY_LIST = "GRAY_LIST"
 
-AUTO_EXECUTABLE = (SPEC_CHANGED, READY_PENDING, GRAY_LIST)
+_TRIGGER_FOR_STATUS = {s: v["trigger"] for s, v in STATUS_TABLE.items()
+                       if v["trigger"]}
+_TRIGGER_PRIORITY = tuple(s for s in STATUS_TABLE
+                          if STATUS_TABLE[s]["trigger"])
 
-_TRIGGER_FOR_STATUS = {
-    PARTIAL: SPEC_CHANGED,
-    READY: READY_PENDING,
-    NEEDS_REFINEMENT: NEEDS_REFINEMENT,
-    BLOCKED: BLOCKED,
-    DRAFT: DRAFT,
-}
-_TRIGGER_PRIORITY = (PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT)
-
-_TRIGGER_LABELS = {
-    GRAY_LIST: "灰名单",
-    SPEC_CHANGED: "Spec变更",
-    READY_PENDING: "待执行",
-    NEEDS_REFINEMENT: "待完善",
-    BLOCKED: "阻塞",
-    DRAFT: "新模块",
-}
+_TRIGGER_LABELS = {v["trigger"]: v["label"]
+                   for v in STATUS_TABLE.values() if v["trigger"]}
+_TRIGGER_LABELS[GRAY_LIST] = "灰名单"  # non-status exception: draft adjudication
 
 DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 
@@ -284,13 +273,19 @@ def _has_pending_gray_drafts(root):
     )
 
 
+def _entry_auto_exec(entry):
+    """True when any detected module status is auto-executable."""
+    return any(STATUS_TABLE.get(m.get("status"), {}).get("auto_exec")
+               for m in entry.get("modules", []))
+
+
 def approve(name=None, all_=False, approved_by=None):
     data = load_pending()
     entries = data.get("pending", [])
     if all_:
         count = 0
         for e in entries:
-            if (e.get("trigger") in AUTO_EXECUTABLE
+            if (_entry_auto_exec(e)
                     and not e.get("approved")
                     and not _has_pending_gray_drafts(e.get("root", ""))):
                 e["approved"] = True
@@ -304,9 +299,10 @@ def approve(name=None, all_=False, approved_by=None):
     entry = _find_entry(data, name)
     if not entry:
         raise ValueError(_no_pending_message(name))
-    if entry.get("trigger") not in AUTO_EXECUTABLE:
-        tlabel = _TRIGGER_LABELS.get(entry.get("trigger"),
-                                     entry.get("trigger", "UNKNOWN"))
+    if not _entry_auto_exec(entry):
+        statuses = [m.get("status") for m in entry.get("modules", [])]
+        labels = [STATUS_TABLE.get(s, {}).get("label", s) for s in statuses]
+        tlabel = labels[0] if labels else entry.get("trigger", "UNKNOWN")
         raise ValueError(
             f"{name}（{tlabel}）为报告状态，需先完成 spec 相关工作，不支持自动执行")
     if entry.get("approved"):
@@ -382,7 +378,7 @@ def notify_pending(fresh_entries):
         names = ", ".join(m.get("key", "?") for m in modules)
         label = _TRIGGER_LABELS.get(trigger, trigger)
         lines.append(f"• {entry['requirement']}（{label}）：{names}")
-        if trigger in AUTO_EXECUTABLE:
+        if _entry_auto_exec(entry):
             if trigger == GRAY_LIST:
                 advice.append(
                     f"「{entry['requirement']}」有灰名单问题待裁决，"
@@ -890,7 +886,7 @@ def dispatch(entries, max_concurrency=2):
     forked = []
     running = running_count()
     for entry in entries:
-        if not entry.get("approved") or entry.get("trigger") not in AUTO_EXECUTABLE:
+        if not entry.get("approved") or not _entry_auto_exec(entry):
             continue
         root = entry.get("root")
         if running >= max_concurrency:

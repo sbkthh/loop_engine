@@ -9,7 +9,7 @@ from constants import (
     SYNCED, PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT,
     SCORE, CLASSIFY_CHANGE, MAKER_STEP0, MAKER_STEP1_RED,
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
-    ALIGN_DOCS,
+    ALIGN_DOCS, STATUS_TABLE,
     SCORE_THRESHOLD, MAX_MAKER_ATTEMPTS, MAX_REVIEW_FIX_CYCLES,
     TRACE_RETENTION, AUDIT_RETENTION, RESULT_FILE,
 )
@@ -170,29 +170,21 @@ class StateMachine:
             self.sm.save(state)
             module = state["modules"][module_key]
             return self._build(state, action, module_key, module)
-        if module["status"] == PARTIAL:
-            action = CLASSIFY_CHANGE
-        elif module["status"] == READY:
-            action = SCORE
-        elif module["status"] == NEEDS_REFINEMENT:
-            action = SCORE
-        elif module["status"] == BLOCKED:
-            self.sm.save(state)
-            return {"action": "IDLE", "message": f"模块 {module_key} 被阻塞"}
-        elif module["status"] == DRAFT:
+        entry = STATUS_TABLE.get(module["status"])
+        if not entry:
             self.sm.save(state)
             return {"action": "IDLE",
-                    "message": f"模块 {module_key} 尚未登记执行（DRAFT）："
-                               f"spec 未完整时请先补全，完整后回复登记确认开始执行"}
-        elif module["status"] == SYNCED:
+                    "message": f"未知状态 {module['status']}"}
+        if entry["next"]:
+            action = entry["next"]
+            StateManager.set_current(state, module_key, action)
+            self._trace(state, "SCAN", module_key, f"routed to {action}")
             self.sm.save(state)
-            return {"action": "IDLE", "message": "所有模块同步，无待处理项"}
-
-        StateManager.set_current(state, module_key, action)
-        self._trace(state, "SCAN", module_key, f"routed to {action}")
+            return self._build(state, action, module_key,
+                               state["modules"][module_key])
         self.sm.save(state)
-        module = state["modules"][module_key]
-        return self._build(state, action, module_key, module)
+        message = (entry["idle_msg"] or "IDLE").format(module_key=module_key)
+        return {"action": "IDLE", "message": message}
 
     def _build(self, state, action, module_key, module):
         rejected = [

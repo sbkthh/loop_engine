@@ -24,6 +24,7 @@ def test_system_prompt_has_prd_bootstrap_rules():
     assert ".loop/prd_summary.json" in router._LLM_SYSTEM_PROMPT
     assert "openspec new" in router._LLM_SYSTEM_PROMPT
     assert "requirement-add" in router._LLM_SYSTEM_PROMPT
+    assert "requirement-add-project" in router._LLM_SYSTEM_PROMPT
     assert "--prd" in router._LLM_SYSTEM_PROMPT
 
 

@@ -100,6 +100,39 @@ class TestRegistry(unittest.TestCase):
         tmps = [f for f in os.listdir(registry_dir) if f.endswith(".tmp")]
         self.assertEqual(len(tmps), 0)
 
+    def test_add_project(self):
+        registry.add_requirement("req", "/tmp/req",
+                                 projects=[{"name": "p1", "source": "/src/p1"}])
+        entry = registry.add_project("req", "p2", "/src/p2", branch="feature/x")
+        self.assertEqual(entry["name"], "p2")
+        self.assertEqual(entry["source"], "/src/p2")
+        self.assertEqual(entry["branch"], "feature/x")
+        projects = registry.find_requirement("req")["projects"]
+        self.assertEqual(len(projects), 2)
+        self.assertEqual(projects[1]["name"], "p2")
+
+    def test_add_project_no_branch(self):
+        registry.add_requirement("req", "/tmp/req")
+        entry = registry.add_project("req", "p1", "/src/p1")
+        self.assertNotIn("branch", entry)
+
+    def test_add_project_requirement_not_found(self):
+        with self.assertRaises(ValueError):
+            registry.add_project("ghost", "p1", "/src/p1")
+
+    def test_add_project_duplicate(self):
+        registry.add_requirement("req", "/tmp/req",
+                                 projects=[{"name": "p1", "source": "/src/p1"}])
+        with self.assertRaises(ValueError):
+            registry.add_project("req", "p1", "/src/other")
+
+    def test_add_project_initializes_missing_list(self):
+        """Requirements registered without projects get the list created."""
+        registry.add_requirement("bare", "/tmp/bare")
+        registry.add_project("bare", "p1", "/src/p1")
+        projects = registry.find_requirement("bare")["projects"]
+        self.assertEqual(len(projects), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

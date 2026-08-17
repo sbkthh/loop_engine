@@ -11,7 +11,7 @@ import time
 from state import StateManager
 from machine import StateMachine
 from constants import DRAFT, ALL_STATUSES
-from setup import setup_requirement, init_from_prd
+from setup import setup_requirement, init_from_prd, add_project_to_requirement
 import report
 import registry
 import scheduler
@@ -208,6 +208,18 @@ def cmd_requirement_remove(args):
     else:
         print(f"Requirement not found: {args.name}")
         sys.exit(1)
+
+
+def cmd_requirement_add_project(args):
+    result = add_project_to_requirement(args.requirement, args.name,
+                                        args.source, branch=args.branch)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        sys.exit(1)
+    print(f"Added project: {result['project']}")
+    print(f"  Worktree: {result['worktree']} (branch {result['branch']})")
+    print(f"  Requirement: {result['entry']['name']} "
+          f"({len(result['entry'].get('projects', []))} projects)")
 
 
 def cmd_requirement_rename(args):
@@ -658,6 +670,18 @@ def main():
     p.add_argument("--context", default=None,
                    help="Path to environment context JSON (databases/nacos, written to .loop/context.json)")
     p.set_defaults(func=cmd_requirement_add)
+
+    p = sub.add_parser("requirement-add-project", parents=[common],
+                       help="Add a project (worktree) to an existing requirement")
+    p.add_argument("requirement", help="Requirement name")
+    p.add_argument("--name", required=True,
+                   help="Project directory name (worktree name)")
+    p.add_argument("--source", required=True,
+                   help="Source git repo path")
+    p.add_argument("--branch", default=None,
+                   help="Branch name (default: first project's branch, "
+                        "else feature/<name>)")
+    p.set_defaults(func=cmd_requirement_add_project)
 
     p = sub.add_parser("requirement-rename", parents=[common],
                        help="Rename a registered requirement")

@@ -9,7 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from setup import create_worktree, init_requirement, setup_requirement
+from setup import (create_worktree, init_requirement, setup_requirement,
+                   add_project_to_requirement)
 from state import StateManager
 import registry
 
@@ -126,6 +127,53 @@ class TestSetupRequirement(unittest.TestCase):
         root = os.path.join(self.tmp.name, "dup-root")
         setup_requirement("dup-req", root, "chg-3", [("proj-a", self.src_a)])
         result = setup_requirement("dup-req", root, "chg-4", [("proj-a", self.src_a)])
+        self.assertIn("error", result)
+
+    def test_add_project_full_flow(self):
+        root = os.path.join(self.tmp.name, "add-root")
+        result = setup_requirement("add-req", root, "chg-5",
+                                   [("proj-a", self.src_a)])
+        self.assertNotIn("error", result)
+        added = add_project_to_requirement("add-req", "proj-c", self.src_b)
+        self.assertNotIn("error", added)
+        self.assertEqual(added["project"], "proj-c")
+        self.assertTrue(os.path.exists(added["worktree"]))
+        self.assertEqual(added["branch"], "feature/chg-5")  # inherited from proj-a
+        entry = registry.find_requirement("add-req")
+        self.assertEqual(len(entry["projects"]), 2)
+        self.assertEqual(entry["projects"][1]["name"], "proj-c")
+        self.assertEqual(entry["projects"][1]["branch"], "feature/chg-5")
+        branch = subprocess.run(["git", "branch", "--show-current"],
+                                cwd=added["worktree"],
+                                capture_output=True, text=True)
+        self.assertEqual(branch.stdout.strip(), "feature/chg-5")
+
+    def test_add_project_explicit_branch(self):
+        root = os.path.join(self.tmp.name, "add-root2")
+        setup_requirement("add-req2", root, "chg-6", [("proj-a", self.src_a)])
+        added = add_project_to_requirement("add-req2", "proj-c", self.src_b,
+                                           branch="feature/custom")
+        self.assertNotIn("error", added)
+        self.assertEqual(added["branch"], "feature/custom")
+        entry = registry.find_requirement("add-req2")
+        self.assertEqual(entry["projects"][1]["branch"], "feature/custom")
+
+    def test_add_project_unknown_requirement(self):
+        result = add_project_to_requirement("ghost", "proj-c", self.src_b)
+        self.assertIn("error", result)
+
+    def test_add_project_duplicate(self):
+        root = os.path.join(self.tmp.name, "add-root3")
+        setup_requirement("add-req3", root, "chg-7",
+                          [("proj-a", self.src_a), ("proj-b", self.src_b)])
+        result = add_project_to_requirement("add-req3", "proj-b", self.src_a)
+        self.assertIn("error", result)
+
+    def test_add_project_existing_target_dir(self):
+        root = os.path.join(self.tmp.name, "add-root4")
+        setup_requirement("add-req4", root, "chg-8", [("proj-a", self.src_a)])
+        os.makedirs(os.path.join(root, "occupied"))
+        result = add_project_to_requirement("add-req4", "occupied", self.src_b)
         self.assertIn("error", result)
 
 

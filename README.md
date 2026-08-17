@@ -500,6 +500,7 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 - `查状态` — 查看所有需求状态
 - `批准执行` — 批准待执行的需求
 - `注册需求`（发 PRD 路径 + 需求名/根目录/change-id/项目仓库）— 自动执行 `requirement-add --prd`
+- `给 XX 加项目`（如"给越库二期加项目 kunhe-wms"，附源仓库路径）— 自动执行 `requirement-add-project`：创建 worktree 并注册到需求，分支缺省沿用需求内第一个项目的分支
 - `按 PRD 生成 spec` — 生成 proposal/design/specs/tasks，然后自动进入 grill-me 澄清
 - 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
 - 其他自然语言问题 — LLM 自动理解并回答

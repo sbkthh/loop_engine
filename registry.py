@@ -62,6 +62,24 @@ def remove_requirement(name):
     return False
 
 
+def add_project(name, project_name, source, branch=None):
+    """Append a project to an existing requirement's projects list."""
+    data = load()
+    target = next((r for r in data["requirements"] if r["name"] == name), None)
+    if not target:
+        raise ValueError(f"Requirement not found: {name}")
+    projects = target.get("projects", [])
+    if any(p.get("name") == project_name for p in projects):
+        raise ValueError(f"Project already registered: {project_name}")
+    entry = {"name": project_name, "source": os.path.abspath(source)}
+    if branch:
+        entry["branch"] = branch
+    projects.append(entry)
+    target["projects"] = projects
+    save(data)
+    return entry
+
+
 def rename_requirement(old_name, new_name):
     data = load()
     for r in data["requirements"]:

@@ -43,9 +43,11 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
         created.append(module_name)
 
     write_prd_summary(root, change_id, name, sections, prd_path,
-                      projects=[{"name": n, "source": s} for n, s in projects])
+                      projects=[{"name": n, "source": s, "branch": f"feature/{change_id}"}
+                                for n, s in projects])
     sm.save(state)
-    projects_data = [{"name": n, "source": s} for n, s in projects]
+    projects_data = [{"name": n, "source": s, "branch": f"feature/{change_id}"}
+                     for n, s in projects]
     entry = registry.add_requirement(name, root, projects=projects_data,
                                      description=f"PRD: {prd_path}")
     report.write(state, root)
@@ -58,17 +60,44 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
     }
 
 
-def create_worktree(source, target, change_id):
+def create_worktree(source, target, change_id, full_branch=None):
     """Create a git worktree with a feature branch. Returns (success, msg)."""
     if not os.path.exists(os.path.join(source, ".git")):
         return False, "Not a git repository"
-    branch = f"feature/{change_id}"
+    branch = full_branch or f"feature/{change_id}"
     try:
         subprocess.run(["git", "worktree", "add", "-b", branch, target, "HEAD"],
                        cwd=source, capture_output=True, text=True, check=True)
         return True, f"Worktree created at {target} on branch {branch}"
     except subprocess.CalledProcessError as e:
         return False, e.stderr
+
+
+def add_project_to_requirement(name, project_name, source, branch=None):
+    """Add a project to an existing requirement: worktree → registry append."""
+    entry = registry.find_requirement(name)
+    if not entry:
+        return {"error": f"Requirement not found: {name}"}
+    root = entry["root"]
+    projects = entry.get("projects", [])
+    if any(p.get("name") == project_name for p in projects):
+        return {"error": f"Project already registered: {project_name}"}
+    target = os.path.join(root, project_name)
+    if os.path.exists(target):
+        return {"error": f"Directory already exists: {target}"}
+    if not branch:
+        # 同一需求内分支可不同；缺省沿用第一个项目的分支
+        branch = next((p.get("branch") for p in projects if p.get("branch")),
+                      f"feature/{project_name}")
+    success, msg = create_worktree(source, target, project_name, full_branch=branch)
+    if not success:
+        return {"error": f"Worktree failed for {project_name}: {msg}"}
+    try:
+        project = registry.add_project(name, project_name, source, branch=branch)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"entry": registry.find_requirement(name), "project": project_name,
+            "worktree": target, "branch": branch}
 
 
 def init_requirement(root, context=None):
@@ -101,7 +130,8 @@ def setup_requirement(name, root, change_id, projects, context=None):
         if not success:
             return {"error": f"Worktree failed for {proj_name}: {msg}"}
     init_requirement(root, context)
-    projects_data = [{"name": n, "source": s} for n, s in projects]
+    projects_data = [{"name": n, "source": s, "branch": f"feature/{change_id}"}
+                     for n, s in projects]
     try:
         entry = registry.add_requirement(name, root, projects=projects_data)
         return {"entry": entry, "root": root, "change_id": change_id}

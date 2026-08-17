@@ -12,6 +12,7 @@ from constants import (
     REPORT_PATH_TEMPLATE,
     SPEC_GLOB,
 )
+import registry
 
 
 def parse_prd_sections(prd_path):
@@ -102,6 +103,29 @@ def discover_modules(root="."):
             continue
         results.append((change_id, module_name, path))
     return results
+
+
+def resolve_project_root(root_dir, module_name):
+    """Map a discovered module to its working copy via the registry.
+
+    Prefers the worktree (root/<name>) when it exists, else the source repo
+    path (direct development mode). Returns None when no registry project
+    matches the module name.
+    """
+    root_dir = os.path.abspath(root_dir)
+    for r in registry.list_requirements():
+        if os.path.abspath(r.get("root", "")) != root_dir:
+            continue
+        for p in r.get("projects", []):
+            if p.get("name") != module_name:
+                continue
+            worktree = os.path.join(root_dir, module_name)
+            if os.path.isdir(worktree):
+                return worktree
+            source = p.get("source")
+            if source and os.path.isdir(source):
+                return os.path.abspath(source)
+    return None
 
 
 def read_test_command(project_root):

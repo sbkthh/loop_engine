@@ -14,7 +14,8 @@ from constants import (
     TRACE_RETENTION, AUDIT_RETENTION, RESULT_FILE,
 )
 from state import StateManager
-from spec_utils import discover_modules, compute_spec_hash, derive_spec_path
+from spec_utils import (discover_modules, compute_spec_hash, derive_spec_path,
+                        resolve_project_root)
 from parser import (
     parse_maker_output, parse_checker_output,
     parse_score, parse_classify_change, parse_code_review,
@@ -81,8 +82,11 @@ class StateMachine:
             key = StateManager.module_key(change_id, module_name)
             if key not in state["modules"]:
                 spec_hash = compute_spec_hash(spec_path)
+                project_root = resolve_project_root(self.root_dir, module_name)
                 StateManager.add_module(
-                    state, key, change_id, module_name, spec_hash=spec_hash
+                    state, key, change_id, module_name,
+                    project_root=project_root or ".",
+                    spec_hash=spec_hash
                 )
 
         mid = StateManager.find_mid_progress(state)

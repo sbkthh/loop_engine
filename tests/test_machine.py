@@ -12,6 +12,7 @@ from state import StateManager
 from machine import StateMachine
 from constants import (READY, SYNCED, NEEDS_REFINEMENT, DRAFT, RESULT_FILE,
                        MAKER_STEP1_RED)
+import registry
 
 
 def _score_json(score, cross):
@@ -734,6 +735,62 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             confirmed=False)
         r = machine.commit()
         self.assertIn("RED not confirmed", r.get("error", ""))
+
+
+class TestDiscoveryProjectRoot(unittest.TestCase):
+    """Auto-discovered modules must get project_root from the registry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self._orig_registry = registry.REGISTRY_PATH
+        registry.REGISTRY_PATH = os.path.join(self.tmp.name, "requirements.json")
+        spec_dir = os.path.join(
+            self.root, "openspec/changes/test-change/specs/test-module")
+        os.makedirs(spec_dir, exist_ok=True)
+        with open(os.path.join(spec_dir, "spec.md"), "w") as f:
+            f.write("# Spec\n\n## Scenarios\n\n1. Do it\n")
+        self.key = StateManager.module_key("test-change", "test-module")
+
+    def tearDown(self):
+        registry.REGISTRY_PATH = self._orig_registry
+        self.tmp.cleanup()
+
+    def _discovered_module(self):
+        StateMachine(self.root).next()
+        return StateManager(self.root).load()["modules"][self.key]
+
+    def test_worktree_mode_prefers_worktree_dir(self):
+        src = os.path.join(self.tmp.name, "src-repo")
+        os.makedirs(src)
+        os.makedirs(os.path.join(self.root, "test-module"))
+        registry.add_requirement("test-change", self.root, projects=[
+            {"name": "test-module", "source": src, "branch": "feature/x"}])
+        module = self._discovered_module()
+        self.assertEqual(module["project_root"],
+                         os.path.join(self.root, "test-module"))
+
+    def test_direct_mode_falls_back_to_source(self):
+        src = os.path.join(self.tmp.name, "src-repo")
+        os.makedirs(src)
+        registry.add_requirement("test-change", self.root, projects=[
+            {"name": "test-module", "source": src, "branch": "feature/x"}])
+        module = self._discovered_module()
+        self.assertEqual(module["project_root"], src)
+
+    def test_no_registry_match_defaults_to_dot(self):
+        module = self._discovered_module()
+        self.assertEqual(module["project_root"], ".")
+
+    def test_other_requirement_root_not_matched(self):
+        src = os.path.join(self.tmp.name, "src-repo")
+        os.makedirs(src)
+        other_root = os.path.join(self.tmp.name, "other-root")
+        os.makedirs(other_root)
+        registry.add_requirement("other-req", other_root, projects=[
+            {"name": "test-module", "source": src}])
+        module = self._discovered_module()
+        self.assertEqual(module["project_root"], ".")
 
 
 class TestCliSetStatus(unittest.TestCase):

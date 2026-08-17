@@ -182,7 +182,8 @@ class StateMachine:
         elif module["status"] == DRAFT:
             self.sm.save(state)
             return {"action": "IDLE",
-                    "message": f"模块 {module_key} 评分不足，建议使用 openspec-explore 补全"}
+                    "message": f"模块 {module_key} 尚未登记执行（DRAFT）："
+                               f"spec 未完整时请先补全，完整后回复登记确认开始执行"}
         elif module["status"] == SYNCED:
             self.sm.save(state)
             return {"action": "IDLE", "message": "所有模块同步，无待处理项"}

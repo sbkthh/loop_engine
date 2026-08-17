@@ -521,7 +521,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     with an existing spec file).
     """
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from constants import SPEC_PATH_TEMPLATE, PARTIAL
+    from constants import SPEC_PATH_TEMPLATE, PARTIAL, DRAFT
     import spec_utils
     from state import StateManager
 
@@ -560,7 +560,8 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         old_hash = None
     else:
         old_hash = st["modules"][module_key].get("spec_hash")
-        if old_hash == new_hash:
+        if old_hash == new_hash and \
+                st["modules"][module_key].get("status") != DRAFT:
             return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
     backup_dir = os.path.join(root, ".loop", "backup")
     os.makedirs(backup_dir, exist_ok=True)

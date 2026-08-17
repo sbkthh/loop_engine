@@ -298,10 +298,14 @@ def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
 
 
 def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
-    """Same hash → no registration, tells G to actually edit the spec."""
+    """Same hash on a registered (non-DRAFT) module → no registration."""
     from wecom_server import router
+    from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
+    st = StateManager(root).load()
+    st["modules"]["chg1/m1"]["status"] = "SYNCED"
+    StateManager(root).save(st)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
@@ -393,6 +397,34 @@ def test_spec_result_new_module_no_spec_file(monkeypatch, tmp_path):
 
     assert "不在状态机" in reply
     assert "chg1/m2" not in StateManager(root).load()["modules"]
+
+
+def test_spec_result_promotes_draft_module(monkeypatch, tmp_path):
+    """DRAFT module (auto-discovered, never gated) with unchanged hash is
+    promoted to PARTIAL by __SPEC_RESULT__ — the confirmation gate."""
+    from wecom_server import router
+    from state import StateManager
+    import spec_utils
+
+    root, spec_path = _make_spec_root(tmp_path)
+    sm = StateManager(root)
+    st = sm.load()
+    st["modules"]["chg1/m1"]["status"] = "DRAFT"
+    sm.save(st)
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("确认 chg1/m1 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply
+    st = StateManager(root).load()
+    assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"
+    assert st["modules"]["chg1/m1"]["spec_hash"] == \
+        spec_utils.compute_spec_hash(spec_path)
 
 
 def _seed_gray_drafts(root, drafts):

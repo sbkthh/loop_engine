@@ -118,10 +118,11 @@ _LLM_SYSTEM_PROMPT = (
     "artifact, writing proposal/design/specs/tasks from the PRD content in "
     ".loop/prd_summary.json. Do NOT skip this even if the user just says "
     "'按 PRD 生成 spec'\n"
-    "- Bind new modules to a project: after generating artifacts, run "
-    "'loop_engine next --root <root>' to register newly discovered modules, "
-    "then for each module whose project_root is '.' ask the user which "
-    "project it belongs to (projects and their working copies: worktree at "
+    "- Bind new modules to a project: the __SPEC_RESULT__ prefix registers "
+    "new modules automatically (no need to run 'loop_engine next' for "
+    "registration). For each module whose project_root is '.' ask the user "
+    "which project it belongs to (projects and their working copies: "
+    "worktree at "
     "<root>/<project name> when that directory exists, else the source repo "
     "path — both listed in ~/.qoder/loop_engine/requirements.json), then run "
     "'loop_engine set-project-root --root <root> <module key> <path>'. Do "
@@ -515,7 +516,9 @@ def _execute_spec_result(name, module_key, registry, data_dir):
 
     The spec file itself is edited by the assistant (audited by the hook);
     this function only controls the registration gate so the scheduler picks
-    the change up only after the user approves execution.
+    the change up only after the user approves execution. New modules not
+    yet in state.json are registered here (full change_id/module_name key
+    with an existing spec file).
     """
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from constants import SPEC_PATH_TEMPLATE, PARTIAL
@@ -532,18 +535,33 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     try:
         module_key = _resolve_module_key(st, module_key)
     except ValueError as e:
-        return str(e)
-    change_id, module_name = module_key.split("/", 1)
+        # New module: auto-complete can't know it, but a full
+        # change_id/module_name key with an existing spec file is valid.
+        if "/" not in module_key:
+            return str(e)
+        change_id, module_name = module_key.split("/", 1)
+        probe = os.path.join(root, SPEC_PATH_TEMPLATE.format(
+            change_id=change_id, module_name=module_name))
+        if not os.path.exists(probe):
+            return str(e)
+    else:
+        change_id, module_name = module_key.split("/", 1)
     spec_path = os.path.join(root, SPEC_PATH_TEMPLATE.format(
         change_id=change_id, module_name=module_name))
     if not os.path.exists(spec_path):
         return (f"找不到 spec 文件：{spec_path}。"
                 f"请先编辑 spec 再输出 __SPEC_RESULT__。")
     new_hash = spec_utils.compute_spec_hash(spec_path)
-    module = st["modules"][module_key]
-    old_hash = module.get("spec_hash")
-    if old_hash == new_hash:
-        return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
+    if module_key not in st["modules"]:
+        project_root = spec_utils.resolve_project_root(root, module_name)
+        StateManager.add_module(
+            st, module_key, change_id, module_name,
+            project_root=project_root or ".", spec_hash=new_hash)
+        old_hash = None
+    else:
+        old_hash = st["modules"][module_key].get("spec_hash")
+        if old_hash == new_hash:
+            return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
     backup_dir = os.path.join(root, ".loop", "backup")
     os.makedirs(backup_dir, exist_ok=True)
     backup_path = os.path.join(
@@ -565,15 +583,18 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     sm.set_module_field(st, module_key, "maker_attempt", 0)
     sm.set_module_field(st, module_key, "review_fix_attempt", 0)
     sm.save(st)
-    _audit_line(f"SPEC {name} {module_key} {old_hash}->{new_hash} "
+    _audit_line(f"SPEC {name} {module_key} {old_hash or 'new'}->{new_hash} "
                 f"backup={backup_note}")
     # Refresh pending.json so approve works immediately
     import scheduler as _sched
     _sched.poll()
+    bind_hint = ""
+    if module_key in st["modules"] and st["modules"][module_key].get("project_root") == ".":
+        bind_hint = "新模块尚未绑定项目，请先确认所属项目（set-project-root）\n"
     return (f"spec 变更已登记：{module_key}\n"
-            f"旧 hash: {old_hash[:8]}  新 hash: {new_hash[:8]}\n"
+            f"旧 hash: {(old_hash or 'new')[:8]}  新 hash: {new_hash[:8]}\n"
             f"备份: {backup_note}\n"
-            f"请回复『批准执行 {name}』开始实现")
+            f"{bind_hint}请回复『批准执行 {name}』开始实现")
 
 
 def _classify_requirement(message, registry):

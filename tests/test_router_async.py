@@ -347,6 +347,54 @@ def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
 
 
+def test_spec_result_registers_new_module(monkeypatch, tmp_path):
+    """New module (absent from state.json) with full key + spec file registers."""
+    from wecom_server import router
+    from state import StateManager
+    import spec_utils
+
+    root, _ = _make_spec_root(tmp_path)
+    new_dir = os.path.join(root, "openspec", "changes", "chg1", "specs", "m2")
+    os.makedirs(new_dir, exist_ok=True)
+    new_spec = os.path.join(new_dir, "spec.md")
+    with open(new_spec, "w") as f:
+        f.write("# m2 complete spec")
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("新增 m2 的 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply and "chg1/m2" in reply
+    st = StateManager(root).load()
+    mod = st["modules"]["chg1/m2"]
+    assert mod["status"] == "PARTIAL"
+    assert mod["spec_hash"] == spec_utils.compute_spec_hash(new_spec)
+    # existing module untouched
+    assert st["modules"]["chg1/m1"]["spec_hash"] is not None
+
+
+def test_spec_result_new_module_no_spec_file(monkeypatch, tmp_path):
+    """New module key without a spec file → still rejected, nothing registered."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("新增 m2 的 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "不在状态机" in reply
+    assert "chg1/m2" not in StateManager(root).load()["modules"]
+
+
 def _seed_gray_drafts(root, drafts):
     from state import StateManager
     sm = StateManager(root)

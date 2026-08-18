@@ -89,6 +89,13 @@ def compute_spec_hash(spec_path):
         return hashlib.md5(f.read()).hexdigest()
 
 
+def compute_plan_hash(plan_path):
+    if not os.path.exists(plan_path):
+        return None
+    with open(plan_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
 def discover_modules(root="."):
     pattern = os.path.join(root, SPEC_GLOB)
     results = []

@@ -111,6 +111,67 @@ class TestMachineFullRoundTrip(unittest.TestCase):
                         entry["idle_msg"].format(module_key=self.key),
                         r["message"])
 
+    def test_plan_hash_change_routes_directly_to_maker_step1(self):
+        """A SYNCED module whose plan file changed (spec unchanged) routes
+        to MAKER_STEP1_RED — skip SCORE and MAKER_STEP0."""
+        from constants import MAKER_STEP1_RED
+        import hashlib
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash=spec_hash,
+                                plan_hash="stale_plan_hash")
+        state["modules"][self.key]["status"] = SYNCED
+        sm.save(state)
+
+        plan_path = os.path.join(self.root,
+            "openspec/changes/test-change/plans/test-module-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("new plan content")
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], MAKER_STEP1_RED)
+        self.assertIn(self.key, r.get("module", ""))
+        # state shows PARTIAL + updated hash
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], "PARTIAL")
+        self.assertNotEqual(m["plan_hash"], "stale_plan_hash")
+        self.assertEqual(m["maker_attempt"], 0)
+
+    def test_plan_hash_initialized_silently_when_none(self):
+        """A SYNCED module without plan_hash (upgraded state) silently
+        initialises it without triggering a status change."""
+        import hashlib
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash=spec_hash)
+        state["modules"][self.key]["status"] = SYNCED
+        sm.save(state)
+
+        plan_path = os.path.join(self.root,
+            "openspec/changes/test-change/plans/test-module-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("some plan content")
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], "IDLE")
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], "SYNCED")
+        self.assertIsNotNone(m["plan_hash"])
+
     def _write_result(self, content):
         result_path = os.path.join(self.root, RESULT_FILE)
         os.makedirs(os.path.dirname(result_path), exist_ok=True)

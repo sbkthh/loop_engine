@@ -14,8 +14,8 @@ from constants import (
     TRACE_RETENTION, AUDIT_RETENTION, RESULT_FILE,
 )
 from state import StateManager
-from spec_utils import (discover_modules, compute_spec_hash, derive_spec_path,
-                        resolve_project_root)
+from spec_utils import (discover_modules, compute_spec_hash, compute_plan_hash,
+                        derive_spec_path, derive_plan_path, resolve_project_root)
 from parser import (
     parse_maker_output, parse_checker_output,
     parse_score, parse_classify_change, parse_code_review,
@@ -83,10 +83,12 @@ class StateMachine:
             if key not in state["modules"]:
                 spec_hash = compute_spec_hash(spec_path)
                 project_root = resolve_project_root(self.root_dir, module_name)
+                plan_path = derive_plan_path(change_id, module_name, self.root_dir)
+                plan_hash = compute_plan_hash(plan_path)
                 StateManager.add_module(
                     state, key, change_id, module_name,
                     project_root=project_root or ".",
-                    spec_hash=spec_hash
+                    spec_hash=spec_hash, plan_hash=plan_hash
                 )
 
         mid = StateManager.find_mid_progress(state)
@@ -114,6 +116,33 @@ class StateMachine:
                     return self._build(
                         state, CLASSIFY_CHANGE, key, module
                     )
+
+        # Plan hash change detection: SYNCED module whose plan file changed
+        # independently of its spec. Route directly to MAKER_STEP1_RED (the
+        # plan already exists, no re-scoring or plan generation needed).
+        for key, module in list(state["modules"].items()):
+            if module["status"] == SYNCED:
+                plan_path = derive_plan_path(
+                    module["change_id"], module["module_name"], self.root_dir
+                )
+                current_hash = compute_plan_hash(plan_path)
+                if current_hash and current_hash != module.get("plan_hash"):
+                    if module.get("plan_hash") is None:
+                        # first-time initialization (upgraded state)
+                        module["plan_hash"] = current_hash
+                    else:
+                        module["prev_plan_hash"] = module.get("plan_hash")
+                        module["plan_hash"] = current_hash
+                        module["status"] = PARTIAL
+                        module["maker_attempt"] = 0
+                        module["review_fix_attempt"] = 0
+                        StateManager.set_current(state, key, MAKER_STEP1_RED)
+                        self._trace(state, "SCAN", key,
+                                    f"plan hash changed -> PARTIAL")
+                        self.sm.save(state)
+                        return self._build(
+                            state, MAKER_STEP1_RED, key, module
+                        )
 
         selected = StateManager.select_next_module(state)
         if not selected:
@@ -474,6 +503,11 @@ class StateMachine:
         current_hash = compute_spec_hash(spec_path)
         if current_hash:
             module["spec_hash"] = current_hash
+        plan_path = derive_plan_path(
+            module["change_id"], module["module_name"], self.root_dir)
+        new_plan_hash = compute_plan_hash(plan_path)
+        if new_plan_hash:
+            module["plan_hash"] = new_plan_hash
         prev_status = module["status"]
         module["status"] = SYNCED
         module["last_synced"] = datetime.datetime.now().isoformat()

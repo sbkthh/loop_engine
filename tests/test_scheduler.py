@@ -48,6 +48,7 @@ def _module(change_id, name, status, spec_hash=None):
         "project_root": ".",
         "status": status,
         "spec_hash": spec_hash,
+        "plan_hash": None,
         "maker_attempt": 0,
         "review_fix_attempt": 0,
         "files_created": [],

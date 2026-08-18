@@ -51,40 +51,30 @@ _LLM_SYSTEM_PROMPT = (
     "- '查状态' — check all requirement statuses (instant, sync reply)\n"
     "- '批准执行' — approve pending auto-executions (instant, sync reply)\n"
     "- Any other question — LLM processes and pushes result via API (async)\n\n"
-    "When the user is clearly approving/confirming execution of a requirement "
-    "(e.g. '批准执行', '同意执行 cross-dock', 'approve'), your reply MUST start "
-    "with exactly '__APPROVE__ <requirement name>' on the first line, then you "
-    "may add a short confirmation. Do NOT run any commands — the prefix "
-    "triggers the real approval automatically.\n\n"
-    "When the user asks about execution history (e.g. '最近执行情况', "
-    "'执行历史'), your reply MUST start with '__HISTORY__ <requirement name>' "
-    "(or '__HISTORY__ ALL' when no requirement is mentioned), then you may add "
-    "a short intro. Do NOT run any commands — the prefix reads the history "
-    "automatically.\n\n"
-    "When the user asks to view gray-list drafts (e.g. '查看灰名单'), your "
-    "reply MUST start with '__GRAY_LIST__ <requirement name>' (or "
-    "'__GRAY_LIST__ ALL' when no requirement is mentioned), then you may add "
-    "a short intro. Do NOT run any commands.\n\n"
-    "When the user wants to adjudicate gray-list drafts (e.g. '接受 1', "
-    "'拒绝 2 3', '接受 1，拒绝 2 3', '全部接受', '全部拒绝'), your reply MUST "
-    "start with exactly '__ADJUDICATE__ <requirement name> <target> <decision>' "
-    "(or '__ADJUDICATE__ ALL <target> <decision>' when no "
-    "requirement is mentioned) on the first line, then you may add a short "
-    "confirmation.\n"
-    "<target> is 'all' for all pending, a comma-separated list of ids for "
-    "a single decision, or 'mixed' for different decisions per draft. "
-    "<decision> is 'accept'/'reject' for uniform decisions, or a "
-    "comma-separated 'id=decision,...' pairs for mixed mode "
-    "(e.g. '1=accept,2=reject,3=reject').\n"
-    "Examples:\n"
-    "  accept 1 2 → __ADJUDICATE__ req 1,2 accept\n"
-    "  接受 1，拒绝 2 3 → __ADJUDICATE__ req mixed 1=accept,2=reject,3=reject\n"
-    "  全部接受 → __ADJUDICATE__ req all accept\n"
-    "Do NOT omit the requirement name — use ALL as the name when the "
-    "user didn't say which requirement. If the user "
-    "mentions only draft numbers, infer the requirement from the last "
-    "gray-list context. Do NOT run any commands — the prefix adjudicates "
-    "automatically.\n\n"
+    "Action protocol: when your reply needs to trigger a system action "
+    "(approval, spec registration, history, gray list, adjudication), append "
+    "an action block on its own line at the end of your reply:\n"
+    "- __JSON_ACTION__ {\"action\":\"approve\",\"requirement\":\"<name>\"}\n"
+    "- __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<name>\","
+    "\"module\":\"<change_id>/<module_name>\"}\n"
+    "- __JSON_ACTION__ {\"action\":\"history\",\"requirement\":\"<name>\"} "
+    "(use \"ALL\" when no requirement is mentioned)\n"
+    "- __JSON_ACTION__ {\"action\":\"gray_list\",\"requirement\":\"<name>\"} "
+    "(use \"ALL\" when no requirement is mentioned)\n"
+    "- __JSON_ACTION__ {\"action\":\"adjudicate\",\"requirement\":\"<name>\","
+    "\"target\":\"<target>\",\"decision\":\"<decision>\"} (use \"ALL\" when "
+    "no requirement is mentioned)\n"
+    "You only decide which action and fill the parameter values — no other "
+    "format rules. Do NOT output __JSON_ACTION__ when no system action is "
+    "needed.\n"
+    "Adjudication details: <target> is 'all', a comma-separated id list for "
+    "one uniform decision, or 'mixed' for per-draft decisions; <decision> is "
+    "'accept'/'reject' for uniform, or 'id=accept,id=reject,...' for mixed. "
+    "Examples: accept 1 2 → target '1,2' decision 'accept'; 接受 1，拒绝 2 3 "
+    "→ target 'mixed' decision '1=accept,2=reject,3=reject'; 全部接受 → "
+    "target 'all' decision 'accept'. If the user mentions only draft numbers, "
+    "infer the requirement from the last gray-list context. Do NOT run any "
+    "commands — the action block triggers the system action automatically.\n\n"
     "Requirement registration rules (user asks to register a new requirement "
     "from a PRD, e.g. '注册需求', '按 PRD 注册 xx', '初始化 xx 需求'):\n"
     "- Collect the required arguments first; ask the user one by one for "
@@ -121,8 +111,8 @@ _LLM_SYSTEM_PROMPT = (
     "artifact, writing proposal/design/specs/tasks from the PRD content in "
     ".loop/prd_summary.json. Do NOT skip this even if the user just says "
     "'按 PRD 生成 spec'\n"
-    "- Bind new modules to a project: the __SPEC_RESULT__ prefix registers "
-    "new modules automatically (no need to run 'loop_engine next' for "
+    "- Bind new modules to a project: the spec_result action registers new "
+    "modules automatically (no need to run 'loop_engine next' for "
     "registration). For each module whose project_root is '.' ask the user "
     "which project it belongs to (projects and their working copies: "
     "worktree at "
@@ -136,15 +126,17 @@ _LLM_SYSTEM_PROMPT = (
     "- openspec-new-change/openspec-propose create a NEW change proposal only; "
     "they do NOT support appending to or modifying an existing change/spec — "
     "modify an existing spec by editing its spec.md in place\n"
-    "- After editing a spec, your reply MUST start with exactly "
-    "'__SPEC_RESULT__ <requirement name> <module key>' on the first line. "
-    "IMPORTANT: <requirement name> and <module key> are TWO space-separated "
-    "arguments — even when the requirement name equals the change_id prefix, "
-    "write both, e.g. '__SPEC_RESULT__ cross-dock-v2-backend "
-    "cross-dock-v2-backend/cross-dock-persistence'. Do NOT merge them into "
-    "one token. Then add a short summary of what changed. Do NOT run "
-    "'loop_engine next' or 'commit' — the prefix registers the change (hash "
-    "update + backup) and the user then approves execution\n\n"
+    "- After editing a spec, append the spec_result action block on its own "
+    "line at the end of your reply: __JSON_ACTION__ "
+    "{\"action\":\"spec_result\",\"requirement\":\"<requirement name>\","
+    "\"module\":\"<change_id>/<module_name>\"}. IMPORTANT: write BOTH "
+    "requirement and module — even when the requirement name equals the "
+    "change_id prefix, keep both fields, e.g. "
+    "{\"action\":\"spec_result\",\"requirement\":\"cross-dock-v2-backend\","
+    "\"module\":\"cross-dock-v2-backend/cross-dock-persistence\"}. Then add a "
+    "short summary of what changed. Do NOT run 'loop_engine next' or "
+    "'commit' — the action block registers the change (hash update + backup) "
+    "and the user then approves execution\n\n"
     "Manual execution rules (when driving a next/commit loop manually, e.g. "
     "user says '主动执行' or asks you to run the loop step by step):\n"
     "- ALWAYS run 'loop_engine manual-begin --root <path>' BEFORE the first "
@@ -169,7 +161,7 @@ _LLM_SYSTEM_PROMPT = (
     "- NO tables, NO code blocks (```), NO lists with - or *, NO links — "
     "plain text lines with line breaks instead\n"
     "- For multiple items, write them as separate lines like: '模块A: 状态'\n\n"
-    "User: {message}\n"
+    "User: __MESSAGE__\n"
 )
 
 
@@ -514,7 +506,7 @@ def _resolve_module_key(st, key):
     if len(matches) > 1:
         raise ValueError(
             f"模块名 {key} 对应多个模块（{'、'.join(sorted(matches))}），"
-            f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+            "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
     raise ValueError(f"找不到模块 {key}（可用：{', '.join(modules) or '无'}）")
 
 
@@ -534,9 +526,9 @@ def _execute_spec_result_by_key(module_key, registry, data_dir):
         return _execute_spec_result(owners[0], module_key, registry, data_dir)
     if len(owners) > 1:
         return (f"模块 {module_key} 对应多个需求（{'、'.join(owners)}），"
-                f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+                "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
     return (f"找不到模块 {module_key}：没有需求的状态机包含该模块，"
-            f"请回复 __SPEC_RESULT__ <需求名> <change_id>/<module_name>")
+            "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
 
 
 def _execute_spec_result(name, module_key, registry, data_dir):
@@ -578,7 +570,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         change_id=change_id, module_name=module_name))
     if not os.path.exists(spec_path):
         return (f"找不到 spec 文件：{spec_path}。"
-                f"请先编辑 spec 再输出 __SPEC_RESULT__。")
+                "请先编辑 spec，再在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",...}")
     new_hash = spec_utils.compute_spec_hash(spec_path)
     if module_key not in st["modules"]:
         project_root = spec_utils.resolve_project_root(root, module_name)
@@ -658,6 +650,46 @@ def _classify_requirement(message, registry):
     return None
 
 
+def _dispatch_json_action(payload, registry, data_dir, user_id):
+    """Dispatch a __JSON_ACTION__ payload. Returns reply text, or an
+    error message for unknown actions / missing parameters."""
+    action = payload.get("action")
+    if action == "approve":
+        name = payload.get("requirement")
+        if not name:
+            return "缺少参数：requirement"
+        blocked = _approve_prefix_block(name, registry)
+        if blocked:
+            return blocked
+        return _execute_approve(name, registry, data_dir, user_id)
+    if action == "spec_result":
+        name = payload.get("requirement")
+        module = payload.get("module")
+        if not name or not module:
+            return "缺少参数：requirement/module"
+        return _execute_spec_result(name, module, registry, data_dir)
+    if action == "adjudicate":
+        name = payload.get("requirement") or "ALL"
+        target = payload.get("target")
+        decision = payload.get("decision")
+        if not target or not decision:
+            return "缺少参数：target/decision"
+        return _execute_adjudicate(name, target, decision, registry, data_dir)
+    if action == "gray_list":
+        return _execute_gray_list_view(payload.get("requirement") or "ALL",
+                                       registry, data_dir)
+    if action == "history":
+        return _execute_history(payload.get("requirement") or "ALL",
+                                registry, data_dir)
+    return f"未知 action：{action or '(空)'}"
+
+
+_JSON_ACTION_RE = re.compile(r"__JSON_ACTION__\s*(\{[^{}]*\})", re.DOTALL)
+
+_LEGACY_PREFIXES = ("__APPROVE__", "__HISTORY__", "__GRAY_LIST__",
+                    "__ADJUDICATE__", "__SPEC_RESULT__")
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
@@ -667,7 +699,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         # exact match failed — ask the LLM which requirement this is about
         requirement = _classify_requirement(message, registry)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
-    prompt = _LLM_SYSTEM_PROMPT.format(message=message)
+    prompt = _LLM_SYSTEM_PROMPT.replace("__MESSAGE__", message, 1)
     # first message creates session, subsequent messages resume it
     session_flag = "--session-id" if is_new else "--resume"
     settings = _audit_settings()
@@ -700,6 +732,20 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         return "无响应，请稍后再试。"
     if requirement and not reply.startswith(("__", "【")):
         reply = f"【{requirement}】\n{reply}"
+    json_match = _JSON_ACTION_RE.search(reply)
+    if json_match:
+        try:
+            payload = json.loads(json_match.group(1))
+        except ValueError:
+            logger.warning("[wecom] __JSON_ACTION__ invalid JSON, "
+                           "falling back to legacy prefixes")
+            payload = None
+        if payload is not None:
+            return _dispatch_json_action(payload, registry, data_dir,
+                                         user_id)
+    if reply.startswith(_LEGACY_PREFIXES):
+        logger.info("[wecom] legacy prefix reply (deprecated, prefer "
+                    "__JSON_ACTION__)")
     if reply.startswith("__APPROVE__"):
         name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
         blocked = _approve_prefix_block(name, registry)

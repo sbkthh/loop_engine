@@ -953,3 +953,152 @@ def test_llm_dispatch_semantic_classify_routes_session(monkeypatch, tmp_path):
 
     assert used["req"] == "req"
     assert reply == "【req】\n好的，我来看一下"
+
+
+def test_dispatch_json_approve(monkeypatch):
+    """__JSON_ACTION__ approve dispatches like the old prefix."""
+    from wecom_server import router
+    import scheduler
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply('好的\n__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
+    calls = {}
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approve", name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2:
+                        calls.__setitem__("entries", entries) or ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已批准并开始执行" in reply
+    assert calls["approve"] == "req"
+    assert calls["entries"][0]["requirement"] == "req"
+
+
+def test_dispatch_json_missing_params(monkeypatch):
+    """JSON action with missing required fields returns 缺少参数."""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply('__JSON_ACTION__ {"action":"approve"}'))
+
+    fn = dispatch("批准", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert reply == "缺少参数：requirement"
+
+
+def test_dispatch_json_unknown_action(monkeypatch):
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply('__JSON_ACTION__ {"action":"fly"}'))
+
+    fn = dispatch("随便", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert reply == "未知 action：fly"
+
+
+def test_dispatch_json_prefix_priority(monkeypatch):
+    """JSON action block wins even when a legacy prefix is present."""
+    from wecom_server import router
+    import scheduler
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply("__HISTORY__ ghost\n"
+                        '__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
+    calls = {}
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approve", name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert calls["approve"] == "req"
+    assert "已批准并开始执行" in reply
+
+
+def test_dispatch_json_invalid_falls_back_to_legacy(monkeypatch):
+    """Malformed JSON block degrades to the legacy prefix path."""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply("__APPROVE__ ghost"))
+
+    fn = dispatch("批准 ghost", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert "没有找到需求" in reply
+
+
+def test_dispatch_old_prefix_compat(monkeypatch):
+    """Legacy prefixes still work after the JSON protocol lands."""
+    from wecom_server import router
+    import scheduler
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
+    calls = {}
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approve", name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已批准并开始执行" in reply
+    assert calls["approve"] == "req"
+
+
+def test_dispatch_json_spec_result(monkeypatch, tmp_path):
+    """JSON spec_result action registers a spec change (hash update)."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    registry = [{"name": "req", "root": root}]
+
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
+
+    fn = dispatch("已修改 spec", registry, "/tmp", "u1")
+    reply = fn()
+
+    assert "spec" in reply or "已登记" in reply or "PARTIAL" in reply
+
+    from state import StateManager
+    st = StateManager(root).load()
+    assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"

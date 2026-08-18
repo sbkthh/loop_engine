@@ -89,6 +89,31 @@ def compute_spec_hash(spec_path):
         return hashlib.md5(f.read()).hexdigest()
 
 
+def normalize_spec(text):
+    """Normalize spec text so comment/format-only edits hash identically.
+
+    Strips HTML comments, normalizes newlines, trims trailing whitespace
+    per line and surrounding blank lines. Conservative on purpose: prose
+    reflow, heading reorder, table edits still change the normalized hash
+    and keep the full loop.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]*<!--.*?-->[ \t]*\n?", "", text, flags=re.DOTALL)
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def compute_spec_norm_hash(spec_path):
+    if not os.path.exists(spec_path):
+        return None
+    with open(spec_path, "r", encoding="utf-8") as f:
+        return hashlib.md5(normalize_spec(f.read()).encode("utf-8")).hexdigest()
+
+
 def compute_plan_hash(plan_path):
     if not os.path.exists(plan_path):
         return None

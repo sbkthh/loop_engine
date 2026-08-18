@@ -14,7 +14,8 @@ from constants import (
     TRACE_RETENTION, AUDIT_RETENTION, MAX_GRAY_DRAFTS, RESULT_FILE,
 )
 from state import StateManager
-from spec_utils import (discover_modules, compute_spec_hash, compute_plan_hash,
+from spec_utils import (discover_modules, compute_spec_hash,
+                        compute_spec_norm_hash, compute_plan_hash,
                         derive_spec_path, derive_plan_path, resolve_project_root)
 from parser import (
     parse_maker_output, parse_checker_output,
@@ -83,13 +84,15 @@ class StateMachine:
             key = StateManager.module_key(change_id, module_name)
             if key not in state["modules"]:
                 spec_hash = compute_spec_hash(spec_path)
+                spec_norm_hash = compute_spec_norm_hash(spec_path)
                 project_root = resolve_project_root(self.root_dir, module_name)
                 plan_path = derive_plan_path(change_id, module_name, self.root_dir)
                 plan_hash = compute_plan_hash(plan_path)
                 StateManager.add_module(
                     state, key, change_id, module_name,
                     project_root=project_root or ".",
-                    spec_hash=spec_hash, plan_hash=plan_hash
+                    spec_hash=spec_hash, spec_norm_hash=spec_norm_hash,
+                    plan_hash=plan_hash
                 )
                 dirty = True
 
@@ -107,8 +110,22 @@ class StateMachine:
                 )
                 current_hash = compute_spec_hash(spec_path)
                 if current_hash and current_hash != module.get("spec_hash"):
+                    norm_hash = compute_spec_norm_hash(spec_path)
+                    old_norm = module.get("spec_norm_hash")
+                    if old_norm is not None and norm_hash and \
+                            norm_hash == old_norm:
+                        # comment/format-only edit: normalized content
+                        # unchanged, skip the loop (rule exception)
+                        module["spec_hash"] = current_hash
+                        module["spec_norm_hash"] = norm_hash
+                        dirty = True
+                        self._trace(state, "SCAN", key,
+                                    "spec changed (cosmetic) -> loop skipped")
+                        continue
                     module["prev_spec_hash"] = module.get("spec_hash")
                     module["spec_hash"] = current_hash
+                    if norm_hash:
+                        module["spec_norm_hash"] = norm_hash
                     module["status"] = PARTIAL
                     module["maker_attempt"] = 0
                     module["review_fix_attempt"] = 0
@@ -120,6 +137,13 @@ class StateMachine:
                     return self._build(
                         state, CLASSIFY_CHANGE, key, module
                     )
+                elif module.get("spec_norm_hash") is None:
+                    # upgraded state: backfill normalized hash silently so
+                    # the next cosmetic edit is recognized as cosmetic
+                    norm_hash = compute_spec_norm_hash(spec_path)
+                    if norm_hash:
+                        module["spec_norm_hash"] = norm_hash
+                        dirty = True
 
         # Plan hash change detection: SYNCED module whose plan file changed
         # independently of its spec. Route directly to MAKER_STEP1_RED (the
@@ -161,11 +185,7 @@ class StateMachine:
         # ALIGN_DOCS completed: skip MAKER steps, go directly to CHECKER
         if module.get("_align_done"):
             del module["_align_done"]
-            spec_path = derive_spec_path(
-                module["change_id"], module["module_name"], self.root_dir)
-            new_hash = compute_spec_hash(spec_path)
-            if new_hash:
-                module["spec_hash"] = new_hash
+            self._refresh_spec_hashes(module)
             action = CHECKER
             StateManager.set_current(state, module_key, action)
             self._trace(state, "SCAN", module_key, "align done -> CHECKER")
@@ -476,13 +496,10 @@ class StateMachine:
         module["_align_done"] = True
         if parsed.get("alignment_report"):
             module["alignment_report"] = parsed["alignment_report"]
-        # ALIGN_DOCS may have edited spec.md: sync the hash so the follow-up
-        # CHECKER/scan compare against the new spec instead of a stale hash
-        spec_path = derive_spec_path(
-            module["change_id"], module["module_name"], self.root_dir)
-        new_hash = compute_spec_hash(spec_path)
-        if new_hash:
-            module["spec_hash"] = new_hash
+        # ALIGN_DOCS may have edited spec.md: sync the hashes so the
+        # follow-up CHECKER/scan compare against the new spec instead of
+        # a stale hash
+        self._refresh_spec_hashes(module)
         return CHECKER
 
     def _commit_code_review(self, state, key, module, text):
@@ -510,12 +527,20 @@ class StateMachine:
             return _SYNCED
         return CHECKER
 
-    def _execute_synced(self, state, key, module):
+    def _refresh_spec_hashes(self, module):
+        # ponytail: 三处刷新点(align_done/ALIGN_DOCS/SYNCED)都须同步 norm
+        # hash，内联易漏字段（重蹈 #94 同类漂移）
         spec_path = derive_spec_path(
             module["change_id"], module["module_name"], self.root_dir)
-        current_hash = compute_spec_hash(spec_path)
-        if current_hash:
-            module["spec_hash"] = current_hash
+        new_hash = compute_spec_hash(spec_path)
+        if new_hash:
+            module["spec_hash"] = new_hash
+        norm_hash = compute_spec_norm_hash(spec_path)
+        if norm_hash:
+            module["spec_norm_hash"] = norm_hash
+
+    def _execute_synced(self, state, key, module):
+        self._refresh_spec_hashes(module)
         plan_path = derive_plan_path(
             module["change_id"], module["module_name"], self.root_dir)
         new_plan_hash = compute_plan_hash(plan_path)

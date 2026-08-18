@@ -803,6 +803,64 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm = StateManager(self.root)
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], "PARTIAL")
+        self.assertIsNotNone(
+            state["modules"][self.key].get("spec_norm_hash"))
+
+    def test_cosmetic_spec_change_skips_loop(self):
+        """Comment/format-only spec edit: hashes refreshed, stays SYNCED,
+        no CLASSIFY_CHANGE routing."""
+        from spec_utils import compute_spec_norm_hash
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        import hashlib
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change", "test-module",
+                                spec_hash=spec_hash,
+                                spec_norm_hash=compute_spec_norm_hash(spec_path))
+        state["modules"][self.key]["status"] = SYNCED
+        sm.save(state)
+
+        with open(spec_path, "a") as f:
+            f.write("\n<!-- review note -->\n")
+
+        machine = StateMachine(self.root)
+        r = machine.next()
+        self.assertEqual(r["action"], "IDLE")
+
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], "SYNCED")
+        self.assertNotEqual(m["spec_hash"], spec_hash)
+        self.assertEqual(m["spec_norm_hash"],
+                         compute_spec_norm_hash(spec_path))
+        self.assertTrue(any("cosmetic" in t.get("output", "")
+                            for t in state["trace"]))
+
+    def test_norm_hash_backfilled_when_raw_unchanged(self):
+        """Upgraded state (no spec_norm_hash) with unchanged spec:
+        silent backfill, no status change."""
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        import hashlib
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change", "test-module",
+                                spec_hash=spec_hash)
+        state["modules"][self.key]["status"] = SYNCED
+        sm.save(state)
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], "IDLE")
+
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], "SYNCED")
+        self.assertIsNotNone(m.get("spec_norm_hash"))
 
     def test_trace_trim(self):
         self._init_module_ready()

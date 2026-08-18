@@ -41,13 +41,14 @@ def _make_spec(root, change_id, module_name, content="spec content"):
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def _module(change_id, name, status, spec_hash=None):
+def _module(change_id, name, status, spec_hash=None, spec_norm_hash=None):
     return {
         "change_id": change_id,
         "module_name": name,
         "project_root": ".",
         "status": status,
         "spec_hash": spec_hash,
+        "spec_norm_hash": spec_norm_hash,
         "plan_hash": None,
         "maker_attempt": 0,
         "review_fix_attempt": 0,
@@ -200,6 +201,20 @@ class TestPoll(SchedulerBase):
         self.assertEqual(e["modules"][0]["status"], "PARTIAL")
         self.assertTrue(e["modules"][0]["spec_hash_changed"])
         self.assertFalse(e["approved"])
+
+    def test_poll_skips_cosmetic_spec_change(self):
+        """Comment/format-only spec edit: no SPEC_CHANGED trigger."""
+        from spec_utils import compute_spec_norm_hash
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        spec_path = os.path.join(root, "openspec/changes/c/specs/m/spec.md")
+        norm = compute_spec_norm_hash(spec_path)
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED", spec_hash=h,
+                                          spec_norm_hash=norm)})
+        with open(spec_path, "a") as f:
+            f.write("\n<!-- review note -->\n")
+
+        self.assertEqual(scheduler.poll(), [])
 
     def test_poll_ready(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))

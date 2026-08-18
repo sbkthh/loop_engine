@@ -451,11 +451,13 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         return (f"找不到 spec 文件：{spec_path}。"
                 "请先编辑 spec，再在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",...}")
     new_hash = spec_utils.compute_spec_hash(spec_path)
+    new_norm_hash = spec_utils.compute_spec_norm_hash(spec_path)
     if module_key not in st["modules"]:
         project_root = spec_utils.resolve_project_root(root, module_name)
         StateManager.add_module(
             st, module_key, change_id, module_name,
-            project_root=project_root or ".", spec_hash=new_hash)
+            project_root=project_root or ".",
+            spec_hash=new_hash, spec_norm_hash=new_norm_hash)
         old_hash = None
     else:
         old_hash = st["modules"][module_key].get("spec_hash")
@@ -479,6 +481,8 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         shutil.copy2(spec_path, backup_path)
         backup_note = backup_path + " (pre-edit snapshot, no git HEAD)"
     sm.set_module_field(st, module_key, "spec_hash", new_hash)
+    if new_norm_hash:
+        sm.set_module_field(st, module_key, "spec_norm_hash", new_norm_hash)
     sm.set_module_field(st, module_key, "status", PARTIAL)
     sm.set_module_field(st, module_key, "maker_attempt", 0)
     sm.set_module_field(st, module_key, "review_fix_attempt", 0)

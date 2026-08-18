@@ -60,13 +60,14 @@ class StateManager:
 
     @staticmethod
     def add_module(state, key, change_id, module_name, project_root=".",
-                   spec_hash=None, plan_hash=None):
+                   spec_hash=None, plan_hash=None, spec_norm_hash=None):
         state["modules"][key] = {
             "change_id": change_id,
             "module_name": module_name,
             "project_root": project_root,
             "status": DRAFT,
             "spec_hash": spec_hash,
+            "spec_norm_hash": spec_norm_hash,
             "plan_hash": plan_hash,
             "maker_attempt": 0,
             "review_fix_attempt": 0,

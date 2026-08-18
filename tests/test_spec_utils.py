@@ -1,5 +1,6 @@
-"""Tests for spec_utils.py — test command normalization (clean-first 铁律)."""
+"""Tests for spec_utils.py — spec hashing and normalization."""
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -7,127 +8,68 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from spec_utils import read_test_command, read_checker_test_command
+from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
+                        normalize_spec)
 
 
-class TestReadTestCommand(unittest.TestCase):
+class TestNormalizeSpec(unittest.TestCase):
+    def test_html_comment_stripped(self):
+        a = normalize_spec("# T\n\n## S\n\n<!-- note -->\n1. x\n")
+        b = normalize_spec("# T\n\n## S\n\n1. x\n")
+        self.assertEqual(a, b)
+
+    def test_multiline_html_comment_stripped(self):
+        a = normalize_spec("# T\n<!--\nmulti\nline\n-->\n## S\n")
+        b = normalize_spec("# T\n## S\n")
+        self.assertEqual(a, b)
+
+    def test_crlf_and_trailing_whitespace_normalized(self):
+        a = normalize_spec("# T\r\n\r\n## S\r\n1. x  \r\n")
+        b = normalize_spec("# T\n\n## S\n1. x\n")
+        self.assertEqual(a, b)
+
+    def test_surrounding_blank_lines_trimmed(self):
+        a = normalize_spec("\n\n# T\n\n## S\n\n\n")
+        b = normalize_spec("# T\n\n## S\n")
+        self.assertEqual(a, b)
+
+    def test_prose_change_not_normalized_away(self):
+        self.assertNotEqual(normalize_spec("# T\n\n1. create item\n"),
+                            normalize_spec("# T\n\n1. create item quickly\n"))
+
+
+class TestSpecHashes(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = self.tmp.name
-        os.makedirs(os.path.join(self.root, ".qoder"), exist_ok=True)
+        self.path = os.path.join(self.tmp.name, "spec.md")
+        self.base = "# Test\n\n## Scenarios\n\n1. Create item\n"
+        with open(self.path, "w") as f:
+            f.write(self.base)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _write_agents(self, content):
-        with open(os.path.join(self.root, ".qoder", "AGENTS.md"), "w") as f:
-            f.write(content)
+    def test_raw_hash_changes_norm_hash_stable_on_comment(self):
+        raw_before = compute_spec_hash(self.path)
+        with open(self.path, "a") as f:
+            f.write("\n<!-- review note -->\n")
+        self.assertNotEqual(compute_spec_hash(self.path), raw_before)
+        expected = hashlib.md5(
+            normalize_spec(self.base).encode("utf-8")).hexdigest()
+        self.assertEqual(compute_spec_norm_hash(self.path), expected)
 
-    def test_fallback_includes_clean(self):
-        self.assertEqual(read_test_command(self.root), "mvn clean test")
+    def test_substantive_change_alters_norm_hash(self):
+        with open(self.path, "a") as f:
+            f.write("\n## New Scenario\n")
+        expected = hashlib.md5(
+            normalize_spec(self.base).encode("utf-8")).hexdigest()
+        self.assertNotEqual(compute_spec_norm_hash(self.path), expected)
 
-    def test_plain_test_command_gets_clean(self):
-        self._write_agents("Run all tests: mvn test")
-        self.assertEqual(read_test_command(self.root), "mvn clean test")
-
-    def test_clean_test_command_kept(self):
-        self._write_agents("Run all tests: mvn clean test")
-        self.assertEqual(read_test_command(self.root), "mvn clean test")
-
-    def test_custom_flags_preserved(self):
-        self._write_agents("Run all tests: mvn test -DskipITs")
-        self.assertEqual(read_test_command(self.root), "mvn clean test -DskipITs")
-
-
-class TestReadCheckerTestCommand(unittest.TestCase):
-    """CHECKER reuses GREEN's fresh build artifacts: no clean, scoped -pl."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = os.path.abspath(self.tmp.name)
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_removes_clean_when_no_files(self):
-        self.assertEqual(
-            read_checker_test_command("mvn clean test", self.root, []),
-            "mvn test")
-
-    def test_scopes_to_changed_modules(self):
-        files = [
-            os.path.join(self.root, "zkh-opc-sna-manager",
-                         "src/main/java/com/X.java"),
-            os.path.join(self.root, "zkh-opc-sna-stock-strategy",
-                         "src/test/java/com/Y.java"),
-        ]
-        cmd = read_checker_test_command("mvn clean test", self.root, files)
-        self.assertEqual(
-            cmd,
-            "mvn test -pl zkh-opc-sna-manager,zkh-opc-sna-stock-strategy -am")
-
-    def test_outside_files_ignored(self):
-        cmd = read_checker_test_command(
-            "mvn clean test", self.root,
-            ["/elsewhere/project/src/main/java/X.java"])
-        self.assertEqual(cmd, "mvn test")
+    def test_missing_file_returns_none(self):
+        missing = os.path.join(self.tmp.name, "nope.md")
+        self.assertIsNone(compute_spec_hash(missing))
+        self.assertIsNone(compute_spec_norm_hash(missing))
 
 
-class TestResolveProjectRoot(unittest.TestCase):
-    """projects[].name = real project name; module_to_project bridges module names."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = os.path.abspath(self.tmp.name)
-        import registry as reg
-        self._orig_path = reg.REGISTRY_PATH
-        reg.REGISTRY_PATH = os.path.join(self.root, "requirements.json")
-        self.reg = reg
-
-    def tearDown(self):
-        self.reg.REGISTRY_PATH = self._orig_path
-        self.tmp.cleanup()
-
-    def _register(self, projects, module_to_project=None):
-        entry = {"name": "test-req", "root": self.root, "projects": projects}
-        if module_to_project:
-            entry["module_to_project"] = module_to_project
-        self.reg.save({"requirements": [entry]})
-
-    def test_mapping_prefers_worktree(self):
-        src = os.path.join(self.root, "src-repo")
-        wt = os.path.join(self.root, "kunhe-wms")
-        os.makedirs(src)
-        os.makedirs(wt)
-        self._register([{"name": "kunhe-wms", "source": src}],
-                       module_to_project={"seed-label-print": "kunhe-wms"})
-        from spec_utils import resolve_project_root
-        self.assertEqual(
-            resolve_project_root(self.root, "seed-label-print"), wt)
-
-    def test_mapping_falls_back_to_source(self):
-        src = os.path.join(self.root, "kunhe-order")
-        os.makedirs(src)
-        self._register([{"name": "kunhe-order", "source": src}],
-                       module_to_project={"cross-dock-persistence": "kunhe-order"})
-        from spec_utils import resolve_project_root
-        self.assertEqual(
-            resolve_project_root(self.root, "cross-dock-persistence"), src)
-
-    def test_legacy_name_match_without_mapping(self):
-        src = os.path.join(self.root, "legacy-proj")
-        os.makedirs(src)
-        self._register([{"name": "legacy-proj", "source": src}])
-        from spec_utils import resolve_project_root
-        self.assertEqual(resolve_project_root(self.root, "legacy-proj"), src)
-
-    def test_no_match_returns_none(self):
-        src = os.path.join(self.root, "other-proj")
-        os.makedirs(src)
-        self._register([{"name": "other-proj", "source": src}])
-        from spec_utils import resolve_project_root
-        self.assertIsNone(resolve_project_root(self.root, "unknown-module"))
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

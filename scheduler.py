@@ -19,7 +19,8 @@ import uuid
 import requests  # noqa: E402 — used by notify_pending()
 
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
-from spec_utils import compute_spec_hash, discover_modules
+from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
+                        discover_modules)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
@@ -155,6 +156,11 @@ def _poll_requirement(root, name):
             current_hash = compute_spec_hash(spec_path)
             if not current_hash or current_hash == module.get("spec_hash"):
                 continue
+            norm_hash = compute_spec_norm_hash(spec_path)
+            old_norm = module.get("spec_norm_hash")
+            if old_norm is not None and norm_hash and \
+                    norm_hash == old_norm:
+                continue  # comment/format-only edit, machine skips the loop
             hash_changed = True
             status = PARTIAL
         if status not in _TRIGGER_FOR_STATUS:

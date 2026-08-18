@@ -6,8 +6,6 @@ modules, per the orchestration design spec.
 """
 
 import datetime
-import glob
-import hashlib
 import json
 import os
 import shutil
@@ -21,6 +19,7 @@ import uuid
 import requests  # noqa: E402 — used by notify_pending()
 
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
+from spec_utils import compute_spec_hash, discover_modules
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
@@ -33,7 +32,6 @@ STATE_FILE = ".loop/state.json"
 LOCK_FILE = ".loop/lock"
 MANUAL_FILE = ".loop/manual.json"
 RUNS_PATH = os.path.join(DATA_DIR, "runs.json")
-SPEC_GLOB = "openspec/changes/*/specs/*/spec.md"
 
 SYNCED = "SYNCED"
 PARTIAL = "PARTIAL"
@@ -76,7 +74,7 @@ LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
 # Per-step caps are hung-call backstops, not task budgets: the lock heartbeat
 # below keeps the staleness check honest no matter how long a step runs.
 STEP_TIMEOUT_SECONDS = 6 * 3600  # one qodercli/LLM step
-QUICK_TIMEOUT_SECONDS = 600      # local next/commit CLI calls
+QUICK_TIMEOUT_SECONDS = 30       # local next/commit CLI calls (pure Python, <1s)
 LOCK_HEARTBEAT_SECONDS = 60      # lock mtime refresh while a step is in flight
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
@@ -136,26 +134,6 @@ def _find_entry(data, name):
 
 # ---------- detection ----------
 
-def _compute_spec_hash(spec_path):
-    if not os.path.exists(spec_path):
-        return None
-    with open(spec_path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
-
-
-def _discover_specs(root):
-    found = []
-    for path in sorted(glob.glob(os.path.join(root, SPEC_GLOB), recursive=True)):
-        parts = path.replace("\\", "/").split("/")
-        try:
-            ci = parts.index("changes") + 1
-            si = parts.index("specs", ci) + 1
-        except (ValueError, IndexError):
-            continue
-        found.append((parts[ci], parts[si]))
-    return found
-
-
 def _poll_requirement(root, name):
     """Detect pending work for one requirement. Never writes state.json."""
     state_path = os.path.join(root, STATE_FILE)
@@ -174,7 +152,7 @@ def _poll_requirement(root, name):
             spec_path = os.path.join(
                 root, "openspec", "changes", module.get("change_id", ""),
                 "specs", module.get("module_name", ""), "spec.md")
-            current_hash = _compute_spec_hash(spec_path)
+            current_hash = compute_spec_hash(spec_path)
             if not current_hash or current_hash == module.get("spec_hash"):
                 continue
             hash_changed = True
@@ -188,7 +166,7 @@ def _poll_requirement(root, name):
             "cross_project": bool(module.get("project_root"))
             and module.get("project_root") != ".",
         })
-    for change_id, module_name in _discover_specs(root):
+    for change_id, module_name, _spec_path in discover_modules(root):
         key = f"{change_id}/{module_name}"
         if key not in modules:
             detected.append({

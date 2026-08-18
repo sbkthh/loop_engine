@@ -11,7 +11,7 @@ from constants import (
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
     ALIGN_DOCS, STATUS_TABLE,
     SCORE_THRESHOLD, MAX_MAKER_ATTEMPTS, MAX_REVIEW_FIX_CYCLES,
-    TRACE_RETENTION, AUDIT_RETENTION, RESULT_FILE,
+    TRACE_RETENTION, AUDIT_RETENTION, MAX_GRAY_DRAFTS, RESULT_FILE,
 )
 from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash, compute_plan_hash,
@@ -76,6 +76,7 @@ class StateMachine:
 
     def next(self):
         state = self.sm.load()
+        dirty = False
 
         discovered = discover_modules(self.root_dir)
         for change_id, module_name, spec_path in discovered:
@@ -90,11 +91,13 @@ class StateMachine:
                     project_root=project_root or ".",
                     spec_hash=spec_hash, plan_hash=plan_hash
                 )
+                dirty = True
 
         mid = StateManager.find_mid_progress(state)
         if mid:
             module_key, module, action = mid
-            self.sm.save(state)
+            if dirty:
+                self.sm.save(state)
             return self._build(state, action, module_key, module)
 
         for key, module in list(state["modules"].items()):
@@ -112,6 +115,7 @@ class StateMachine:
                     StateManager.set_current(state, key, CLASSIFY_CHANGE)
                     self._trace(state, "SCAN", key,
                                 f"spec hash changed -> PARTIAL")
+                    dirty = True
                     self.sm.save(state)
                     return self._build(
                         state, CLASSIFY_CHANGE, key, module
@@ -130,6 +134,7 @@ class StateMachine:
                     if module.get("plan_hash") is None:
                         # first-time initialization (upgraded state)
                         module["plan_hash"] = current_hash
+                        dirty = True
                     else:
                         module["prev_plan_hash"] = module.get("plan_hash")
                         module["plan_hash"] = current_hash
@@ -139,6 +144,7 @@ class StateMachine:
                         StateManager.set_current(state, key, MAKER_STEP1_RED)
                         self._trace(state, "SCAN", key,
                                     f"plan hash changed -> PARTIAL")
+                        dirty = True
                         self.sm.save(state)
                         return self._build(
                             state, MAKER_STEP1_RED, key, module
@@ -146,7 +152,8 @@ class StateMachine:
 
         selected = StateManager.select_next_module(state)
         if not selected:
-            self.sm.save(state)
+            if dirty:
+                self.sm.save(state)
             return {"action": "IDLE", "message": "所有模块同步，无待处理项"}
 
         module_key, module = selected
@@ -162,6 +169,7 @@ class StateMachine:
             action = CHECKER
             StateManager.set_current(state, module_key, action)
             self._trace(state, "SCAN", module_key, "align done -> CHECKER")
+            dirty = True
             self.sm.save(state)
             module = state["modules"][module_key]
             return self._build(state, CHECKER, module_key, module)
@@ -173,6 +181,7 @@ class StateMachine:
                        and d.get("module") == module_key]
             if not pending:
                 del module["_gray_resume"]
+                dirty = True
                 any_accepted = any(d.get("status") == "accepted"
                                    and not d.get("_archived")
                                    for d in state.get("gray_drafts", [])
@@ -196,22 +205,26 @@ class StateMachine:
             StateManager.set_current(state, module_key, action)
             self._trace(state, "SCAN", module_key,
                         f"gray resume -> {action}")
+            dirty = True
             self.sm.save(state)
             module = state["modules"][module_key]
             return self._build(state, action, module_key, module)
         entry = STATUS_TABLE.get(module["status"])
         if not entry:
-            self.sm.save(state)
+            if dirty:
+                self.sm.save(state)
             return {"action": "IDLE",
                     "message": f"未知状态 {module['status']}"}
         if entry["next"]:
             action = entry["next"]
             StateManager.set_current(state, module_key, action)
             self._trace(state, "SCAN", module_key, f"routed to {action}")
+            dirty = True
             self.sm.save(state)
             return self._build(state, action, module_key,
                                state["modules"][module_key])
-        self.sm.save(state)
+        if dirty:
+            self.sm.save(state)
         message = (entry["idle_msg"] or "IDLE").format(module_key=module_key)
         return {"action": "IDLE", "message": message}
 
@@ -555,6 +568,19 @@ class StateMachine:
                 "summary": summary,
                 "status": "pending",
             })
+        # Cap total drafts: trim oldest archived entries when over limit.
+        # Archived drafts older than newest N entries are safe to drop;
+        # fingerprint suppression still works from the remaining rejected
+        # entries, and the audit trail is preserved in audit_trail separately.
+        if len(drafts) > MAX_GRAY_DRAFTS:
+            excess = len(drafts) - MAX_GRAY_DRAFTS
+            archived = [(i, d) for i, d in enumerate(drafts)
+                        if d.get("status") != "pending"]
+            if archived:
+                # Remove oldest excess archived entries (sorted by id ≅ age)
+                archived.sort(key=lambda x: x[1].get("id", 0))
+                remove_ids = {id(d) for _, d in archived[:excess]}
+                drafts[:] = [d for d in drafts if id(d) not in remove_ids]
 
     def _trace(self, state, phase, module_key, output, result="✅"):
         now = datetime.datetime.now()

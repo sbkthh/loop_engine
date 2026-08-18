@@ -94,6 +94,7 @@ MAX_REVIEW_FIX_CYCLES = 1
 # Retention limits
 TRACE_RETENTION = 20
 AUDIT_RETENTION = 30
+MAX_GRAY_DRAFTS = 100  # per state.json, total draft entries capped (archived trimmed first)
 
 # File names (relative to root dir)
 STATE_FILE = ".loop/state.json"

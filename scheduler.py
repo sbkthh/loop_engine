@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -71,6 +72,11 @@ HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
+# Per-step caps are hung-call backstops, not task budgets: the lock heartbeat
+# below keeps the staleness check honest no matter how long a step runs.
+STEP_TIMEOUT_SECONDS = 6 * 3600  # one qodercli/LLM step
+QUICK_TIMEOUT_SECONDS = 600      # local next/commit CLI calls
+LOCK_HEARTBEAT_SECONDS = 60      # lock mtime refresh while a step is in flight
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
 
@@ -689,19 +695,34 @@ def _repair_result(root, sid, detail):
     No tests/compilation rerun: the step's work is already done, only the
     output envelope was malformed. Returns False when the repair call fails.
     """
-    q = subprocess.run(
-        [_QODERCLI, "--print", "--session-id", sid,
-         "--no-session-persistence",
-         "--dangerously-skip-permissions",
-         "--cwd", root, "--append-system-prompt",
-         _REPAIR_PROMPT.format(detail=detail),
-         "Rewrite .loop/result.md with the required JSON object"],
-        capture_output=True, text=True)
+    try:
+        q = subprocess.run(
+            [_QODERCLI, "--print", "--session-id", sid,
+             "--no-session-persistence",
+             "--dangerously-skip-permissions",
+             "--cwd", root, "--append-system-prompt",
+             _REPAIR_PROMPT.format(detail=detail),
+             "Rewrite .loop/result.md with the required JSON object"],
+            capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _log("repair: qodercli timed out")
+        return False
     if q.returncode != 0:
         _log(f"repair: qodercli exited {q.returncode}: "
              f"{(q.stderr or '').strip()}")
         return False
     return True
+
+
+def _lock_heartbeat(root, stop_event):
+    """Refresh lock mtime while a run is active so the 24h staleness check
+    can never reclaim the lock mid-step (a long/hung subprocess would
+    otherwise starve the per-step os.utime)."""
+    while not stop_event.wait(LOCK_HEARTBEAT_SECONDS):
+        try:
+            os.utime(_lock_path(root), None)
+        except OSError:
+            return  # lock released — nothing left to keep fresh
 
 
 def run_requirement(name):
@@ -724,6 +745,9 @@ def run_requirement(name):
     notify_text(f"[调度] 开始执行 {name} ({root})", user_id)
     _log(f"run {name}: start ({root})")
     try:
+        stop_heartbeat = threading.Event()
+        threading.Thread(target=_lock_heartbeat, args=(root, stop_heartbeat),
+                         daemon=True).start()
         steps = 0
         same_action = 0
         last_action = None
@@ -745,8 +769,15 @@ def run_requirement(name):
                 last_beat = time.time()
                 beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
-            r = subprocess.run(_engine_cmd("next", "--root", root),
-                               capture_output=True, text=True)
+            try:
+                r = subprocess.run(_engine_cmd("next", "--root", root),
+                                   capture_output=True, text=True,
+                                   timeout=QUICK_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                _log(f"run {name}: next timed out")
+                end = "qodercli_failed"
+                failure_detail = "next 命令超时"
+                break
             try:
                 directives = json.loads(r.stdout or "{}")
             except json.JSONDecodeError:
@@ -784,13 +815,27 @@ def run_requirement(name):
             # increments retries and gets a fresh id, keeping replay clean
             sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                  f"{root}:{action}:{retries}"))
-            q = subprocess.run(
-                [_QODERCLI, "--print", "--session-id", sid,
-                 "--no-session-persistence",
-                 "--dangerously-skip-permissions",
-                 "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
-                 json.dumps(payload)],
-                capture_output=True, text=True)
+            try:
+                q = subprocess.run(
+                    [_QODERCLI, "--print", "--session-id", sid,
+                     "--no-session-persistence",
+                     "--dangerously-skip-permissions",
+                     "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
+                     json.dumps(payload)],
+                    capture_output=True, text=True,
+                    timeout=STEP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                # subprocess.run already killed the hung child; the step
+                # replays idempotently through the same retry path
+                _log(f"run {name}: qodercli timed out after "
+                     f"{STEP_TIMEOUT_SECONDS // 3600}h")
+                failure_detail = f"步骤超时（>{STEP_TIMEOUT_SECONDS // 3600} 小时）"
+                if retries < MAX_FAILURE_RETRIES:
+                    retries += 1
+                    _log(f"run {name}: retrying step (retry {retries})")
+                    continue
+                end = "qodercli_failed"
+                break
             if q.returncode != 0:
                 _log(f"run {name}: qodercli exited {q.returncode}")
                 failure_detail = (q.stderr or "").strip() or f"exit {q.returncode}"
@@ -819,8 +864,14 @@ def run_requirement(name):
             format_repairs = 0
             bad_commit_output = False
             while True:
-                c = subprocess.run(_engine_cmd("commit", "--root", root),
-                                   capture_output=True, text=True)
+                try:
+                    c = subprocess.run(_engine_cmd("commit", "--root", root),
+                                       capture_output=True, text=True,
+                                       timeout=QUICK_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    _log(f"run {name}: commit timed out")
+                    commit = {"error": "commit 超时"}
+                    break
                 try:
                     commit = json.loads(c.stdout or "{}")
                 except json.JSONDecodeError:
@@ -870,6 +921,7 @@ def run_requirement(name):
         _log(f"run {name}: finished ({end}) after {steps} step(s)")
         return {"requirement": name, "steps": steps, "end": end}
     finally:
+        stop_heartbeat.set()
         release_lock(root)
         if end != "gray_list":
             _clear_approval(name)

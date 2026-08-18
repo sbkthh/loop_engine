@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -478,6 +479,43 @@ class TestLock(SchedulerBase):
         scheduler.release_lock(root)
         self.assertTrue(os.path.exists(os.path.join(root, ".loop", "lock")))
 
+    def test_lock_heartbeat_refreshes_mtime(self):
+        """A run's heartbeat thread keeps the lock fresh even when no step
+        boundary touches it — a hung subprocess must never let the 24h
+        staleness check reclaim the lock mid-run."""
+        root = os.path.join(self.tmp.name, "req")
+        lock = os.path.join(root, ".loop", "lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        with open(lock, "w") as f:
+            f.write(str(os.getpid()))
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+        stop = threading.Event()
+        with mock.patch.object(scheduler, "LOCK_HEARTBEAT_SECONDS", 0.05):
+            th = threading.Thread(target=scheduler._lock_heartbeat,
+                                  args=(root, stop), daemon=True)
+            th.start()
+            time.sleep(0.3)
+            stop.set()
+            th.join(1)
+        self.assertGreater(os.path.getmtime(lock), old)
+
+    def test_lock_heartbeat_stops_when_lock_released(self):
+        root = os.path.join(self.tmp.name, "req")
+        lock = os.path.join(root, ".loop", "lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        with open(lock, "w") as f:
+            f.write(str(os.getpid()))
+        stop = threading.Event()
+        with mock.patch.object(scheduler, "LOCK_HEARTBEAT_SECONDS", 0.05):
+            th = threading.Thread(target=scheduler._lock_heartbeat,
+                                  args=(root, stop), daemon=True)
+            th.start()
+            time.sleep(0.2)
+            os.unlink(lock)
+            th.join(1)
+        self.assertFalse(th.is_alive())  # exits on OSError, not forever
+
     def test_manual_begin_locks(self):
         root = os.path.join(self.tmp.name, "req")
         os.makedirs(root, exist_ok=True)
@@ -846,6 +884,60 @@ class TestRun(SchedulerBase):
 
         self.assertEqual(result["end"], "commit_error")
         self.assertEqual(result["steps"], 2)
+
+    def test_run_qodercli_timeout_retries_then_fails(self):
+        """A hung LLM call (TimeoutExpired) is killed and treated like an
+        exit-code failure: one retry, then a clean stop with the lock
+        released — never a crashed run or a leaked lock."""
+        root = self._register_pending("req")
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                calls["n"] += 1
+                raise scheduler.subprocess.TimeoutExpired(cmd, 1)
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(calls["n"], 2)  # initial + one retry
+        self.assertEqual(result["end"], "qodercli_failed")
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_run_commit_timeout_retries_then_commit_error(self):
+        root = self._register_pending("req")
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+                return types.SimpleNamespace(stdout="", stderr="",
+                                             returncode=0)
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE", "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    calls["n"] += 1
+                    raise scheduler.subprocess.TimeoutExpired(cmd, 1)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(result["end"], "commit_error")
+        self.assertFalse(scheduler.is_locked(root))
 
     def test_run_repairs_format_error_in_place(self):
         """Format errors resume the same LLM session to rewrite result.md,

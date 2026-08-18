@@ -316,6 +316,67 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["maker_attempt"], 2)
 
+    def test_checker_hard_errors_exhausted_blocks_module(self):
+        """MAKER_FIX budget exhausted with hard errors still present →
+        module transitions to BLOCKED instead of re-running SCORE→MAKER→
+        CHECKER forever (the old path left it READY and every run looped
+        until MAX_TOTAL_STEPS)."""
+        from constants import BLOCKED, MAX_MAKER_ATTEMPTS
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+
+        def hard_error_result():
+            return json.dumps({
+                "status": "INCONSISTENT",
+                "discrepancy_count": 1,
+                "hard_error_count": 1,
+                "soft_warning_count": 0,
+                "info_count": 0,
+                "discrepancies": [
+                    {"severity": "HARD_ERROR", "type": "A",
+                     "description": "missing field"},
+                ],
+                "test_results": {"class_name": "FooTest", "total": 5,
+                                 "passed": 4, "failed": 1, "errors": 0},
+                "coverage": {"tested": 1, "total": 1},
+            })
+
+        def write_checker_failure():
+            self._write_result(
+                f"---CHECKER_OUTPUT---\n{hard_error_result()}\n"
+                f"---END_CHECKER_OUTPUT---")
+
+        r = machine.next()
+        self.assertEqual(r["action"], "CHECKER")
+        write_checker_failure()
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_FIX")
+
+        # each remaining budget slot: MAKER_FIX then another failing CHECKER
+        for _ in range(MAX_MAKER_ATTEMPTS - 1):
+            r = machine.next()
+            self.assertEqual(r["action"], "MAKER_FIX")
+            self._write_result(
+                f"---MAKER_OUTPUT---\n{_maker_step2_green_json()}\n"
+                f"---END_MAKER_OUTPUT---")
+            machine.commit()
+            r = machine.next()
+            self.assertEqual(r["action"], "CHECKER")
+            write_checker_failure()
+            r = machine.commit()
+
+        self.assertIsNone(r["next_action"])
+        sm = StateManager(self.root)
+        state = sm.load()
+        module = state["modules"][self.key]
+        self.assertEqual(module["status"], BLOCKED)
+        self.assertEqual(module["maker_attempt"], MAX_MAKER_ATTEMPTS)
+        # BLOCKED is terminal: no auto routing until the user edits the spec
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], "IDLE")
+        self.assertIn("被阻塞", r["message"])
+
     def test_checker_soft_warning_gray_list(self):
         self._init_module_ready()
         machine = StateMachine(self.root)

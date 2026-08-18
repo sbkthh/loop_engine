@@ -397,6 +397,15 @@ class StateMachine:
             module["maker_attempt"] = module.get("maker_attempt", 0) + 1
             return MAKER_FIX
         if hard > 0:
+            # MAKER_FIX exhausted: without this transition the module stays
+            # READY and every run re-runs SCORE→MAKER→CHECKER in a loop that
+            # burns all 200 steps. BLOCKED is terminal until the user edits
+            # the spec (spec_result → PARTIAL + maker_attempt=0) or fixes the
+            # code; poll notifies "请处理阻塞问题后回复「完善spec」".
+            module["status"] = BLOCKED
+            self._trace(state, CHECKER, key,
+                        f"hard errors persist after {MAX_MAKER_ATTEMPTS} "
+                        f"MAKER_FIX attempts -> BLOCKED")
             return None
         if soft > 0:
             return _GRAY_LIST

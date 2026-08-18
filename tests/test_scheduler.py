@@ -217,6 +217,20 @@ class TestPoll(SchedulerBase):
         self.assertEqual(entries[0]["trigger"], "NEEDS_REFINEMENT")
         self.assertFalse(scheduler._entry_auto_exec(entries[0]))
 
+    def test_poll_blocked_report_only(self):
+        """A BLOCKED module (checker hard errors exhausted) is report-only:
+        poll notifies, approve refuses — no re-approval into the loop."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "BLOCKED")})
+
+        entries = scheduler.poll()
+        self.assertEqual(entries[0]["trigger"], "BLOCKED")
+        self.assertFalse(scheduler._entry_auto_exec(entries[0]))
+        with self.assertRaises(ValueError) as ctx:
+            scheduler.approve("req")
+        self.assertIn("报告状态", str(ctx.exception))
+
     def test_poll_skips_mid_progress(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_spec(root, "c", "m")

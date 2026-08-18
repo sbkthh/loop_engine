@@ -7,6 +7,7 @@ import random
 import string
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 
 from flask import Flask, request, Response
@@ -24,6 +25,8 @@ app = Flask(__name__)
 # Runtime config, set by start()
 CONFIG = {}
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
+MAX_ASYNC_WORKERS = 8
+_async_executor = ThreadPoolExecutor(max_workers=MAX_ASYNC_WORKERS)
 
 
 @app.route("/callback", methods=["GET"])
@@ -77,6 +80,39 @@ def callback_message():
             json.dump({"user": from_user}, f)
     except OSError:
         pass
+    # File message: buffer for pairing with next text message
+    if msg_type == "file":
+        media_id = inner.findtext("MediaId", "")
+        filename = inner.findtext("FileName", "file")
+        if media_id:
+            from . import file_buffer
+            ok, reply = file_buffer.add_file(from_user, media_id, filename, DATA_DIR)
+            logger.info("[wecom] file buffered: %s (%s) ok=%s", filename, media_id, ok)
+        else:
+            reply = "收到文件但缺少 MediaId，无法处理"
+        # Encrypt reply with actual corpid
+        reply_xml_body = (
+            f"<xml>"
+            f"<ToUserName><![CDATA[{from_user}]]></ToUserName>"
+            f"<FromUserName><![CDATA[{corpid}]]></FromUserName>"
+            f"<CreateTime>{int(time.time())}</CreateTime>"
+            f"<MsgType><![CDATA[text]]></MsgType>"
+            f"<Content><![CDATA[{reply}]]></Content>"
+            f"</xml>"
+        )
+        result = encrypt_callback(reply_xml_body, token, aes_key, corpid=corpid)
+        reply_xml = (
+            f"<xml>"
+            f"<Encrypt><![CDATA[{result['encrypted']}]]></Encrypt>"
+            f"<MsgSignature><![CDATA[{result['signature']}]]></MsgSignature>"
+            f"<TimeStamp>{result['timestamp']}</TimeStamp>"
+            f"<Nonce><![CDATA[{result['nonce']}]]></Nonce>"
+            f"</xml>"
+        )
+        return Response(reply_xml, mimetype="text/xml")
+    # Text message: attach pending files before dispatch
+    from . import file_buffer as fb
+    content, _ = fb.attach_pending(content, from_user, DATA_DIR)
     # Dispatch
     try:
         from .router import dispatch
@@ -84,11 +120,7 @@ def callback_message():
         reg = reg_mod.list_requirements()
         result = dispatch(content, reg, DATA_DIR, from_user)
         if callable(result):
-            threading.Thread(
-                target=_async_worker,
-                args=(result, from_user, CONFIG),
-                daemon=True,
-            ).start()
+            _async_executor.submit(_async_worker, result, from_user, CONFIG)
             preview = content if len(content) <= 20 else content[:20] + "…"
             reply = f"已收到：「{preview}」正在处理中，完成后推送结果。"
             logger.info("[wecom] ack sent (async processing)")
@@ -133,6 +165,8 @@ def health():
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return "forbidden", 403
     import signal
     os.kill(os.getpid(), signal.SIGINT)
     return "shutting down"
@@ -170,5 +204,7 @@ def start(port=5000, debug=False):
         with open(config_path) as f:
             CONFIG = json.load(f)
     CONFIG["port"] = port
+    from . import file_buffer
+    file_buffer.start_nudge_thread(DATA_DIR)
     print(f"Starting WeCom webhook on port {port}...", flush=True)
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)

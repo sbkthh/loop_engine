@@ -70,6 +70,7 @@ MAX_TOTAL_STEPS = 200
 HEARTBEAT_SECONDS = 300
 HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
+MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
 # Per-step caps are hung-call backstops, not task budgets: the lock heartbeat
@@ -372,6 +373,23 @@ def notify_text(message, user_id=None):
         return False
 
 
+def _pending_gray_evidence(root):
+    """Load pending gray-list drafts from state.json, return formatted lines."""
+    state_path = os.path.join(root, ".loop", "state.json")
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return []
+    lines = []
+    for d in state.get("gray_drafts", []):
+        if d.get("status") == "pending":
+            lines.append(
+                f"  #{d['id']} [{d.get('type_label', '?')}] "
+                f"{d.get('summary', '')}")
+    return lines
+
+
 def notify_pending(fresh_entries):
     """Push WeCom notification for newly detected pending items."""
     if not fresh_entries:
@@ -386,9 +404,15 @@ def notify_pending(fresh_entries):
         lines.append(f"• {entry['requirement']}（{label}）：{names}")
         if _entry_auto_exec(entry):
             if trigger == GRAY_LIST:
-                advice.append(
-                    f"「{entry['requirement']}」有灰名单问题待裁决，"
-                    f"请回复「查看灰名单」了解详情")
+                evidence = _pending_gray_evidence(entry.get("root", ""))
+                if evidence:
+                    advice.append(f"「{entry['requirement']}」灰名单待裁决：")
+                    advice.extend(evidence)
+                    advice.append("回复「接受/拒绝 <编号>」裁决，如「全部接受」")
+                else:
+                    advice.append(
+                        f"「{entry['requirement']}」有灰名单问题待裁决，"
+                        f"请回复「查看灰名单」了解详情")
             else:
                 advice.append(
                     f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
@@ -436,6 +460,8 @@ def _record_run(name, end, steps, started_at, finished_at):
         "finished_at": datetime.datetime.fromtimestamp(finished_at).isoformat(),
         "duration_seconds": int(finished_at - started_at),
     })
+    if len(data["runs"]) > MAX_RUNS:
+        data["runs"] = data["runs"][-MAX_RUNS:]
     _atomic_write_json(RUNS_PATH, data)
 
 

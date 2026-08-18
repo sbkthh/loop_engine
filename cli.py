@@ -428,59 +428,26 @@ def cmd_schedule_max_concurrency(args):
         sys.exit(1)
 
 
-_SPEC_SESSION_SKILL = """\
----
-name: spec-session
-description: Multi-requirement spec management session (Layer 1). Use when managing specs across all registered requirements — editing spec.md, SCORE round-trips, cross-module consistency, scheduler visibility. NOT for code implementation.
----
-
-# Spec Session (Layer 1)
-
-Role: multi-requirement spec manager. You manage specs for every requirement in `~/.qoder/loop_engine/requirements.json`. You do NOT implement code — execution is the scheduler's job (Layer 2).
-
-## Session start
-
-1. Read `~/.qoder/loop_engine/requirements.json` — all registered requirements
-2. For each, read `<root>/.loop/state.json` — per-module status
-3. Present a dashboard: requirement → modules/status, needs-attention items
-4. Optionally `loop_engine pending` for the scheduler's pending list
-
-## Commands (absolute --root, never cd)
-
-- `loop_engine requirement-list` — all registered requirements
-- `loop_engine status --root <req_root>` — module states
-- `loop_engine next --root <req_root>` / `commit` — SCORE round-trip
-- `loop_engine poll` / `pending` / `approve <name>` — scheduler visibility
-
-## SCORE round-trip
-
-1. `next` → SCORE directives (spec_path + criteria)
-2. Read spec.md, score it, write `.loop/result.md` in `directives.output_format`
-3. `commit` → ≥90 READY, <90 NEEDS_REFINEMENT
-4. Refine spec.md, re-score until READY
-
-## Rules
-
-- Navigate with absolute paths from requirements.json roots; never change cwd
-- Never edit state.json directly — state changes only via `next`/`commit`
-- Every spec change — first creation OR later modification — starts with the `grilling`/`grill-me` skill: interview the user one question at a time until shared understanding, then edit spec.md
-- `openspec-new-change`/`openspec-propose` create a NEW change proposal only (proposal/design/specs/tasks in one go); they do NOT support appending to or modifying an existing change/spec. Modify an existing spec by editing its spec.md in place
-- Editing a SYNCED module's spec → warn it will transition to PARTIAL; score first; grep sibling specs for cross-module contract impact
-- Pending triggers: SPEC_CHANGED / READY_PENDING = auto-executable (scheduler forks after user approval); NEEDS_REFINEMENT / BLOCKED / DRAFT = report-only, your job to resolve here
-"""
-
-
 def cmd_self_install(args):
-    """Install the spec-session skill, bin shim, and data directory."""
+    """Install skills, bin shim, and data directory."""
     from __init__ import __version__
     engine_dir = os.path.dirname(os.path.abspath(__file__))
-    # 1. Install the spec-session skill
-    skill_dir = os.path.expanduser("~/.qoder/skills/spec-session")
-    os.makedirs(skill_dir, exist_ok=True)
-    skill_path = os.path.join(skill_dir, "SKILL.md")
-    with open(skill_path, "w") as f:
-        f.write(_SPEC_SESSION_SKILL)
-    print(f"Skill: {skill_path}")
+    # 1. Install skills
+    _SKILLS = ("spec-session", "prd-to-spec", "grill-me",
+               "requirement-register", "manual-loop")
+    for name in _SKILLS:
+        src = os.path.join(engine_dir, "skills", name, "SKILL.md")
+        if not os.path.exists(src):
+            print(f"Skill source not found (skipping): {src}")
+            continue
+        dst_dir = os.path.expanduser(f"~/.qoder/skills/{name}")
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, "SKILL.md")
+        with open(src) as f:
+            content = f.read()
+        with open(dst, "w") as f:
+            f.write(content)
+        print(f"Skill: {dst}")
     # 2. Install bin shim
     bin_dir = os.path.expanduser("~/.local/bin")
     os.makedirs(bin_dir, exist_ok=True)
@@ -519,12 +486,17 @@ def cmd_self_check(args):
             checks.append(("CLI", True, "python3 -m loop_engine works"))
         else:
             checks.append(("CLI", False, "not found"))
-    # 2. Skill
-    skill_path = os.path.expanduser("~/.qoder/skills/spec-session/SKILL.md")
-    if os.path.exists(skill_path):
-        checks.append(("Skill", True, skill_path))
-    else:
-        checks.append(("Skill", False, "not found — run 'loop_engine self-install'"))
+    # 2. Skills
+    _SKILL_NAMES = ("spec-session", "prd-to-spec", "grill-me",
+                    "requirement-register", "manual-loop")
+    all_skills_ok = True
+    for name in _SKILL_NAMES:
+        skill_path = os.path.expanduser(f"~/.qoder/skills/{name}/SKILL.md")
+        if os.path.exists(skill_path):
+            checks.append((f"Skill-{name}", True, skill_path))
+        else:
+            checks.append((f"Skill-{name}", False, "not found — run 'loop_engine self-install'"))
+            all_skills_ok = False
     # 3. Data dir
     data_dir = os.path.expanduser("~/.qoder/loop_engine")
     os.makedirs(data_dir, exist_ok=True)

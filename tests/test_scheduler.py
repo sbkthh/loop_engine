@@ -1244,6 +1244,40 @@ class TestNotify(SchedulerBase):
         self.assertNotIn("批准执行", text)
         self.assertNotIn("即可开始执行", text)
 
+    def test_notify_pending_gray_list_includes_evidence(self):
+        root = os.path.join(self.tmp.name, "req-gray")
+        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
+        state = {
+            "version": 1, "root_dir": root,
+            "modules": {"c/m": _module("c", "m", "READY")},
+            "gray_drafts": [
+                {"id": 1, "module": "c/m", "type_label": "字段类型",
+                 "summary": "spec 定义字段类型为 Decimal，代码实现为 String",
+                 "status": "pending"},
+                {"id": 2, "module": "c/m", "type_label": "方法签名",
+                 "summary": "spec 要求参数为 (Long, String)，代码实现为 (String, Long)",
+                 "status": "pending"},
+            ],
+        }
+        with open(os.path.join(root, ".loop", "state.json"), "w") as f:
+            json.dump(state, f)
+        with mock.patch.object(scheduler, "notify_pending",
+                               self._notify_pending_orig), \
+             mock.patch.object(scheduler, "notify_text") as nt:
+            scheduler.notify_pending([
+                {"requirement": "req-gray", "trigger": "GRAY_LIST",
+                 "root": root,
+                 "modules": [{"key": "c/m", "status": "READY"}]},
+            ])
+        text = nt.call_args.args[0]
+        self.assertIn("灰名单待裁决", text)
+        self.assertIn("字段类型", text)
+        self.assertIn("Decimal，代码实现为 String", text)
+        self.assertIn("方法签名", text)
+        self.assertIn("(Long, String)，代码实现为 (String, Long)", text)
+        self.assertIn("回复「接受/拒绝 <编号>」", text)
+        self.assertNotIn("「查看灰名单」", text)
+
     def test_notify_text_skips_without_config(self):
         scheduler.notify_text = self._notify_text_orig
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name):

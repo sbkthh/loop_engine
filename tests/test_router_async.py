@@ -857,6 +857,49 @@ def test_detect_requirement_matches_name_and_module(tmp_path):
     assert router._detect_requirement("随便聊聊", registry) is None
 
 
+def test_detect_requirement_index_cached(monkeypatch, tmp_path):
+    """Module index is read from state.json once; repeat messages hit the
+    (mtime, size) cache instead of re-reading."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    router._module_index_cache.clear()
+    registry = [{"name": "req", "root": root}]
+
+    calls = []
+    orig_load = StateManager.load
+    monkeypatch.setattr(StateManager, "load",
+                        lambda self: calls.append(1) or orig_load(self))
+
+    for _ in range(3):
+        assert router._detect_requirement("改一下 m1 的 spec", registry) == "req"
+    assert len(calls) == 1
+
+
+def test_detect_requirement_index_reloads_on_state_change(tmp_path):
+    """Registering a new module in state.json (mtime bump) invalidates the
+    cache; the new module is routed on the next message."""
+    import time
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    router._module_index_cache.clear()
+    registry = [{"name": "req", "root": root}]
+
+    assert router._detect_requirement("改一下 m1 的 spec", registry) == "req"
+
+    sm = StateManager(root)
+    st = sm.load()
+    sm.add_module(st, "chg1/m2", "chg1", "m2", spec_hash="h")
+    sm.save(st)
+    state_path = os.path.join(root, ".loop", "state.json")
+    os.utime(state_path, ns=(time.time_ns() + 10**9,) * 2)
+
+    assert router._detect_requirement("改一下 m2 的 spec", registry) == "req"
+
+
 def test_llm_dispatch_tags_reply_with_requirement(monkeypatch, tmp_path):
     """LLM chat replies get a 【requirement】 header and use the
     requirement-scoped session when the message identifies one."""

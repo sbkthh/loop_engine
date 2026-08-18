@@ -28,6 +28,9 @@ DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 MAX_ASYNC_WORKERS = 8
 _async_executor = ThreadPoolExecutor(max_workers=MAX_ASYNC_WORKERS)
 
+_LAST_USER_TTL = 5  # seconds; skip rewriting last_user.json within this window
+_last_user_write = {}  # user -> last write timestamp
+
 
 @app.route("/callback", methods=["GET"])
 def callback_verify():
@@ -75,11 +78,14 @@ def callback_message():
     logger.info("[wecom] msg from %s (%s): %s", from_user, msg_type, content)
     # Remember the most recent active user so scheduler notifications
     # (pending detection etc.) can target the self-built app chat.
-    try:
-        with open(os.path.join(DATA_DIR, "last_user.json"), "w") as f:
-            json.dump({"user": from_user}, f)
-    except OSError:
-        pass
+    now = time.time()
+    if now - _last_user_write.get(from_user, 0) >= _LAST_USER_TTL:
+        _last_user_write[from_user] = now
+        try:
+            with open(os.path.join(DATA_DIR, "last_user.json"), "w") as f:
+                json.dump({"user": from_user}, f)
+        except OSError:
+            pass
     # Dispatch
     try:
         from .router import dispatch
@@ -118,10 +124,6 @@ def callback_message():
         f"<Nonce><![CDATA[{result['nonce']}]]></Nonce>"
         f"</xml>"
     )
-    # Debug: save response body
-    debug_path = os.path.expanduser("~/wecom_debug_response.xml")
-    with open(debug_path, "w") as f:
-        f.write(reply_xml)
     return Response(reply_xml, mimetype="text/xml")
 
 

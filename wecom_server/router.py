@@ -48,6 +48,41 @@ _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "hooks", "audit_hook.sh")
 
 
+# Per-requirement module index: reload only when state.json changes.
+# WeCom server is a long-running process, so in-process cache is effective;
+# every message otherwise re-reads every requirement's full state.json just
+# to learn its module keys for routing.
+# ponytail: 复用 StateManager(root).load() 需要每消息全量重读，缓存键用
+# (mtime_ns, size)，stat 是纳秒级，失效由 state.json 写入自然触发
+_module_index_cache = {}  # root -> {"mtime_ns": int, "size": int, "modules": dict}
+
+
+def _cached_modules(root):
+    """Return the modules dict of a requirement's state.json, cached by
+    (mtime_ns, size). Returns {} on any error (missing/corrupt)."""
+    state_path = os.path.join(root, ".loop", "state.json")
+    try:
+        st = os.stat(state_path)
+    except OSError:
+        _module_index_cache.pop(root, None)
+        return {}
+    entry = _module_index_cache.get(root)
+    if entry and entry["mtime_ns"] == st.st_mtime_ns and entry["size"] == st.st_size:
+        return entry["modules"]
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        from state import StateManager
+        modules = StateManager(root).load().get("modules", {})
+    except Exception:
+        modules = {}
+    _module_index_cache[root] = {
+        "mtime_ns": st.st_mtime_ns,
+        "size": st.st_size,
+        "modules": modules,
+    }
+    return modules
+
+
 def _audit_settings():
     """Per-invocation qodercli settings auditing sensitive tool calls.
 
@@ -106,14 +141,8 @@ def _detect_requirement(message, registry):
         name = req.get("name", "")
         if name and name in message:
             hits.append((message.index(name), name))
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from state import StateManager
     for req in registry:
-        try:
-            st = StateManager(req.get("root", "")).load()
-        except Exception:
-            continue
-        for key in st.get("modules", {}):
+        for key in _cached_modules(req.get("root", "")):
             if key in message:
                 hits.append((message.index(key), req["name"]))
                 continue

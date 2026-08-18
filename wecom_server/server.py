@@ -3,11 +3,11 @@ import base64
 import json
 import logging
 import os
+import queue
 import random
 import string
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 
 from flask import Flask, request, Response
@@ -25,8 +25,27 @@ app = Flask(__name__)
 # Runtime config, set by start()
 CONFIG = {}
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
-MAX_ASYNC_WORKERS = 8
-_async_executor = ThreadPoolExecutor(max_workers=MAX_ASYNC_WORKERS)
+
+# Per-requirement serial queues: messages of the same requirement execute
+# strictly in arrival order (they share one qodercli session), different
+# requirements run in parallel. Bounded so a burst during a long task gets
+# an immediate answer instead of an unbounded backlog.
+# ponytail: ThreadPoolExecutor 会并行执行同一 session 的 qodercli 造成
+# 上下文写竞态和回复乱序，必须按需求串行；queue.Full 是天然的有界反馈。
+# 消费者线程按需求懒创建，单用户场景需求数量有限，不回收
+_MAX_PENDING = 3
+_pending = {}  # requirement -> queue.Queue
+_pending_guard = threading.Lock()
+
+
+def _queue_for(requirement):
+    with _pending_guard:
+        q = _pending.get(requirement)
+        if q is None:
+            q = queue.Queue(maxsize=_MAX_PENDING)
+            _pending[requirement] = q
+            threading.Thread(target=_drain_pending, args=(q,), daemon=True).start()
+        return q
 
 _LAST_USER_TTL = 5  # seconds; skip rewriting last_user.json within this window
 _last_user_write = {}  # user -> last write timestamp
@@ -93,9 +112,12 @@ def callback_message():
         reg = reg_mod.list_requirements()
         result = dispatch(content, reg, DATA_DIR, from_user)
         if callable(result):
-            _async_executor.submit(_async_worker, result, from_user, CONFIG)
-            preview = content if len(content) <= 20 else content[:20] + "…"
-            reply = f"已收到：「{preview}」正在处理中，完成后推送结果。"
+            queued = _submit_async(result, from_user, CONFIG)
+            if queued:
+                reply = queued
+            else:
+                preview = content if len(content) <= 20 else content[:20] + "…"
+                reply = f"已收到：「{preview}」正在处理中，完成后推送结果。"
             logger.info("[wecom] ack sent (async processing)")
         else:
             reply = result
@@ -139,6 +161,23 @@ def shutdown():
     import signal
     os.kill(os.getpid(), signal.SIGINT)
     return "shutting down"
+
+
+def _submit_async(fn, user_id, config):
+    """Queue a message on its requirement's serial queue. Returns None when
+    accepted, or an immediate reply string when that queue is full."""
+    requirement = getattr(fn, "requirement", None) or "global"
+    try:
+        _queue_for(requirement).put_nowait((fn, user_id, config))
+    except queue.Full:
+        return "上一条还在处理中，完成后我会推送结果，请勿重复发送。"
+    return None
+
+
+def _drain_pending(q):
+    """Serial consumer per requirement: one qodercli at a time, in order."""
+    while True:
+        _async_worker(*q.get())
 
 
 def _async_worker(fn, user_id, config):

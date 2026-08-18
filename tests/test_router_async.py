@@ -900,6 +900,47 @@ def test_detect_requirement_index_reloads_on_state_change(tmp_path):
     assert router._detect_requirement("改一下 m2 的 spec", registry) == "req"
 
 
+def test_llm_lock_serializes_same_requirement(monkeypatch, tmp_path):
+    """Two LLM calls resolving to the same requirement never overlap, even
+    when not queued by the server (e.g. classify fallback)."""
+    import threading
+    import time
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)
+    router._module_index_cache.clear()
+    router._llm_locks.clear()
+    registry = [{"name": "req", "root": root}]
+    order = []
+    gate = threading.Event()
+
+    def fake_run(cmd, **kwargs):
+        order.append("enter")
+        gate.wait(timeout=2)
+        order.append("exit")
+        return types.SimpleNamespace(stdout="好的", returncode=0)
+
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("sid", True))
+
+    def worker():
+        router._llm_dispatch("改一下 m1 的 spec", registry, "/tmp", "u1")
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start()
+    time.sleep(0.2)
+    t2.start()
+    time.sleep(0.2)
+    assert order == ["enter"]  # second call blocked on the requirement lock
+
+    gate.set()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+    assert order == ["enter", "exit", "enter", "exit"]
+
+
 def test_llm_dispatch_tags_reply_with_requirement(monkeypatch, tmp_path):
     """LLM chat replies get a 【requirement】 header and use the
     requirement-scoped session when the message identifies one."""

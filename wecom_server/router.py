@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -601,6 +602,20 @@ _JSON_ACTION_RE = re.compile(r"__JSON_ACTION__\s*(\{[^{}]*\})", re.DOTALL)
 _LEGACY_PREFIXES = ("__APPROVE__", "__HISTORY__", "__GRAY_LIST__",
                     "__ADJUDICATE__", "__SPEC_RESULT__")
 
+# Per-requirement LLM lock: same requirement shares one session, so its
+# qodercli calls must never overlap. Server-side queues already serialize
+# detected requirements; this covers messages that only classify (LLM) to a
+# requirement and would otherwise run on the "global" queue in parallel.
+# ponytail: 队列按 detect 结果分流，classify 结果只有执行时才知道，
+# 锁是防同 session 并发写的兜底，key 与 session 维度一致
+_llm_locks = {}
+_llm_locks_guard = threading.Lock()
+
+
+def _llm_lock(requirement):
+    with _llm_locks_guard:
+        return _llm_locks.setdefault(requirement, threading.Lock())
+
 
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
@@ -615,21 +630,10 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     # first message creates session, subsequent messages resume it
     session_flag = "--session-id" if is_new else "--resume"
     settings = _audit_settings()
-    try:
-        r = subprocess.run(
-            [qodercli_path, "--print", session_flag, session_id, "--model", model,
-             "--dangerously-skip-permissions", "--settings", settings],
-            input=prompt, capture_output=True, text=True,
-        )
-        lines = (r.stdout or "").splitlines()
-        while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
-            lines.pop(0)
-        reply = "\n".join(lines).strip()
-        # resume failed (session lost, e.g. after server restart) → create fresh
-        if not reply and not is_new:
-            logger.info("[wecom] session %s not found, creating new", session_id)
+    with _llm_lock(requirement or "global"):
+        try:
             r = subprocess.run(
-                [qodercli_path, "--print", "--session-id", session_id, "--model", model,
+                [qodercli_path, "--print", session_flag, session_id, "--model", model,
                  "--dangerously-skip-permissions", "--settings", settings],
                 input=prompt, capture_output=True, text=True,
             )
@@ -637,9 +641,21 @@ def _llm_dispatch(message, registry, data_dir, user_id):
             while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
                 lines.pop(0)
             reply = "\n".join(lines).strip()
-    except Exception as e:
-        logger.error("[wecom] LLM dispatch error: %s", e)
-        return f"处理失败：{e}"
+            # resume failed (session lost, e.g. after server restart) → create fresh
+            if not reply and not is_new:
+                logger.info("[wecom] session %s not found, creating new", session_id)
+                r = subprocess.run(
+                    [qodercli_path, "--print", "--session-id", session_id, "--model", model,
+                     "--dangerously-skip-permissions", "--settings", settings],
+                    input=prompt, capture_output=True, text=True,
+                )
+                lines = (r.stdout or "").splitlines()
+                while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
+                    lines.pop(0)
+                reply = "\n".join(lines).strip()
+        except Exception as e:
+            logger.error("[wecom] LLM dispatch error: %s", e)
+            return f"处理失败：{e}"
     if not reply:
         return "无响应，请稍后再试。"
     if requirement and not reply.startswith(("__", "【")):
@@ -705,6 +721,10 @@ def dispatch(message, registry, data_dir, user_id="default"):
     """Classify and dispatch to the right handler.
 
     Returns Callable[[], str] for async (return "success" immediately,
-    push result via WeCom API in background).
+    push result via WeCom API in background). The callable carries the
+    deterministically detected requirement so the server can queue messages
+    per requirement (serial within, parallel across).
     """
-    return lambda: _llm_dispatch(message, registry, data_dir, user_id)
+    fn = lambda: _llm_dispatch(message, registry, data_dir, user_id)
+    fn.requirement = _detect_requirement(message, registry)
+    return fn

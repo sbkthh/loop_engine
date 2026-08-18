@@ -1215,6 +1215,20 @@ class TestDispatch(SchedulerBase):
 
         self.assertEqual(forked, [])
 
+    def test_dispatch_skips_pending_gray_drafts(self):
+        """Approved entry with pending gray-list drafts is skipped by dispatch
+        instead of auto-forking every poll cycle."""
+        root = os.path.join(self.tmp.name, "req-a")
+        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                     drafts=[{"id": 1, "module": "c/m", "status": "pending"}])
+        entries = [self._pending_entry("req-a", "GRAY_LIST")]
+        with mock.patch.object(scheduler.subprocess, "Popen",
+                               return_value=types.SimpleNamespace(pid=4)):
+            forked = scheduler.dispatch(entries, max_concurrency=2)
+
+        self.assertEqual(forked, [])
+
 
 class TestConfig(SchedulerBase):
     def test_default_config(self):

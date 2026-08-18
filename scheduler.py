@@ -478,22 +478,32 @@ def acquire_lock(root):
     A lock is stale when its PID is dead, or when a live PID has not
     touched the lock for LOCK_MAX_AGE_SECONDS (run_requirement refreshes
     it every step, so an untouched lock means the runner is wedged).
+    Uses O_EXCL to atomically create the lock file, avoiding the TOCTOU
+    race of check-then-write.
     """
     path = _lock_path(root)
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                pid = int(f.read().strip() or "0")
-        except (ValueError, OSError):
-            pid = None
-        if pid and _pid_alive(pid):
-            try:
-                age = time.time() - os.path.getmtime(path)
-            except OSError:
-                age = 0
-            if age <= LOCK_MAX_AGE_SECONDS:
-                return False
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        pass
+    # Lock exists — check staleness
+    try:
+        with open(path) as f:
+            pid = int(f.read().strip() or "0")
+    except (ValueError, OSError):
+        pid = None
+    if pid and _pid_alive(pid):
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            age = 0
+        if age <= LOCK_MAX_AGE_SECONDS:
+            return False
+    # Stale or dead — reclaim (no race: holder confirmed dead/stale)
     with open(path, "w") as f:
         f.write(str(os.getpid()))
     return True
@@ -522,7 +532,13 @@ def is_locked(root):
             pid = int(f.read().strip() or "0")
     except (ValueError, OSError):
         return False
-    return _pid_alive(pid)
+    if not _pid_alive(pid):
+        return False
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return True
+    return age <= LOCK_MAX_AGE_SECONDS
 
 
 def manual_begin(root):
@@ -957,6 +973,9 @@ def dispatch(entries, max_concurrency=2):
             continue
         if is_locked(root):
             _log(f"dispatch: skip {entry['requirement']} — lock held")
+            continue
+        if _has_pending_gray_drafts(root):
+            _log(f"dispatch: skip {entry['requirement']} — pending gray drafts")
             continue
         with open(LOG_PATH, "a") as logf:
             proc = subprocess.Popen(

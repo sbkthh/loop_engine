@@ -244,6 +244,9 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
         available = ", ".join(r.get("name", "?") for r in registry) or "无"
         return f"没有找到需求：{name}（可用：{available}）"
     root = req["root"]
+    import scheduler as _sched
+    if _sched.is_locked(root):
+        return f"需求「{name}」正在执行中，请等待完成后再裁决草稿"
     sm = StateManager(root)
     st = sm.load()
     drafts = st.get("gray_drafts", [])
@@ -459,6 +462,9 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         available = ", ".join(r.get("name", "?") for r in registry) or "无"
         return f"没有找到需求：{name}（可用：{available}）"
     root = req["root"]
+    import scheduler as _sched
+    if _sched.is_locked(root):
+        return f"需求「{name}」正在执行中，请等待完成后再注册 spec 变更"
     sm = StateManager(root)
     st = sm.load()
     try:
@@ -635,7 +641,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
             r = subprocess.run(
                 [qodercli_path, "--print", session_flag, session_id, "--model", model,
                  "--dangerously-skip-permissions", "--settings", settings],
-                input=prompt, capture_output=True, text=True,
+                input=prompt, capture_output=True, text=True, timeout=900,
             )
             lines = (r.stdout or "").splitlines()
             while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
@@ -647,7 +653,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                 r = subprocess.run(
                     [qodercli_path, "--print", "--session-id", session_id, "--model", model,
                      "--dangerously-skip-permissions", "--settings", settings],
-                    input=prompt, capture_output=True, text=True,
+                    input=prompt, capture_output=True, text=True, timeout=900,
                 )
                 lines = (r.stdout or "").splitlines()
                 while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):

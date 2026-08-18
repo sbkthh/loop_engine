@@ -71,25 +71,6 @@ def split_segments(content, max_bytes=_MAX_BYTES):
     return segments
 
 
-def download_media(media_id, config):
-    """Download a file by media_id. Returns (bytes, filename) or raises."""
-    token = get_access_token(config)
-    r = requests.get(
-        "https://qyapi.weixin.qq.com/cgi-bin/media/get",
-        params={"access_token": token, "media_id": media_id},
-        timeout=30,
-    )
-    if r.headers.get("content-type", "").startswith("application/json"):
-        data = r.json()
-        raise RuntimeError(f"media download failed: {data.get('errmsg', r.text[:200])}")
-    cd = r.headers.get("content-disposition", "")
-    filename = "unknown"
-    m = re.search(r'filename="?([^";]+)', cd)
-    if m:
-        filename = m.group(1)
-    return r.content, filename
-
-
 def send_text(user_id, content, config):
     """Push content as WeCom markdown, segmented if long. Returns True if all sent."""
     token = get_access_token(config)

@@ -80,39 +80,6 @@ def callback_message():
             json.dump({"user": from_user}, f)
     except OSError:
         pass
-    # File message: buffer for pairing with next text message
-    if msg_type == "file":
-        media_id = inner.findtext("MediaId", "")
-        filename = inner.findtext("FileName", "file")
-        if media_id:
-            from . import file_buffer
-            ok, reply = file_buffer.add_file(from_user, media_id, filename, DATA_DIR)
-            logger.info("[wecom] file buffered: %s (%s) ok=%s", filename, media_id, ok)
-        else:
-            reply = "收到文件但缺少 MediaId，无法处理"
-        # Encrypt reply with actual corpid
-        reply_xml_body = (
-            f"<xml>"
-            f"<ToUserName><![CDATA[{from_user}]]></ToUserName>"
-            f"<FromUserName><![CDATA[{corpid}]]></FromUserName>"
-            f"<CreateTime>{int(time.time())}</CreateTime>"
-            f"<MsgType><![CDATA[text]]></MsgType>"
-            f"<Content><![CDATA[{reply}]]></Content>"
-            f"</xml>"
-        )
-        result = encrypt_callback(reply_xml_body, token, aes_key, corpid=corpid)
-        reply_xml = (
-            f"<xml>"
-            f"<Encrypt><![CDATA[{result['encrypted']}]]></Encrypt>"
-            f"<MsgSignature><![CDATA[{result['signature']}]]></MsgSignature>"
-            f"<TimeStamp>{result['timestamp']}</TimeStamp>"
-            f"<Nonce><![CDATA[{result['nonce']}]]></Nonce>"
-            f"</xml>"
-        )
-        return Response(reply_xml, mimetype="text/xml")
-    # Text message: attach pending files before dispatch
-    from . import file_buffer as fb
-    content, _ = fb.attach_pending(content, from_user, DATA_DIR)
     # Dispatch
     try:
         from .router import dispatch
@@ -204,7 +171,5 @@ def start(port=5000, debug=False):
         with open(config_path) as f:
             CONFIG = json.load(f)
     CONFIG["port"] = port
-    from . import file_buffer
-    file_buffer.start_nudge_thread(DATA_DIR)
     print(f"Starting WeCom webhook on port {port}...", flush=True)
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)

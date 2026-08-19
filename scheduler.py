@@ -6,6 +6,7 @@ modules, per the orchestration design spec.
 """
 
 import datetime
+import fcntl
 import json
 import os
 import shutil
@@ -472,55 +473,54 @@ def _pid_alive(pid):
         return False
 
 
-def acquire_lock(root):
-    """Returns True if the lock is acquired (reclaims stale locks).
+_held_locks = {}
+_held_locks_guard = threading.Lock()
 
-    A lock is stale when its PID is dead, or when a live PID has not
-    touched the lock for LOCK_MAX_AGE_SECONDS (run_requirement refreshes
-    it every step, so an untouched lock means the runner is wedged).
-    Uses O_EXCL to atomically create the lock file, avoiding the TOCTOU
-    race of check-then-write.
+
+def acquire_lock(root):
+    """Returns True if the exclusive flock on .loop/lock is acquired.
+
+    The lock file is persistent and never unlinked: unlinking lets two
+    processes lock different inodes and both win. flock is released by
+    the kernel on process death, so dead-pid reclaim is automatic; the
+    stale-age path in is_locked remains only as advisory info.
     """
     path = _lock_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        with os.fdopen(fd, "w") as f:
-            f.write(str(os.getpid()))
-        return True
-    except FileExistsError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    with _held_locks_guard:
+        _held_locks[path] = fd
+    try:
+        os.lseek(fd, 0, 0)
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+    except OSError:
         pass
-    # Lock exists — check staleness
-    try:
-        with open(path) as f:
-            pid = int(f.read().strip() or "0")
-    except (ValueError, OSError):
-        pid = None
-    if pid and _pid_alive(pid):
-        try:
-            age = time.time() - os.path.getmtime(path)
-        except OSError:
-            age = 0
-        if age <= LOCK_MAX_AGE_SECONDS:
-            return False
-    # Stale or dead — reclaim (no race: holder confirmed dead/stale)
-    with open(path, "w") as f:
-        f.write(str(os.getpid()))
     return True
 
 
 def release_lock(root):
     path = _lock_path(root)
-    try:
-        with open(path) as f:
-            pid = int(f.read().strip() or "0")
-    except (ValueError, OSError, FileNotFoundError):
+    with _held_locks_guard:
+        fd = _held_locks.pop(path, None)
+    if fd is None:
         return
-    if pid == os.getpid():
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    try:
+        os.lseek(fd, 0, 0)
+        os.ftruncate(fd, 0)
+        os.write(fd, b"0")
+    except OSError:
+        pass
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
 
 
 def is_locked(root):
@@ -531,6 +531,8 @@ def is_locked(root):
         with open(path) as f:
             pid = int(f.read().strip() or "0")
     except (ValueError, OSError):
+        return False
+    if pid <= 0:
         return False
     if not _pid_alive(pid):
         return False
@@ -594,8 +596,8 @@ def manual_end(root):
         return False
     if lock_pid != session.get("pid"):
         return False
+    release_lock(root)
     try:
-        os.unlink(_lock_path(root))
         os.unlink(session_path)
     except OSError:
         return False

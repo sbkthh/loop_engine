@@ -464,6 +464,45 @@ def test_spec_result_new_module_no_spec_file(monkeypatch, tmp_path):
     assert "chg1/m2" not in StateManager(root).load()["modules"]
 
 
+def test_spec_result_rejects_path_traversal(tmp_path):
+    """'..' segments in a new-module key must be rejected, not resolved
+    outside the requirement root (no read/copy/registration)."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    # a spec file OUTSIDE the requirement root that must never be touched
+    outside = os.path.join(tmp_path, "outside", "specs", "victim", "spec.md")
+    os.makedirs(os.path.dirname(outside), exist_ok=True)
+    with open(outside, "w") as f:
+        f.write("# victim spec outside root")
+
+    reply = router._execute_spec_result(
+        "req", "chg1/../../../../outside/specs/victim", [{"name": "req", "root": root}],
+        "/tmp")
+
+    assert "非法模块 key" in reply
+    st = StateManager(root).load()
+    assert "chg1/../../../../outside/specs/victim" not in st["modules"]
+    # nothing escaped into the requirement's backup dir
+    backup_dir = os.path.join(root, ".loop", "backup")
+    if os.path.exists(backup_dir):
+        assert all("victim" not in n for n in os.listdir(backup_dir))
+
+
+def test_spec_result_rejects_slash_in_module_name(tmp_path):
+    """Extra '/' inside a new-module key must be rejected (single segment)."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    reply = router._execute_spec_result(
+        "req", "chg1/m2/extra", [{"name": "req", "root": root}], "/tmp")
+
+    assert "非法模块 key" in reply
+    assert "chg1/m2/extra" not in StateManager(root).load()["modules"]
+
+
 def test_spec_result_promotes_draft_module(monkeypatch, tmp_path):
     """DRAFT module (auto-discovered, never gated) with unchanged hash is
     promoted to PARTIAL by __SPEC_RESULT__ — the confirmation gate."""

@@ -1,10 +1,15 @@
 """StateManager: load/save state.json, module CRUD, priority selection."""
 
 import json
+import logging
 import os
+import shutil
 import tempfile
+import time
 
 from constants import STATE_FILE, PRIORITY_ORDER, DRAFT
+
+logger = logging.getLogger("loop")
 
 
 class StateManager:
@@ -12,6 +17,7 @@ class StateManager:
         self.root_dir = os.path.abspath(root_dir)
         self.loop_dir = os.path.join(self.root_dir, ".loop")
         self.state_path = os.path.join(self.root_dir, STATE_FILE)
+        self.bak_path = self.state_path + ".bak"
 
     def init_state(self):
         os.makedirs(self.loop_dir, exist_ok=True)
@@ -29,9 +35,49 @@ class StateManager:
 
     def load(self):
         if not os.path.exists(self.state_path):
+            restored = self._restore_from_backup("state.json 丢失")
+            if restored is not None:
+                return restored
+            logger.warning("state.json 不存在且无备份，重建空状态（root=%s）",
+                           self.root_dir)
             return self.init_state()
-        with open(self.state_path) as f:
-            return json.load(f)
+        try:
+            with open(self.state_path) as f:
+                return json.load(f)
+        except ValueError:
+            return self._recover_corrupt()
+
+    def _recover_corrupt(self):
+        """Unparseable state.json: quarantine it, restore last good backup."""
+        ts = int(time.time())
+        corrupt_path = f"{self.state_path}.corrupt-{ts}"
+        try:
+            os.replace(self.state_path, corrupt_path)
+        except OSError:
+            corrupt_path = self.state_path
+        logger.error("state.json 损坏，已隔离到 %s", corrupt_path)
+        restored = self._restore_from_backup("state.json 损坏")
+        if restored is not None:
+            return restored
+        logger.error("state.json 损坏且无备份，重建空状态（root=%s）",
+                     self.root_dir)
+        return self.init_state()
+
+    def _restore_from_backup(self, reason):
+        if not os.path.exists(self.bak_path):
+            return None
+        try:
+            with open(self.bak_path) as f:
+                state = json.load(f)
+        except ValueError:
+            logger.error("备份 %s 也损坏", self.bak_path)
+            return None
+        try:
+            shutil.copy2(self.bak_path, self.state_path)
+        except OSError:
+            return None
+        logger.warning("%s，已从备份 %s 恢复", reason, self.bak_path)
+        return state
 
     def save(self, state):
         os.makedirs(self.loop_dir, exist_ok=True)
@@ -39,6 +85,11 @@ class StateManager:
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(state, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            # rolling backup: previous good state, survives loss/corruption
+            if os.path.exists(self.state_path):
+                shutil.copy2(self.state_path, self.bak_path)
             os.replace(tmp_path, self.state_path)
         except Exception:
             os.unlink(tmp_path)

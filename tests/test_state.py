@@ -31,6 +31,66 @@ class TestStateManager(unittest.TestCase):
         self.assertTrue(os.path.exists(self.sm.state_path))
         self.assertEqual(state["modules"], {})
 
+    def test_save_keeps_rolling_backup(self):
+        state = self.sm.init_state()
+        key = StateManager.module_key("chg", "mod")
+        StateManager.add_module(state, key, "chg", "mod")
+        state["modules"][key]["status"] = READY
+        self.sm.save(state)
+        self.assertTrue(os.path.exists(self.sm.bak_path))
+
+        loaded = self.sm.load()
+        self.assertEqual(loaded["modules"][key]["status"], READY)
+        # backup holds the previous good state
+        with open(self.sm.bak_path) as f:
+            bak = json.load(f)
+        self.assertNotIn(key, bak["modules"])
+
+    def test_load_restores_missing_from_backup(self):
+        state = self.sm.init_state()
+        key = StateManager.module_key("chg", "mod")
+        StateManager.add_module(state, key, "chg", "mod")
+        state["modules"][key]["status"] = PARTIAL
+        self.sm.save(state)  # bak now holds the initial empty state
+        self.sm.save(state)  # current = PARTIAL, bak = previous good
+
+        os.unlink(self.sm.state_path)
+        loaded = self.sm.load()
+
+        self.assertTrue(os.path.exists(self.sm.state_path))  # restored
+        self.assertEqual(loaded["modules"][key]["status"], PARTIAL)
+
+    def test_load_quarantines_corrupt_and_restores(self):
+        state = self.sm.init_state()
+        key = StateManager.module_key("chg", "mod")
+        StateManager.add_module(state, key, "chg", "mod")
+        self.sm.save(state)
+        self.sm.save(state)  # bak exists
+
+        with open(self.sm.state_path, "w") as f:
+            f.write("{not valid json")
+        loaded = self.sm.load()
+
+        self.assertEqual(loaded["modules"][key]["status"], DRAFT)
+        with open(self.sm.state_path) as f:
+            json.load(f)  # restored file parses
+        corrupts = [n for n in os.listdir(self.sm.loop_dir)
+                    if n.startswith("state.json.corrupt-")]
+        self.assertEqual(len(corrupts), 1)
+
+    def test_load_corrupt_no_backup_rebuilds(self):
+        state = self.sm.init_state()  # first save → no bak (no previous state)
+        self.assertFalse(os.path.exists(self.sm.bak_path))
+
+        with open(self.sm.state_path, "w") as f:
+            f.write("{broken")
+        loaded = self.sm.load()
+
+        self.assertEqual(loaded["modules"], {})
+        corrupts = [n for n in os.listdir(self.sm.loop_dir)
+                    if n.startswith("state.json.corrupt-")]
+        self.assertEqual(len(corrupts), 1)
+
     def test_save_load_roundtrip(self):
         state = self.sm.init_state()
         key = StateManager.module_key("chg", "mod")

@@ -48,6 +48,10 @@ _LLM_SYSTEM_PROMPT = (
 _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "hooks", "audit_hook.sh")
 
+# change_id/module_name must be single path segments: blocks ".." and "/"
+# from escaping the requirement root when building spec paths.
+_MODULE_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 
 # Per-requirement module index: reload only when state.json changes.
 # WeCom server is a long-running process, so in-process cache is effective;
@@ -475,6 +479,10 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         if "/" not in module_key:
             return str(e)
         change_id, module_name = module_key.split("/", 1)
+        if not _MODULE_SEGMENT_RE.fullmatch(change_id) or \
+                not _MODULE_SEGMENT_RE.fullmatch(module_name):
+            return (f"非法模块 key：{module_key}（change_id/module_name "
+                    "只允许字母、数字、点、横线、下划线）")
         probe = os.path.join(root, SPEC_PATH_TEMPLATE.format(
             change_id=change_id, module_name=module_name))
         if not os.path.exists(probe):

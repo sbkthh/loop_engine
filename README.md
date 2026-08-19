@@ -15,7 +15,7 @@ AI Native 是一套 spec 驱动的开发编排系统，由三层组成：
 - **需求 (requirement)**：一个业务目标，如"战略备货系统升级"
 - **项目 (project)**：一个 Git 仓库，需求可能涉及多个项目
 - **模块 (module)**：一个 spec 文件 + 对应代码，最小编排单元
-- **状态机**：SYNCED → PARTIAL → READY → MAKER_STEP0 → ... → SYNCED
+- **状态机**：DRAFT / PARTIAL / READY / NEEDS_REFINEMENT / BLOCKED / SYNCED，动作链 SCORE → MAKER_STEP0 → STEP1_RED → STEP2_GREEN → CHECKER → CODE_REVIEW → SYNCED
 
 ---
 
@@ -29,8 +29,8 @@ AI Native 是一套 spec 驱动的开发编排系统，由三层组成：
 
 ### 平台支持
 
-- **macOS / Linux**：原生支持
-- **Windows**：未验证。核心逻辑是纯 Python，但 audit hook 与命令行 shim 是 shell 脚本、定时轮询依赖 crontab，均属 Unix 机制——需在 WSL 或 Git Bash 下运行，并用任务计划程序替代 crontab。
+- **macOS / Linux**：原生支持（锁机制依赖 `fcntl.flock`，Unix-only）
+- **Windows**：未验证。核心逻辑是纯 Python，但 flock 锁、audit hook 与命令行 shim 是 shell/Unix 机制、定时轮询依赖 crontab——需在 WSL 或 Git Bash 下运行，并用任务计划程序替代 crontab。
 
 ### 安装
 
@@ -50,13 +50,17 @@ loop_engine self-check
 预期输出：
 
 ```
-Check        Status   Detail
+Check               Status   Detail
 ------------------------------------------------------------
-CLI          OK       available
-Skill        OK       /Users/.../spec-session/SKILL.md
-Data dir     OK       /Users/.../.qoder/loop_engine
-Registry     OK       0 requirement(s) registered
-Tests        OK       261 passed in 13.42s
+CLI                 OK       available
+Skill-spec-session  OK       /Users/.../spec-session/SKILL.md
+Skill-prd-to-spec   OK       /Users/.../prd-to-spec/SKILL.md
+Skill-grill-me      OK       /Users/.../grill-me/SKILL.md
+Skill-requirement-register OK  /Users/.../requirement-register/SKILL.md
+Skill-manual-loop   OK       /Users/.../manual-loop/SKILL.md
+Data dir            OK       /Users/.../.qoder/loop_engine
+Registry            OK       0 requirement(s) registered
+Tests               OK       326 passed in 19.24s
 
 System ready.
 ```
@@ -158,7 +162,7 @@ loop_engine requirement-add cross-dock-system \
 **下一步（两条路径，任选其一）：**
 
 - **终端**：在 qodercli 中运行 `/prd-to-spec`，它会读取 PRD 摘要并驱动 openspec 生成 artifacts（proposal → design → specs → tasks）；然后唤起 `@spec-session`，它将展示 Dashboard、对 DRAFT 模块自动调用 grill-me 澄清需求，然后驱动 SCORE 往返直至 READY。
-- **微信（推荐，全程微信闭环）**：注册本身也可以在微信里完成——直接发 PRD 路径 + 需求名/根目录/change-id/项目仓库（缺的参数 G 会逐个问），G 自动执行 `requirement-add --prd` 并汇报结果。之后说"按 PRD 生成 spec"生成 artifacts，G 自动进入 grill-me 澄清，定稿后 `__SPEC_RESULT__` 汇报，微信"批准执行"即进入调度器。全程无需打开终端/qodercli。
+- **微信（推荐，全程微信闭环）**：注册本身也可以在微信里完成——直接发 PRD 路径 + 需求名/根目录/change-id/项目仓库（缺的参数 G 会逐个问），G 自动执行 `requirement-add --prd` 并汇报结果。之后说"按 PRD 生成 spec"生成 artifacts，G 自动进入 grill-me 澄清，定稿后 G 以 `__JSON_ACTION__` 动作块登记 spec，微信"批准执行"即进入调度器。全程无需打开终端/qodercli。
 
 ### 查看所有已注册需求
 
@@ -247,16 +251,20 @@ loop_engine status --root ~/loop-work/cross-dock
 SPEC_CHANGED → CLASSIFY_CHANGE ─→ 轻量 → CHECKER
                                 └→ 重量 → SCORE ─→ MAKER_STEP0
 
-READY → MAKER_STEP0 → STEP1_RED → STEP2_GREEN → CHECKER
+READY → SCORE → MAKER_STEP0 → MAKER_STEP1_RED → MAKER_STEP2_GREEN → CHECKER
 
-CHECKER ─→ 硬错误 → MAKER_FIX ─→ CHECKER（最多重试 3 次）
+MAKER_STEP1_RED ← 编辑 plan 后 plan_hash 变更（PLAN_CHANGED，重跑实现）
+
+CHECKER ─→ 硬错误 → MAKER_FIX ─→ CHECKER（最多 3 次，用尽转 BLOCKED）
         │
-        ├→ 软警告 → GRAY_LIST（微信裁决）
+        ├→ 软警告 → GRAY_LIST（微信裁决，带 spec↔代码证据对照）
         │             ├─ 全部接受 → MAKER_FIX → CHECKER
-        │             ├─ 全部拒绝 → ALIGN_DOCS → CHECKER
-        │             └─ 混合     → MAKER_FIX → ALIGN_DOCS → CHECKER
+        │             ├─ 全部拒绝 → ALIGN_DOCS → CHECKER（拒绝项不再重复检出）
+        │             └─ 混合     → MAKER_FIX + ALIGN_DOCS → CHECKER
         │
-        └→ 一致 → CODE_REVIEW → CODE_REVIEW_FIX(可选) → SYNCED
+        └→ 一致 → CODE_REVIEW → CODE_REVIEW_FIX(可选, 1 次) → SYNCED
+
+BLOCKED（hard_errors 用尽 / 手动标记）：需人工介入，改 spec 或 reset 后恢复
 ```
 
 ---
@@ -308,12 +316,17 @@ loop_engine run strategic-stockup-system-upgrade
 # 查看当前配置
 loop_engine schedule status
 
-# 设置最大并行数
+# 设置最大并行数（跨需求并行上限；同一需求内部始终串行）
 loop_engine schedule max-concurrency 2
 ```
 
 > 轮询间隔由 crontab 唯一决定（见下），schedule.json 不存间隔配置，
 > 避免两套配置漂移。
+>
+> **并发模型**：同需求内部按顺序串行执行（避免同一需求的多个 run 交错写
+> state.json），不同需求可并行，总并行数受 max_concurrency 上限约束。
+> 每个需求由 `.loop/lock`（fcntl.flock 内核独占锁）跨进程互斥，进程死亡
+> 锁自动释放，无需人工清理。
 
 ### 定时自动轮询（crontab）
 
@@ -353,9 +366,9 @@ Skill 会自动：
 1. **注册**：发 PRD 路径 + 需求参数（缺啥 G 问啥）→ G 执行 `requirement-add --prd`
 2. **生成 artifacts**：说"按 PRD 生成 spec"→ G 按 prd-to-spec 流程生成 proposal/design/specs/tasks
 3. **澄清**：G 自动进入 grill-me 逐个追问，确认后编辑 spec.md
-4. **汇报**：编辑完 G 输出 `__SPEC_RESULT__` → 校验/备份/置 PARTIAL
+4. **登记**：编辑完 G 在回复末尾追加 `__JSON_ACTION__` 动作块（spec_result）→ 服务器校验/备份/置 PARTIAL
 5. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
-6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 批准
+6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 登记 → 批准
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -387,7 +400,8 @@ loop_engine add-blocker --root <path> <module> <description>
 # 解决 DRAFT 决议
 loop_engine resolve-draft --root <path> <id> accept|reject
 
-# 手动接管锁（调试用）：开始手动循环
+# 手动接管锁（调试用）：开始手动循环（与调度器共享 flock 锁，
+# 会话记录在 .loop/manual.json，进程死亡由 poll 自动清理）
 loop_engine manual-begin --root <path>
 
 # 手动结束循环，释放锁
@@ -429,7 +443,7 @@ loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
 ```
 
-> **微信替代**：第 1-5 步全部可在微信完成——发 PRD 路径 + 参数注册，说"按 PRD 生成 spec"，G 澄清后编辑 spec，`__SPEC_RESULT__` 汇报，回复"批准执行"即进入第 6 步。参见「六、Layer 1 Spec Session — 微信路径」。
+> **微信替代**：第 1-5 步全部可在微信完成——发 PRD 路径 + 参数注册，说"按 PRD 生成 spec"，G 澄清后编辑 spec 并以 `__JSON_ACTION__` 动作块登记，回复"批准执行"即进入第 6 步。参见「六、Layer 1 Spec Session — 微信路径」。
 
 ### 方式二：从 PRD 文档开始（多项目）
 
@@ -493,28 +507,21 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
   → 后台 qodercli 处理 → API 推送结果
 ```
 
-所有消息走异步 LLM 路径：服务器立即返回 `"success"`（WeCom 不重试），后台调 qodercli 处理，完成后通过 API 推送结果。没有关键词匹配，LLM 处理全部意图。
+所有消息走异步 LLM 路径：服务器立即返回 `"success"`（WeCom 不重试），后台调 qodercli 处理，完成后通过 API 推送结果。没有关键词匹配，LLM 处理全部意图；LLM 判定需要后端动作时，在回复末尾追加 `__JSON_ACTION__ {"action": ..., ...}` 动作块，服务器识别后进程内执行对应 handler（不经过二次 LLM）。
 
 ### 可用命令
 
 - `查状态` — 查看所有需求状态
-- `批准执行` — 批准待执行的需求
+- `批准执行` — 批准待执行的需求（有未裁决灰名单草稿时会被拒绝）
 - `注册需求`（发 PRD 路径 + 需求名/根目录/change-id/项目仓库）— 自动执行 `requirement-add --prd`
 - `给 XX 加项目`（如"给越库二期加项目 kunhe-wms"，附源仓库路径）— 自动执行 `requirement-add-project`：创建 worktree 并注册到需求，分支缺省沿用需求内第一个项目的分支
 - `按 PRD 生成 spec` — 生成 proposal/design/specs/tasks，然后自动进入 grill-me 澄清；新模块注册后 G 会询问归属项目并执行 `set-project-root` 绑定工作目录
 - 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
+- `查看执行历史` — 各需求的运行历史（runs.json）
+- `查看灰名单` / `接受 1 拒绝 2` — 列出待裁决草稿 / 混合裁决（支持 `全部接受`、`全部拒绝`）
 - 其他自然语言问题 — LLM 自动理解并回答
 
-### 文件上传
-
-微信支持发送文本类文件（.md/.txt/.log/.json/.csv），与后续文字自动配对：
-
-1. 先发文件 → 微信通知"已收到"并缓冲
-2. 再发文字说明用途 → 服务器自动下载文件内容拼入文字，作为同一条指令处理
-
-示例：发 `app-error.log` → 发"分析这个日志的错误原因"
-
-支持 UTF-8/GBK 解码，单文件上限 50K 字符，超过截断。5 分钟未配对催办一次，30 分钟过期。每人最多累积 5 个待配对文件。图片/Word/PDF 暂不支持。
+动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）。旧的 `__APPROVE__` / `__SPEC_RESULT__` 等前缀格式仍兼容。
 
 ### 配置
 
@@ -593,7 +600,9 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ┌────────────────────────────────────────────────────────────────────┐
 │  B: run_requirement 子进程（G 或 A fork，start_new_session）        │
 │     循环: next → qodercli → commit → next → ... → IDLE             │
-│     持有 .loop/lock 锁；心跳推送；重试 1 次；步数/重复上限           │
+│     持有 .loop/lock（fcntl.flock 独占锁）；步骤/心跳双超时：         │
+│     LLM 步骤 6h 上限（STEP_TIMEOUT）、本地命令 30s（QUICK_TIMEOUT）、 │
+│     锁心跳 60s 刷新；重试 1 次；步数/重复上限；同需求串行            │
 └──────┬──────────────────────────────────────┬──────────────────────┘
        │ 每步 fork 一次性子进程                 │
        ▼                                       │
@@ -610,82 +619,85 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ┌────────────────────────────────────────────────────────────────────┐
 │  F: wecom_server 守护进程（端口 5000，A fork 常驻）                  │
 │     微信回调 → 立即返回 "success" → 后台 LLM 处理 → API 推送结果     │
-│     识别前缀路由: __APPROVE__ / __HISTORY__ / __GRAY_LIST__ /       │
-│     __ADJUDICATE__ / __SPEC_RESULT__ → 进程内执行对应 handler       │
+│     LLM 回复含 __JSON_ACTION__ 动作块 → 进程内执行对应 handler      │
+│     （兼容旧前缀: __APPROVE__ / __HISTORY__ / __GRAY_LIST__ /       │
+│       __ADJUDICATE__ / __SPEC_RESULT__）                           │
 └──────┬─────────────────────────────────────────────────────────────┘
        │ 每个消息派生一个 G
        ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  G: qodercli 子进程（每个微信消息一次）                              │
+│  G: qodercli 子进程（每个微信消息一次，超时 15 分钟兜底）             │
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
 │     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │
-│     grill-me 澄清 / 编辑 spec.md                                   │
+│     grill-me 澄清 / 编辑 spec.md / manual-loop 执行                 │
 │                                                                     │
-│     前缀路由（F 根据 LLM 回复的第一行识别，不经过二次 LLM）：          │
-│     __APPROVE__ <name>         → approve + dispatch → fork B       │
-│     __HISTORY__ <name|ALL>     → 读取执行历史                       │
-│     __GRAY_LIST__ <name|ALL>   → 列出待裁决灰名单草稿                │
-│     __ADJUDICATE__ <name> <ids|all> <accept|reject>                │
-│                                → 裁决草稿；全部裁决完毕自动          │
-│                                  approve + dispatch → fork B        │
-│     __SPEC_RESULT__ <name> <key> → 校验/备份/置 PARTIAL → 等批准    │
+│     __JSON_ACTION__ 动作（服务器按动作分发，不经过二次 LLM）：        │
+│     approve     → 批准 + dispatch → fork B                         │
+│     spec_result → 校验 spec 变更（备份/置 PARTIAL）→ 等批准          │
+│     history     → 读取执行历史（runs.json）                         │
+│     gray_list   → 列出待裁决灰名单草稿（带证据）                    │
+│     adjudicate  → 裁决草稿；全部裁决完毕自动 approve + dispatch     │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
 | A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end 锁；scheduler.poll() 只检测不启动 |
-| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；锁 + 心跳 + 重试；并发上限 max_concurrency |
+| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 双超时 + 心跳；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
-| F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → 前缀路由 → handler 进程内执行 |
-| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种前缀触发不同 handler |
+| F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → JSON 动作块 → handler 进程内执行 |
+| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种动作触发不同 handler |
 
 ```
 ~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）
 ├── cli.py                      # CLI 入口 + 命令处理
-├── machine.py                  # 状态机路由
-├── state.py                    # StateManager
+├── machine.py                  # 状态机路由（状态推进 + 灰名单裁决）
+├── state.py                    # StateManager（原子写 + 滚动备份 + 损坏恢复）
 ├── directives.py               # 指令生成
 ├── parser.py                   # result.md 解析
 ├── report.py                   # 报告生成
-├── spec_utils.py               # spec 工具函数 + PRD 解析
-├── scheduler.py                # Layer 2 调度器
+├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
+├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
 ├── setup.py                    # Phase 0 初始化
 ├── registry.py                 # 需求注册表
-├── constants.py                # 常量
+├── constants.py                # 常量（含 STATUS_TABLE 状态真值表）
 ├── __main__.py                 # Python -m 入口
 ├── pyproject.toml              # 构建配置
 ├── README.md                   # 使用指南
 ├── wecom_server/               # WeCom 机器人（F/G）
+│   ├── server.py               # Flask 回调服务器（解密/验签/响应）
+│   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理
+│   ├── wecom_api.py            # 企业微信 API（推送/下载）
+│   ├── crypto.py               # 回调消息加解密
+│   └── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子
 └── tests/
-    ├── test_machine.py
-    ├── test_state.py
-    ├── test_parser.py
-    ├── test_directives.py
-    ├── test_spec_utils.py
-    ├── test_setup.py
-    ├── test_scheduler.py
-    ├── test_session_clean.py
-    ├── test_audit_hook.py
-    ├── test_context.py
-    ├── test_registry.py
-    ├── test_router_async.py
-    ├── test_wecom_api.py
-    ├── test_wecom_crypto.py
+    ├── test_machine.py         ├── test_state.py
+    ├── test_parser.py          ├── test_directives.py
+    ├── test_spec_utils.py      ├── test_setup.py
+    ├── test_scheduler.py       ├── test_session_clean.py
+    ├── test_audit_hook.py      ├── test_context.py
+    ├── test_registry.py        ├── test_constants.py
+    ├── test_router_async.py    ├── test_server.py
+    ├── test_wecom_api.py       ├── test_wecom_crypto.py
     └── test_wecom_handlers.py
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
 ├── requirements.json           # 需求注册表
 ├── pending.json                # poll 待执行清单
-├── schedule.json               # 调度器配置
+├── schedule.json               # 调度器配置（max_concurrency）
+├── runs.json                   # 执行历史（requirement → 起止/轮次/结局）
 ├── wecom.json                  # WeCom 应用配置（密钥）
 ├── audit.log                   # 敏感命令审计日志
 ├── sessions/                   # 微信用户会话状态
 └── .loop/                      # 本地循环状态
 
-~/.qoder/skills/spec-session/   # Layer 1 Skill
-└── SKILL.md
+~/.qoder/skills/                # 5 个协作 Skill
+├── spec-session/               # Layer 1：spec 管理会话（Dashboard/SCORE 往返）
+├── prd-to-spec/                # PRD 摘要 → OpenSpec artifacts
+├── grill-me/                   # 需求澄清追问
+├── requirement-register/       # 注册需求 + PRD 引导（微信 G 使用）
+└── manual-loop/                # 手动循环执行（微信 G 使用）
 
 ~/.local/bin/loop_engine        # 命令行 shim
 ```
@@ -693,6 +705,11 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ### 关键设计决策
 
 - **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信
-- **安全阀**：同 action 重复 3 次自动中断、200 步上限、`.loop/lock` PID 文件锁
+- **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
+- **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
+- **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s 双超时、锁心跳 60s、hard_errors 用尽 3 次转 BLOCKED
+- **双层哈希**：spec_hash（内容）+ spec_norm_hash（忽略注释/格式），纯注释变更跳过 loop
+- **plan_hash 变更检测**：编辑 plan 后自动从 MAKER_STEP1_RED 重跑，实现始终对齐最新方案
+- **状态真值表**：状态语义收敛在 constants.py 的 STATUS_TABLE 单点定义，调度/路由/微信三处共用，消除语义漂移
 - **状态隔离**：每个需求独立 `.loop/state.json`，切换 `--root` 无损
 - **macOS 兼容**：pip 安装因 externally-managed-environment 被屏蔽，改用 shim 方式

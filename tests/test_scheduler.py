@@ -1,5 +1,6 @@
 """Tests for scheduler.py — poll/detect, pending, approve, lock, run, dispatch."""
 
+import fcntl
 import hashlib
 import json
 import os
@@ -15,6 +16,17 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scheduler
+
+
+def _hold_flock(root):
+    """Take the real kernel lock on .loop/lock, as a foreign process would."""
+    lock = os.path.join(root, ".loop", "lock")
+    os.makedirs(os.path.dirname(lock), exist_ok=True)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with open(lock, "w") as f:
+        f.write(str(os.getpid()))
+    return fd
 
 
 def _make_state(root, modules, current=None, drafts=None):
@@ -468,12 +480,18 @@ class TestLock(SchedulerBase):
 
     def test_acquire_live_lock_fails(self):
         root = os.path.join(self.tmp.name, "req")
-        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-        self.assertFalse(scheduler.acquire_lock(root))
+        os.makedirs(root, exist_ok=True)
+        fd = _hold_flock(root)
+        try:
+            self.assertFalse(scheduler.acquire_lock(root))
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_acquire_reclaims_stale_live_lock(self):
+        """Content alone never blocks acquire — only a held flock does.
+        A stale-age content lock (no live flock, e.g. from a crashed run
+        before flock was added) is immediately reclaimable."""
         root = os.path.join(self.tmp.name, "req")
         lock = os.path.join(root, ".loop", "lock")
         os.makedirs(os.path.dirname(lock), exist_ok=True)
@@ -486,12 +504,14 @@ class TestLock(SchedulerBase):
 
     def test_acquire_fresh_live_lock_kept(self):
         root = os.path.join(self.tmp.name, "req")
-        lock = os.path.join(root, ".loop", "lock")
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        with open(lock, "w") as f:
-            f.write(str(os.getpid()))
-        os.utime(lock, None)  # fresh mtime
-        self.assertFalse(scheduler.acquire_lock(root))
+        os.makedirs(root, exist_ok=True)
+        fd = _hold_flock(root)
+        try:
+            os.utime(os.path.join(root, ".loop", "lock"), None)  # fresh mtime
+            self.assertFalse(scheduler.acquire_lock(root))
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_acquire_reclaims_stale_lock(self):
         root = os.path.join(self.tmp.name, "req")
@@ -500,6 +520,31 @@ class TestLock(SchedulerBase):
             f.write("99999999")
         self.assertTrue(scheduler.acquire_lock(root))
         self.assertTrue(scheduler.is_locked(root))
+
+    def test_reclaim_race_exactly_one_winner(self):
+        """Two racers hitting the same stale lock must never both win —
+        flock arbitration means exactly one gets the exclusive lock."""
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
+        lock = os.path.join(root, ".loop", "lock")
+        with open(lock, "w") as f:
+            f.write("99999999")  # dead pid → stale, both racers will reclaim
+        barrier = threading.Barrier(2)
+        results = []
+
+        def grab():
+            barrier.wait()
+            results.append(scheduler.acquire_lock(root))
+
+        t1 = threading.Thread(target=grab)
+        t2 = threading.Thread(target=grab)
+        t1.start()
+        t2.start()
+        t1.join(5)
+        t2.join(5)
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertEqual(sorted(results), [False, True])
 
     def test_release_only_own_lock(self):
         root = os.path.join(self.tmp.name, "req")
@@ -637,7 +682,7 @@ class TestLock(SchedulerBase):
 
         scheduler.poll()
 
-        self.assertFalse(os.path.exists(os.path.join(root, ".loop", "lock")))
+        self.assertFalse(scheduler.is_locked(root))
         self.assertFalse(
             os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
         runs = scheduler.load_runs()["runs"]
@@ -1153,10 +1198,13 @@ class TestRun(SchedulerBase):
 
     def test_run_locked_requirement_fails(self):
         root = self._register_pending("req")
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-        result = scheduler.run_requirement("req")
-        self.assertIn("error", result)
+        fd = _hold_flock(root)
+        try:
+            result = scheduler.run_requirement("req")
+            self.assertIn("error", result)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 class TestDispatch(SchedulerBase):

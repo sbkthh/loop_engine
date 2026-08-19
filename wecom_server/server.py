@@ -37,6 +37,13 @@ _MAX_PENDING = 3
 _pending = {}  # requirement -> queue.Queue
 _pending_guard = threading.Lock()
 
+# WeCom duplicate-callback dedup: the server sometimes POSTs the same message
+# twice (identical msg_signature/timestamp/nonce). We short-circuit the second
+# POST to avoid double-processing (duplicate G calls, double approve, etc.).
+_DUP_CACHE_TTL = 30  # seconds
+_seen_callbacks = {}  # msg_signature -> expiry_time
+_seen_guard = threading.Lock()
+
 
 def _queue_for(requirement):
     with _pending_guard:
@@ -79,6 +86,33 @@ def callback_message():
     msg_signature = request.args.get("msg_signature", "")
     timestamp = request.args.get("timestamp", "")
     nonce = request.args.get("nonce", "")
+    # Duplicate-callback guard: identical msg_signature within TTL → skip
+    with _seen_guard:
+        if _seen_callbacks.get(msg_signature, 0) > time.time():
+            logger.info("[wecom] duplicate callback skipped: %s", msg_signature)
+            reply_xml_body = (
+                f"<xml>"
+                f"<ToUserName><![CDATA[{CONFIG.get('corp_id', 'corpid')}]]></ToUserName>"
+                f"<FromUserName><![CDATA[{CONFIG.get('corp_id', 'corpid')}]]></FromUserName>"
+                f"<CreateTime>{int(time.time())}</CreateTime>"
+                f"<MsgType><![CDATA[text]]></MsgType>"
+                f"<Content><![CDATA[OK]]></Content>"
+                f"</xml>"
+            )
+            result = encrypt_callback(reply_xml_body, token, aes_key, corpid=CONFIG.get("corp_id", "corpid"))
+            reply_xml = (
+                f"<xml>"
+                f"<Encrypt><![CDATA[{result['encrypted']}]]></Encrypt>"
+                f"<MsgSignature><![CDATA[{result['signature']}]]></MsgSignature>"
+                f"<TimeStamp>{result['timestamp']}</TimeStamp>"
+                f"<Nonce><![CDATA[{result['nonce']}]]></Nonce>"
+                f"</xml>"
+            )
+            return Response(reply_xml, mimetype="text/xml")
+        if len(_seen_callbacks) > 100:
+            _seen_callbacks = {k: v for k, v in _seen_callbacks.items()
+                               if v > time.time()}
+        _seen_callbacks[msg_signature] = time.time() + _DUP_CACHE_TTL
     body = request.get_data(as_text=True)
     # Parse XML
     root = ET.fromstring(body)

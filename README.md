@@ -679,8 +679,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
     ├── test_audit_hook.py      ├── test_context.py
     ├── test_registry.py        ├── test_constants.py
     ├── test_router_async.py    ├── test_server.py
-    ├── test_wecom_api.py       ├── test_wecom_crypto.py
-    └── test_wecom_handlers.py
+    └── test_wecom_api.py       └── test_wecom_crypto.py
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
 ├── requirements.json           # 需求注册表

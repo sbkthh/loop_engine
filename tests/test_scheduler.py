@@ -264,10 +264,12 @@ class TestPoll(SchedulerBase):
         _make_spec(root, "c", "m")
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "SCORE", "attempt": 0})
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-
-        self.assertEqual(scheduler.poll(), [])
+        fd = _hold_flock(root)
+        try:
+            self.assertEqual(scheduler.poll(), [])
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_poll_detects_stale_current_without_lock(self):
         """A stale current.action with no lock must not hide pending work."""
@@ -325,8 +327,7 @@ class TestPoll(SchedulerBase):
         # returns None, but the approved entry must be carried over
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "CHECKER", "attempt": 0})
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
+        fd = _hold_flock(root)
 
         self.assertEqual(scheduler.poll(), [])
         entries = scheduler.load_pending()["pending"]
@@ -335,7 +336,8 @@ class TestPoll(SchedulerBase):
         self.assertTrue(entries[0]["approved"])
 
         # run finished (unlocked): re-detected, approval preserved
-        os.remove(os.path.join(root, ".loop", "lock"))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
         _make_state(root, {"c/m": _module("c", "m", "READY")})
         entries = scheduler.poll()
         self.assertTrue(entries[0]["approved"])
@@ -349,11 +351,13 @@ class TestPoll(SchedulerBase):
         scheduler.poll()
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "CHECKER", "attempt": 0})
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-
-        self.assertEqual(scheduler.poll(), [])
-        self.assertEqual(scheduler.load_pending()["pending"], [])
+        fd = _hold_flock(root)
+        try:
+            self.assertEqual(scheduler.poll(), [])
+            self.assertEqual(scheduler.load_pending()["pending"], [])
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 
@@ -441,12 +445,14 @@ class TestApprove(SchedulerBase):
         _make_state(root, {"c/m": _module("c", "m", "READY")},
                     current={"module": "c/m", "action": "MAKER_STEP0",
                              "attempt": 0})
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-
-        with self.assertRaises(ValueError) as ctx:
-            scheduler.approve("req")
-        self.assertIn("正在执行中", str(ctx.exception))
+        fd = _hold_flock(root)
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                scheduler.approve("req")
+            self.assertIn("正在执行中", str(ctx.exception))
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_approve_stale_current_reports_waiting(self):
         """Stale current.action without lock → not 'executing', just no work."""
@@ -490,28 +496,15 @@ class TestLock(SchedulerBase):
 
     def test_acquire_reclaims_stale_live_lock(self):
         """Content alone never blocks acquire — only a held flock does.
-        A stale-age content lock (no live flock, e.g. from a crashed run
+        A stale content lock (live pid, no flock, e.g. from a crashed run
         before flock was added) is immediately reclaimable."""
         root = os.path.join(self.tmp.name, "req")
         lock = os.path.join(root, ".loop", "lock")
         os.makedirs(os.path.dirname(lock), exist_ok=True)
         with open(lock, "w") as f:
             f.write(str(os.getpid()))
-        old = time.time() - scheduler.LOCK_MAX_AGE_SECONDS - 60
-        os.utime(lock, (old, old))
         self.assertTrue(scheduler.acquire_lock(root))
         self.assertTrue(scheduler.is_locked(root))
-
-    def test_acquire_fresh_live_lock_kept(self):
-        root = os.path.join(self.tmp.name, "req")
-        os.makedirs(root, exist_ok=True)
-        fd = _hold_flock(root)
-        try:
-            os.utime(os.path.join(root, ".loop", "lock"), None)  # fresh mtime
-            self.assertFalse(scheduler.acquire_lock(root))
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
 
     def test_acquire_reclaims_stale_lock(self):
         root = os.path.join(self.tmp.name, "req")
@@ -553,43 +546,6 @@ class TestLock(SchedulerBase):
             f.write("99999999")
         scheduler.release_lock(root)
         self.assertTrue(os.path.exists(os.path.join(root, ".loop", "lock")))
-
-    def test_lock_heartbeat_refreshes_mtime(self):
-        """A run's heartbeat thread keeps the lock fresh even when no step
-        boundary touches it — a hung subprocess must never let the 24h
-        staleness check reclaim the lock mid-run."""
-        root = os.path.join(self.tmp.name, "req")
-        lock = os.path.join(root, ".loop", "lock")
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        with open(lock, "w") as f:
-            f.write(str(os.getpid()))
-        old = time.time() - 3600
-        os.utime(lock, (old, old))
-        stop = threading.Event()
-        with mock.patch.object(scheduler, "LOCK_HEARTBEAT_SECONDS", 0.05):
-            th = threading.Thread(target=scheduler._lock_heartbeat,
-                                  args=(root, stop), daemon=True)
-            th.start()
-            time.sleep(0.3)
-            stop.set()
-            th.join(1)
-        self.assertGreater(os.path.getmtime(lock), old)
-
-    def test_lock_heartbeat_stops_when_lock_released(self):
-        root = os.path.join(self.tmp.name, "req")
-        lock = os.path.join(root, ".loop", "lock")
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        with open(lock, "w") as f:
-            f.write(str(os.getpid()))
-        stop = threading.Event()
-        with mock.patch.object(scheduler, "LOCK_HEARTBEAT_SECONDS", 0.05):
-            th = threading.Thread(target=scheduler._lock_heartbeat,
-                                  args=(root, stop), daemon=True)
-            th.start()
-            time.sleep(0.2)
-            os.unlink(lock)
-            th.join(1)
-        self.assertFalse(th.is_alive())  # exits on OSError, not forever
 
     def test_manual_begin_locks(self):
         root = os.path.join(self.tmp.name, "req")
@@ -693,11 +649,8 @@ class TestLock(SchedulerBase):
     def test_poll_removes_stale_manual_but_keeps_replaced_lock(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
-        import subprocess as sp
-        proc = sp.Popen(["sleep", "60"])
+        fd = _hold_flock(root)
         try:
-            with open(os.path.join(root, ".loop", "lock"), "w") as f:
-                f.write(str(proc.pid))
             with open(os.path.join(root, scheduler.MANUAL_FILE), "w") as f:
                 json.dump({"pid": 999999999, "started_at": time.time(),
                            "steps": 2}, f)
@@ -709,7 +662,8 @@ class TestLock(SchedulerBase):
                 os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
             self.assertEqual(scheduler.load_runs()["runs"], [])
         finally:
-            proc.kill()
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_poll_keeps_live_manual_session(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
@@ -1253,15 +1207,17 @@ class TestDispatch(SchedulerBase):
 
     def test_dispatch_skips_locked(self):
         root = os.path.join(self.tmp.name, "req-a")
-        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
-        with open(os.path.join(root, ".loop", "lock"), "w") as f:
-            f.write(str(os.getpid()))
-        entries = [self._pending_entry("req-a", "READY_PENDING")]
-        with mock.patch.object(scheduler.subprocess, "Popen",
-                               return_value=types.SimpleNamespace(pid=4)):
-            forked = scheduler.dispatch(entries, max_concurrency=2)
+        fd = _hold_flock(root)
+        try:
+            entries = [self._pending_entry("req-a", "READY_PENDING")]
+            with mock.patch.object(scheduler.subprocess, "Popen",
+                                   return_value=types.SimpleNamespace(pid=4)):
+                forked = scheduler.dispatch(entries, max_concurrency=2)
 
-        self.assertEqual(forked, [])
+            self.assertEqual(forked, [])
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_dispatch_skips_pending_gray_drafts(self):
         """Approved entry with pending gray-list drafts is skipped by dispatch

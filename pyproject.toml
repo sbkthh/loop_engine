@@ -17,3 +17,7 @@ py-modules = [
     "directives", "parser", "report", "setup",
     "registry", "scheduler", "constants", "__main__",
 ]
+packages = ["wecom_server"]
+
+[tool.setuptools.package-data]
+wecom_server = ["hooks/*.sh"]

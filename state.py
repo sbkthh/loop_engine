@@ -100,10 +100,6 @@ class StateManager:
         return f"{change_id}/{module_name}"
 
     @staticmethod
-    def get_module(state, key):
-        return state["modules"].get(key)
-
-    @staticmethod
     def set_module_field(state, key, field, value):
         if key in state["modules"]:
             state["modules"][key][field] = value

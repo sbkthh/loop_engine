@@ -72,12 +72,9 @@ HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
 MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
-LOCK_MAX_AGE_SECONDS = 24 * 3600  # live-PID lock older than this is reclaimed
-# Per-step caps are hung-call backstops, not task budgets: the lock heartbeat
-# below keeps the staleness check honest no matter how long a step runs.
+# Per-step caps are hung-call backstops, not task budgets.
 STEP_TIMEOUT_SECONDS = 6 * 3600  # one qodercli/LLM step
 QUICK_TIMEOUT_SECONDS = 30       # local next/commit CLI calls (pure Python, <1s)
-LOCK_HEARTBEAT_SECONDS = 60      # lock mtime refresh while a step is in flight
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
 
@@ -482,8 +479,7 @@ def acquire_lock(root):
 
     The lock file is persistent and never unlinked: unlinking lets two
     processes lock different inodes and both win. flock is released by
-    the kernel on process death, so dead-pid reclaim is automatic; the
-    stale-age path in is_locked remains only as advisory info.
+    the kernel on process death, so dead-owner reclaim is automatic.
     """
     path = _lock_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -524,23 +520,25 @@ def release_lock(root):
 
 
 def is_locked(root):
+    """True if the exclusive flock on .loop/lock is held by anyone.
+
+    Probes the kernel lock directly — pid content and mtime are advisory
+    only and can lie (recycled pid, stale age); the flock never can.
+    """
     path = _lock_path(root)
     if not os.path.exists(path):
         return False
     try:
-        with open(path) as f:
-            pid = int(f.read().strip() or "0")
-    except (ValueError, OSError):
-        return False
-    if pid <= 0:
-        return False
-    if not _pid_alive(pid):
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
         return False
     try:
-        age = time.time() - os.path.getmtime(path)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return True
-    return age <= LOCK_MAX_AGE_SECONDS
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+    return False
 
 
 def manual_begin(root):
@@ -742,17 +740,6 @@ def _repair_result(root, sid, detail):
     return True
 
 
-def _lock_heartbeat(root, stop_event):
-    """Refresh lock mtime while a run is active so the 24h staleness check
-    can never reclaim the lock mid-step (a long/hung subprocess would
-    otherwise starve the per-step os.utime)."""
-    while not stop_event.wait(LOCK_HEARTBEAT_SECONDS):
-        try:
-            os.utime(_lock_path(root), None)
-        except OSError:
-            return  # lock released — nothing left to keep fresh
-
-
 def run_requirement(name):
     """Execute one requirement to completion: next → qodercli → commit."""
     req = next((r for r in _read_registry() if r.get("name") == name), None)
@@ -773,9 +760,6 @@ def run_requirement(name):
     notify_text(f"[调度] 开始执行 {name} ({root})", user_id)
     _log(f"run {name}: start ({root})")
     try:
-        stop_heartbeat = threading.Event()
-        threading.Thread(target=_lock_heartbeat, args=(root, stop_heartbeat),
-                         daemon=True).start()
         steps = 0
         same_action = 0
         last_action = None
@@ -786,7 +770,6 @@ def run_requirement(name):
         prev_result = None  # previous step's result.md content, fed to next step
         end = "max_steps"
         while steps < MAX_TOTAL_STEPS:
-            os.utime(_lock_path(root), None)  # keep lock fresh for staleness check
             # heartbeat: ping WeCom with backoff (5min -> 15min -> 30min)
             # so long runs stay visibly alive without spamming
             if time.time() - last_beat >= beat_interval:
@@ -949,7 +932,6 @@ def run_requirement(name):
         _log(f"run {name}: finished ({end}) after {steps} step(s)")
         return {"requirement": name, "steps": steps, "end": end}
     finally:
-        stop_heartbeat.set()
         release_lock(root)
         if end != "gray_list":
             _clear_approval(name)

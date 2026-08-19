@@ -641,6 +641,19 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         requirement = _classify_requirement(message, registry)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__MESSAGE__", message, 1)
+    # Tell G about background files so it can read them when needed, instead
+    # of relying on static injection that would waste tokens on every message.
+    if requirement:
+        req_entry = next((r for r in registry if r.get("name") == requirement), None)
+        if req_entry:
+            root = req_entry.get("root", "")
+            if root:
+                prompt += (
+                    f"\n\n本需求的相关背景文件路径，需要时可自行读取：\n"
+                    f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿\n"
+                    f"- {root}/.loop/context.json —— 执行上下文（仅在运行中时存在）\n"
+                    f"- ~/.qoder/loop_engine/requirements.json —— 全局需求注册表"
+                )
     # first message creates session, subsequent messages resume it
     session_flag = "--session-id" if is_new else "--resume"
     settings = _audit_settings()

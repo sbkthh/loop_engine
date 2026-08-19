@@ -201,6 +201,23 @@ def poll():
     """Run one detection cycle and merge into pending.json."""
     for req in _read_registry():
         _cleanup_stale_manual(req.get("root", ""))
+        # Clear stuck current field when the manual session died but left
+        # state.json mid-progress — the flock is already released by the OS
+        # when the process exited, so another run can't conflict.
+        root = req.get("root", "")
+        state_path = os.path.join(root, STATE_FILE)
+        if os.path.exists(state_path) and not is_locked(root):
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if state.get("current", {}).get("action"):
+                state["current"] = {}
+                with open(state_path, "w") as f:
+                    json.dump(state, f, indent=2)
+                _log(f"poll: cleared stuck current in {req.get('name')} "
+                     f"(manual session ended)")
     fresh = []
     for req in _read_registry():
         entry = _poll_requirement(req.get("root"), req.get("name"))
@@ -224,6 +241,35 @@ def poll():
             entry["detected_at"] = old.get("detected_at", entry["detected_at"])
         elif not old:
             newly_detected.append(entry)
+        elif old.get("trigger") != entry.get("trigger"):
+            # trigger changed (e.g., GRAY_LIST → SPEC_CHANGED) — re-notify
+            newly_detected.append(entry)
+    # Auto-archive stale gray drafts when a module goes through a new spec
+    # change cycle: the old findings are from a previous spec version and
+    # the new loop will regenerate them if still relevant.
+    for entry in fresh:
+        if not any(m.get("spec_hash_changed") for m in entry.get("modules", [])):
+            continue
+        root = entry.get("root", "")
+        state_path = os.path.join(root, STATE_FILE)
+        if not os.path.exists(state_path):
+            continue
+        try:
+            with open(state_path) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            continue
+        changed_keys = {m["key"] for m in entry["modules"] if m.get("spec_hash_changed")}
+        archived = False
+        for d in state.get("gray_drafts", []):
+            if d.get("status") == "pending" and d.get("module") in changed_keys:
+                d["status"] = "rejected"
+                d["_archived"] = True
+                archived = True
+        if archived:
+            _log(f"poll: archived stale gray drafts for spec change in {entry['requirement']}")
+            with open(state_path, "w") as f:
+                json.dump(state, f, indent=2)
     _save_pending({"pending": fresh + carried})
     if newly_detected:
         notify_pending(newly_detected)

@@ -40,7 +40,7 @@ _LLM_SYSTEM_PROMPT = (
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → ~/.qoder/skills/requirement-register/SKILL.md\n"
     "- Spec editing workflow → ~/.qoder/skills/spec-session/SKILL.md\n"
-    "- Manual loop execution → ~/.qoder/skills/manual-loop/SKILL.md\n\n"
+    "\n"
     "User: __MESSAGE__\n"
 )
 
@@ -301,6 +301,26 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
 def _execute_adjudicate_all(target, decision, registry, data_dir):
     """Adjudicate drafts across all requirements with pending items."""
     if decision not in ("accept", "reject"):
+        # Mixed or non-uniform decision — check if all pending drafts
+        # belong to a single requirement. If so, delegate to the per-req
+        # handler which supports mixed (accept some, reject others).
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from state import StateManager
+        pending_reqs = []
+        for req in registry:
+            root = req.get("root", "")
+            if not root:
+                continue
+            sm = StateManager(root)
+            try:
+                st = sm.load()
+            except Exception:
+                continue
+            if any(d.get("status") == "pending" for d in st.get("gray_drafts", [])):
+                pending_reqs.append(req.get("name", "?"))
+        if len(pending_reqs) == 1:
+            return _execute_adjudicate(
+                pending_reqs[0], "mixed", decision, registry, data_dir)
         return "跨需求裁决仅支持单一决策（accept/reject）"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from state import StateManager

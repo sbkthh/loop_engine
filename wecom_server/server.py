@@ -79,6 +79,7 @@ def callback_verify():
 @app.route("/callback", methods=["POST"])
 def callback_message():
     """Receive WeCom message callback (POST)."""
+    global _seen_callbacks  # reassigned below (cleanup dict comp), needs global
     token = CONFIG.get("token", "")
     aes_key_b64 = CONFIG.get("encoding_aes_key", "") + "="
     aes_key = base64.b64decode(aes_key_b64)

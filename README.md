@@ -57,7 +57,7 @@ Skill-spec-session  OK       /Users/.../spec-session/SKILL.md
 Skill-prd-to-spec   OK       /Users/.../prd-to-spec/SKILL.md
 Skill-grill-me      OK       /Users/.../grill-me/SKILL.md
 Skill-requirement-register OK  /Users/.../requirement-register/SKILL.md
-Skill-manual-loop   OK       /Users/.../manual-loop/SKILL.md
+Skill-manual-loop   DEPRECATED  /Users/.../manual-loop/SKILL.md（改为引导走 approve）
 Data dir            OK       /Users/.../.qoder/loop_engine
 Registry            OK       0 requirement(s) registered
 Tests               OK       326 passed in 19.24s
@@ -400,11 +400,10 @@ loop_engine add-blocker --root <path> <module> <description>
 # 解决 DRAFT 决议
 loop_engine resolve-draft --root <path> <id> accept|reject
 
-# 手动接管锁（调试用）：开始手动循环（与调度器共享 flock 锁，
-# 会话记录在 .loop/manual.json，进程死亡由 poll 自动清理）
+# 手动接管锁（调试用，已废弃——优先用 approve 走调度器）
 loop_engine manual-begin --root <path>
 
-# 手动结束循环，释放锁
+# 手动结束循环（调试用，已废弃）
 loop_engine manual-end --root <path>
 ```
 
@@ -592,11 +591,11 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 │  A: loop_engine CLI 主进程（argparse 分发）                         │
 │     cmd_poll = scheduler.poll() + dispatch(已 approved 项) 兜底     │
 │     poll / pending / approve / run / schedule / session-clean /    │
-│     manual-begin|end / wecom ...                                   │
+│     manual-begin|end (deprecated) / wecom ...                     │
 │     approve 不含 dispatch → dispatch 由各触发者各自负责              │
 └──────┬──────────────────────────────────────┬──────────────────────┘
-       │ dispatch 兜底（通常已被 G 抢先）       │ manual-begin/end
-       ▼（仅捡 approved 但未被 G 启动的）      ▼（手动循环接管锁）
+       │ dispatch 兜底                         │ manual-begin/end（废弃）
+       ▼（仅捡 approved 项）                   ▼（不再使用）
 ┌────────────────────────────────────────────────────────────────────┐
 │  B: run_requirement 子进程（G 或 A fork，start_new_session）        │
 │     循环: next → qodercli → commit → next → ... → IDLE             │
@@ -630,7 +629,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
 │     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │
-│     grill-me 澄清 / 编辑 spec.md / manual-loop 执行                 │
+│     grill-me 澄清 / 编辑 spec.md                              │
 │                                                                     │
 │     __JSON_ACTION__ 动作（服务器按动作分发，不经过二次 LLM）：        │
 │     approve     → 批准 + dispatch → fork B                         │
@@ -643,7 +642,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
-| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end 锁；scheduler.poll() 只检测不启动 |
+| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end（废弃）；scheduler.poll() 只检测不启动 |
 | B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 双超时 + 心跳；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
 | F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → JSON 动作块 → handler 进程内执行 |
@@ -696,7 +695,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── prd-to-spec/                # PRD 摘要 → OpenSpec artifacts
 ├── grill-me/                   # 需求澄清追问
 ├── requirement-register/       # 注册需求 + PRD 引导（微信 G 使用）
-└── manual-loop/                # 手动循环执行（微信 G 使用）
+└── manual-loop/                # 手动循环执行（已废弃，用 approve 替代）
 
 ~/.local/bin/loop_engine        # 命令行 shim
 ```

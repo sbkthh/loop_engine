@@ -553,6 +553,7 @@ class TestLock(SchedulerBase):
         self.assertTrue(scheduler.manual_begin(root))
         self.assertTrue(scheduler.is_locked(root))
         self.assertTrue(os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
+        self.assertTrue(scheduler.manual_end(root))
 
     def test_manual_begin_fails_when_scheduler_runs(self):
         root = os.path.join(self.tmp.name, "req")
@@ -628,8 +629,7 @@ class TestLock(SchedulerBase):
     def test_poll_auto_ends_dead_manual_session(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
-        scheduler.manual_begin(root)
-        # simulate the manual session dying
+        # manual session died: dead owner pid, no flock held
         with open(os.path.join(root, ".loop", "lock"), "w") as f:
             f.write("999999999")
         with open(os.path.join(root, scheduler.MANUAL_FILE), "w") as f:
@@ -675,6 +675,51 @@ class TestLock(SchedulerBase):
         self.assertTrue(
             os.path.exists(os.path.join(root, scheduler.MANUAL_FILE)))
         self.assertEqual(scheduler.load_runs()["runs"], [])
+        self.assertTrue(scheduler.manual_end(root))
+
+    def test_manual_holder_expires_after_idle(self):
+        """A crashed G leaves the holder (and its live pid) behind; the
+        holder must self-expire after an hour without commits so the
+        requirement is not blocked forever."""
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        self.assertTrue(scheduler.manual_begin(root))
+        self.assertTrue(scheduler.is_locked(root))
+        old = time.time() - 7200
+        os.utime(os.path.join(root, scheduler.MANUAL_FILE), (old, old))
+        # holder ticks every 5s and ignores the session file for the
+        # first 10s (grace), so the expiry lands at ~10-15s
+        deadline_t = time.time() + 20
+        while time.time() < deadline_t and scheduler.is_locked(root):
+            time.sleep(0.2)
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_next_commit_require_lock(self):
+        """next/commit refuse without a held lock (scheduler run or
+        manual-begin); G must not drive the loop unaccounted."""
+        import cli
+        root = os.path.join(self.tmp.name, "req")
+        os.makedirs(root, exist_ok=True)
+        with mock.patch.object(cli, "StateMachine"):
+            cli.StateMachine.return_value.next.return_value = {"ok": True}
+            cli.StateMachine.return_value.commit.return_value = {"ok": True}
+            args = types.SimpleNamespace(root=root)
+
+            # no lock → refused
+            with self.assertRaises(SystemExit):
+                cli.cmd_next(args)
+            with self.assertRaises(SystemExit):
+                cli.cmd_commit(args)
+            cli.StateMachine.assert_not_called()
+
+            # manual-begin (real holder process) → allowed
+            self.assertTrue(scheduler.manual_begin(root))
+            try:
+                cli.cmd_next(args)
+                cli.cmd_commit(args)
+            finally:
+                self.assertTrue(scheduler.manual_end(root))
+            self.assertEqual(cli.StateMachine.call_count, 2)
 
 
 class TestRun(SchedulerBase):

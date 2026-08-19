@@ -17,13 +17,25 @@ import registry
 import scheduler
 
 
+def _require_lock(root, cmd):
+    """next/commit must run under a lock holder (scheduler run or
+    manual-begin); otherwise G could drive the loop unaccounted."""
+    if scheduler.is_locked(root):
+        return
+    print(f"{cmd} 被拒绝：{root} 无持有锁。请先回复「批准执行」由调度器接管，"
+          f"或 manual-begin 手动接管。")
+    sys.exit(1)
+
+
 def cmd_next(args):
+    _require_lock(args.root, "next")
     machine = StateMachine(args.root)
     result = machine.next()
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def cmd_commit(args):
+    _require_lock(args.root, "commit")
     machine = StateMachine(args.root)
     result = machine.commit()
     # count this step in an active manual session (no-op for scheduler runs)
@@ -360,6 +372,12 @@ def cmd_run(args):
     result = scheduler.run_requirement(args.requirement)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if "error" in result:
+        sys.exit(1)
+
+
+def cmd_manual_hold(args):
+    """(internal) Detached lock holder spawned by manual-begin."""
+    if not scheduler.manual_hold(args.root):
         sys.exit(1)
 
 
@@ -751,6 +769,10 @@ def main():
                        help="(internal) Execute a requirement to completion")
     p.add_argument("requirement", help="Requirement name")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("manual-hold", parents=[common],
+                       help="(internal) Hold the requirement lock (spawned by manual-begin)")
+    p.set_defaults(func=cmd_manual_hold)
 
     p = sub.add_parser("manual-begin", parents=[common],
                        help="(internal) Acquire lock for a manual (G-driven) loop")

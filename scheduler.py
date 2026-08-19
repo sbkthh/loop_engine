@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -590,20 +591,66 @@ def is_locked(root):
 def manual_begin(root):
     """Acquire the requirement lock for a manual (G-driven) loop.
 
-    Uses the same lock as run_requirement, so a manual loop and the
-    scheduler can never run the same requirement concurrently. The session
-    owner is recorded in .loop/manual.json so manual_end can tell whether
-    the lock still belongs to this session before releasing it.
+    The flock is held by a detached holder process (`manual-hold`), so it
+    survives the manual-begin CLI exiting; manual_end terminates it. This
+    makes the manual lock real across processes — next/commit now refuse
+    to run without a held lock.
     """
-    if not acquire_lock(root):
+    holder = subprocess.Popen(
+        _engine_cmd("manual-hold", "--root", root),
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    for _ in range(200):  # up to ~10s for the holder to acquire the lock
+        if holder.poll() is not None:
+            return False
+        try:
+            with open(_lock_path(root)) as f:
+                if f.read().strip() == str(holder.pid):
+                    break
+        except OSError:
+            pass
+        time.sleep(0.05)
+    else:
+        holder.terminate()
         return False
     try:
         with open(os.path.join(root, MANUAL_FILE), "w") as f:
-            json.dump({"pid": os.getpid(), "started_at": time.time(),
+            json.dump({"pid": holder.pid, "started_at": time.time(),
                        "steps": 0}, f)
     except OSError:
-        release_lock(root)
+        holder.terminate()
         return False
+    return True
+
+
+def manual_hold(root):
+    """Detached lock holder: acquire the flock and keep it until the
+    session file disappears (manual_end) or we are terminated.
+
+    Grace period covers the window before manual_begin writes the session
+    file; a crashed manual_begin leaves no lock behind.
+    """
+    if not acquire_lock(root):
+        return False
+    session_path = os.path.join(root, MANUAL_FILE)
+    deadline = time.time() + 10
+    idle_timeout = 3600  # ponytail: a crashed G leaves the flock forever
+                         # (its holder pid stays alive, so poll cleanup
+                         # can't tell); expire after an hour without commits
+    try:
+        while True:
+            if time.time() >= deadline:
+                try:
+                    st = os.stat(session_path)
+                except OSError:
+                    break
+                if time.time() - st.st_mtime > idle_timeout:
+                    break
+            time.sleep(5)
+    finally:
+        release_lock(root)
     return True
 
 
@@ -625,8 +672,10 @@ def manual_step(root):
 def manual_end(root):
     """Release a manual-session lock and record the run in runs.json.
 
-    Returns False (without touching the lock) when the lock was replaced
-    by another process — e.g. a scheduler run after the manual session died.
+    Terminates the detached holder process; the kernel releases the flock
+    on its death. Returns False (without touching the lock) when the lock
+    was replaced by another process — e.g. a scheduler run after the
+    manual session died.
     """
     session_path = os.path.join(root, MANUAL_FILE)
     if not os.path.exists(session_path):
@@ -640,7 +689,16 @@ def manual_end(root):
         return False
     if lock_pid != session.get("pid"):
         return False
-    release_lock(root)
+    pid = int(session.get("pid", 0) or 0)
+    if pid > 0:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass  # holder already dead; kernel released the flock
+    for _ in range(50):  # wait for the flock to actually clear
+        if not is_locked(root):
+            break
+        time.sleep(0.1)
     try:
         os.unlink(session_path)
     except OSError:

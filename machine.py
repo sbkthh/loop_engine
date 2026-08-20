@@ -16,7 +16,9 @@ from constants import (
 from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash,
                         compute_spec_norm_hash, compute_plan_hash,
-                        derive_spec_path, derive_plan_path, resolve_project_root)
+                        derive_spec_path, derive_plan_path, resolve_project_root,
+                        audit_plan_existing_evidence,
+                        count_plan_existing_claims)
 from parser import (
     parse_maker_output, parse_checker_output,
     parse_score, parse_classify_change, parse_code_review,
@@ -364,6 +366,11 @@ class StateMachine:
             self.root_dir, plan_path)
         if not os.path.exists(full):
             raise ValueError(f"Plan file not found: {plan_path}")
+        evidence_errors = audit_plan_existing_evidence(
+            full, project_root=module.get("project_root"))
+        if evidence_errors:
+            raise ValueError(
+                "Plan evidence errors: " + "; ".join(evidence_errors[:5]))
         module["plan_path"] = plan_path
         return MAKER_STEP1_RED
 
@@ -371,6 +378,7 @@ class StateMachine:
         parsed = parse_maker_output(text)
         if not parsed:
             raise ValueError("Output format error: No MAKER_OUTPUT block found")
+        self._check_gap_audit(parsed, module)
         evidence = parsed.get("tdd_red_evidence")
         if not evidence:
             raise ValueError("Output format error: TDD_RED_EVIDENCE missing")
@@ -390,6 +398,37 @@ class StateMachine:
         if not evidence.get("test_files_written"):
             raise ValueError("No test files written")
         return MAKER_STEP2_GREEN
+
+    def _check_gap_audit(self, parsed, module):
+        """Gap_audit must account for every '已有/无需变更' plan claim.
+
+        The plan marks behaviors as already implemented; the maker must
+        verify each one and report the result, or the audit step silently
+        degrades to trusting the plan (the failure mode this prevents).
+        """
+        plan_path = module.get("plan_path")
+        if not plan_path:
+            return
+        full = plan_path if os.path.isabs(plan_path) else os.path.join(
+            self.root_dir, plan_path)
+        claims = count_plan_existing_claims(full)
+        if claims == 0:
+            return
+        audit = parsed.get("gap_audit")
+        if not isinstance(audit, list):
+            raise ValueError(
+                f"Output format error: gap_audit missing ({claims} "
+                f"'已有/无需变更' claims in plan need verification)")
+        if len(audit) < claims:
+            raise ValueError(
+                f"Output format error: gap_audit has {len(audit)} entries "
+                f"but plan has {claims} '已有/无需变更' claims")
+        for entry in audit:
+            if not isinstance(entry, dict) or \
+                    "verified" not in entry or not entry.get("evidence"):
+                raise ValueError(
+                    "Output format error: gap_audit entries must have "
+                    "'evidence' and 'verified'")
 
     def _commit_maker_step2_green(self, state, key, module, text):
         parsed = parse_maker_output(text)

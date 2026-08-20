@@ -109,6 +109,13 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "- TDD classification table: each method marked 'must TDD' or 'skip' with reason\n"
             "- File ownership matrix: which files belong to which task, no overlap\n"
             "- Test strategy: what each test class covers\n"
+            "EVIDENCE RULE — every '已有/无需变更' claim (existing behavior "
+            "you are NOT changing) MUST cite code evidence as "
+            "`FilePath.java:line` (e.g. `PurchasePlanServiceImpl.java:810`) "
+            "on the SAME line. A bare '已有' without a file:line reference "
+            "is a format error and the plan will be rejected — verify each "
+            "claim against the real code with grep/read BEFORE writing it. "
+            "Spec line citations (spec.md:NN) do NOT count as evidence.\n"
             "Do NOT write any test or implementation code."
         )
         d["context"]["prev_spec_hash"] = module.get("prev_spec_hash", "")
@@ -123,6 +130,13 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["plan_path"] = module.get("plan_path") or plan_path
         d["instructions"] = (
             "TDD RED Mode. Read the spec file and the plan file.\n"
+            "AUDIT STEP — before writing tests, find every '已有/无需变更' "
+            "claim in the plan, read the cited file:line evidence, and "
+            "verify the code actually implements the claimed behavior. "
+            "If any claim's evidence does NOT hold (file/line wrong or "
+            "behavior absent), treat that claim as a GAP: include it in "
+            "this change's test coverage and list it in gap_audit with "
+            "verified: false. Do not silently trust the plan's claims.\n"
             "Write test classes for all 'must TDD' methods from the plan's classification table.\n"
             f"Run '{test_cmd}'. Tests MUST fail with assertion failures (not compile errors).\n"
             "Do NOT write any implementation code (src/main).\n"
@@ -136,7 +150,14 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             '{"status": "SUCCESS", "plan_path": "' + (module.get('plan_path') or plan_path) + '",\n'
             ' "tdd_red_evidence": {"test_files_written": ["/abs/path/Test.java"],\n'
             '  "red_test_output": "Tests run: 5, Failures: 5 ...",\n'
-            '  "red_confirmed": true, "tdd_skip": false}}\n'
+            '  "red_confirmed": true, "tdd_skip": false},\n'
+            ' "gap_audit": [{"plan_item": "C1", "evidence": "PurchasePlanServiceImpl.java:810",\n'
+            '   "verified": true, "note": "brief"}]}\n'
+            "gap_audit: one entry per '已有/无需变更' claim in the plan "
+            "(same count as claims; empty array only when the plan has no "
+            "claims). evidence: the plan's file:line citation. verified: "
+            "true when the code really implements it, false when the claim "
+            "does NOT hold and you are converting it into a GAP.\n"
             "tdd_skip: true ONLY when the plan's classification table has no "
             "'must TDD' methods (then red_confirmed: true, test_files_written: [])."
         )

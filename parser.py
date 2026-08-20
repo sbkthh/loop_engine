@@ -84,6 +84,7 @@ def _maker_from_json(data):
             "red_confirmed": ev.get("red_confirmed"),
             "tdd_skip": ev.get("tdd_skip"),
         }
+        result["gap_audit"] = data.get("gap_audit")
     elif "fixed_items" in data:
         result["mode"] = "fix"
         result["fixed_items"] = data.get("fixed_items") or []

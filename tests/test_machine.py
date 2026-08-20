@@ -224,6 +224,36 @@ class TestMachineFullRoundTrip(unittest.TestCase):
                                       test_total=5, test_pass=5, test_fail=0)
         machine.commit()
 
+    def _drive_to_step1(self, machine, plan_body):
+        """Drive READY module through SCORE + MAKER_STEP0 (with plan evidence
+        verified) to MAKER_STEP1_RED, ready for a gap_audit commit."""
+        machine.next()
+        self._write_score()
+        machine.commit()
+        machine.next()
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        with open(plan_full, "w") as f:
+            f.write(plan_body)
+        self._write_maker_step0(plan_path)
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_STEP1_RED")
+
+    def _write_maker_step1_red_with_gap_audit(self, audit):
+        payload = {
+            "status": "SUCCESS",
+            "tdd_red_evidence": {
+                "test_files_written": ["/src/test/FooTest.java"],
+                "red_test_output": "Tests run: 12, Failures: 2, Errors: 0",
+                "red_confirmed": True,
+                "tdd_skip": False,
+            },
+            "gap_audit": audit,
+        }
+        self._write_result(
+            f"---MAKER_OUTPUT---\n{json.dumps(payload)}\n---END_MAKER_OUTPUT---")
+
     def test_full_round_trip(self):
         self._init_module_ready()
         machine = StateMachine(self.root)
@@ -956,6 +986,75 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             confirmed=False)
         r = machine.commit()
         self.assertIn("RED not confirmed", r.get("error", ""))
+
+    def _valid_claim_plan(self):
+        java = os.path.join(self.root, "Foo.java")
+        with open(java, "w") as f:
+            f.write("a\nb\nc\n")
+        return f"- C1: 已有，见 {java}:2\n"
+
+    def test_step0_rejects_plan_without_evidence(self):
+        """MAKER_STEP0 plan '已有' claim without file:line → rejected."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        machine.next()
+        self._write_score()
+        machine.commit()
+        machine.next()
+        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_full = os.path.join(self.root, plan_path)
+        os.makedirs(os.path.dirname(plan_full), exist_ok=True)
+        with open(plan_full, "w") as f:
+            f.write("- C1: 已有实现，无需变更\n")
+        self._write_maker_step0(plan_path)
+        r = machine.commit()
+        self.assertIn("Plan evidence errors", r.get("error", ""))
+        self.assertIn("without code evidence", r.get("error", ""))
+
+    def test_step1_red_requires_gap_audit_when_claims_exist(self):
+        """Plan has '已有' claims → gap_audit is mandatory in RED output."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_step1(machine, self._valid_claim_plan())
+
+        self._write_maker_step1_red(["/src/test/FooTest.java"])
+        r = machine.commit()
+        self.assertIn("gap_audit missing", r.get("error", ""))
+
+    def test_step1_red_rejects_short_gap_audit(self):
+        """Fewer gap_audit entries than plan claims → rejected."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_step1(machine, self._valid_claim_plan())
+
+        self._write_maker_step1_red_with_gap_audit([])
+        r = machine.commit()
+        self.assertIn("gap_audit has 0 entries", r.get("error", ""))
+
+    def test_step1_red_rejects_entries_without_evidence(self):
+        """gap_audit entry missing evidence field → rejected."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_step1(machine, self._valid_claim_plan())
+
+        self._write_maker_step1_red_with_gap_audit(
+            [{"plan_item": "C1", "verified": True}])
+        r = machine.commit()
+        self.assertIn("must have 'evidence'", r.get("error", ""))
+
+    def test_step1_red_accepts_complete_gap_audit(self):
+        """Every claim verified with evidence → proceeds to GREEN."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        java = os.path.join(self.root, "Foo.java")
+        plan = self._valid_claim_plan()
+        self._drive_to_step1(machine, plan)
+
+        self._write_maker_step1_red_with_gap_audit(
+            [{"plan_item": "C1", "evidence": f"{java}:2",
+              "verified": True, "note": "ok"}])
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_STEP2_GREEN")
 
 
 class TestDiscoveryProjectRoot(unittest.TestCase):

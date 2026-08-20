@@ -199,3 +199,68 @@ def read_checker_test_command(cmd, root, files=()):
     if modules:
         cmd = f"{cmd} -pl {','.join(sorted(modules))} -am"
     return cmd
+
+
+# A code evidence reference: FilePath.java:123 or FilePath.java L123.
+# `.md` refs (spec line citations) are deliberately NOT evidence.
+_CODE_REF_RE = re.compile(
+    r"([\w./~/-]+\.(?!md)[\w]+)[:：](\d+)"
+    r"|([\w./~/-]+\.(?!md)[\w]+)\s+L(\d+)"
+)
+
+PLAN_EXISTING_MARKERS = ("已有", "无需变更")
+
+
+def audit_plan_existing_evidence(plan_path, project_root=None):
+    """Validate every '已有/无需变更' claim in a plan carries code evidence.
+
+    Returns a list of violation strings (empty means valid). A claim line
+    must cite at least one `file:line` (or `file L123`) reference whose
+    file exists (absolute, or relative to project_root) and whose line
+    number is in range. This blocks the failure mode where the plan marks
+    a behavior "already implemented" without proof, and the maker skips it.
+    """
+    if not os.path.exists(plan_path):
+        return [f"plan file missing: {plan_path}"]
+    errors = []
+    with open(plan_path, "r", encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            if not any(m in line for m in PLAN_EXISTING_MARKERS):
+                continue
+            refs = []
+            for m in _CODE_REF_RE.finditer(line):
+                path = m.group(1) or m.group(3)
+                num = int(m.group(2) or m.group(4))
+                refs.append((path, num))
+            if not refs:
+                errors.append(
+                    f"line {lineno}: '已有/无需变更' claim without code "
+                    f"evidence (must cite file:line)")
+                continue
+            for path, num in refs:
+                full = path if os.path.isabs(path) else os.path.join(
+                    project_root or "", path)
+                if not os.path.exists(full):
+                    errors.append(
+                        f"line {lineno}: evidence file not found: {path}")
+                    continue
+                with open(full, "r", encoding="utf-8",
+                          errors="replace") as cf:
+                    total = sum(1 for _ in cf)
+                if num < 1 or num > total:
+                    errors.append(
+                        f"line {lineno}: line {num} out of range "
+                        f"({path} has {total} lines)")
+    return errors
+
+
+def count_plan_existing_claims(plan_path):
+    """Count plan lines carrying an '已有/无需变更' claim."""
+    if not os.path.exists(plan_path):
+        return 0
+    count = 0
+    with open(plan_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if any(m in line for m in PLAN_EXISTING_MARKERS):
+                count += 1
+    return count

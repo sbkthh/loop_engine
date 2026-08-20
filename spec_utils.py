@@ -210,6 +210,21 @@ _CODE_REF_RE = re.compile(
 
 PLAN_EXISTING_MARKERS = ("已有", "无需变更")
 
+# Bare-filename evidence fallback walks the project tree; matches must be
+# unique, otherwise the reference is ambiguous and must be a real path.
+_EVIDENCE_SKIP_DIRS = {".git", "target", "node_modules", ".idea", ".loop",
+                       "dist"}
+
+
+def _find_by_basename(project_root, basename):
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(project_root):
+        dirnames[:] = [d for d in dirnames if d not in _EVIDENCE_SKIP_DIRS]
+        for name in filenames:
+            if name == basename:
+                matches.append(os.path.join(dirpath, name))
+    return matches
+
 
 def audit_plan_existing_evidence(plan_path, project_root=None):
     """Validate every '已有/无需变更' claim in a plan carries code evidence.
@@ -217,12 +232,15 @@ def audit_plan_existing_evidence(plan_path, project_root=None):
     Returns a list of violation strings (empty means valid). A claim line
     must cite at least one `file:line` (or `file L123`) reference whose
     file exists (absolute, or relative to project_root) and whose line
-    number is in range. This blocks the failure mode where the plan marks
-    a behavior "already implemented" without proof, and the maker skips it.
+    number is in range. A bare filename resolves via unique basename
+    lookup under project_root; ambiguous matches are rejected. This blocks
+    the failure mode where the plan marks a behavior "already implemented"
+    without proof, and the maker skips it.
     """
     if not os.path.exists(plan_path):
         return [f"plan file missing: {plan_path}"]
     errors = []
+    basename_cache = {}
     with open(plan_path, "r", encoding="utf-8") as f:
         for lineno, line in enumerate(f, 1):
             if not any(m in line for m in PLAN_EXISTING_MARKERS):
@@ -240,6 +258,22 @@ def audit_plan_existing_evidence(plan_path, project_root=None):
             for path, num in refs:
                 full = path if os.path.isabs(path) else os.path.join(
                     project_root or "", path)
+                if not os.path.exists(full) and project_root and \
+                        not os.path.isabs(path):
+                    basename = os.path.basename(path)
+                    key = (project_root, basename)
+                    if key not in basename_cache:
+                        basename_cache[key] = _find_by_basename(
+                            project_root, basename)
+                    matches = basename_cache[key]
+                    if len(matches) == 1:
+                        full = matches[0]
+                    elif len(matches) > 1:
+                        errors.append(
+                            f"line {lineno}: ambiguous evidence file: "
+                            f"{basename} matches {len(matches)} files, use "
+                            f"a path relative to the project root")
+                        continue
                 if not os.path.exists(full):
                     errors.append(
                         f"line {lineno}: evidence file not found: {path}")

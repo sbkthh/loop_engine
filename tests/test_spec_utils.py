@@ -120,6 +120,34 @@ class TestPlanEvidenceAudit(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("out of range", errs[0])
 
+    def test_unique_basename_resolves(self):
+        sub = os.path.join(self.root, "a", "b")
+        os.makedirs(sub)
+        with open(os.path.join(sub, "Foo.java"), "w") as f:
+            f.write("x\n")
+        path = self._plan("- C1: 已有，见 Foo.java:1\n")
+        self.assertEqual(audit_plan_existing_evidence(path, self.root), [])
+
+    def test_ambiguous_basename_rejected(self):
+        for d in ("a", "b"):
+            os.makedirs(os.path.join(self.root, d))
+            with open(os.path.join(self.root, d, "Bar.java"), "w") as f:
+                f.write("x\n")
+        path = self._plan("- C1: 已有，见 Bar.java:1\n")
+        errs = audit_plan_existing_evidence(path, self.root)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("ambiguous evidence file", errs[0])
+
+    def test_basename_skips_build_dirs(self):
+        os.makedirs(os.path.join(self.root, "target", "classes"))
+        with open(os.path.join(self.root, "target", "classes",
+                               "Baz.java"), "w") as f:
+            f.write("x\n")
+        path = self._plan("- C1: 已有，见 Baz.java:1\n")
+        errs = audit_plan_existing_evidence(path, self.root)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("evidence file not found", errs[0])
+
     def test_chinese_colon_and_L_notation_supported(self):
         path = self._plan(
             "- C1: 已有，见 Foo.java：2\n"

@@ -749,6 +749,37 @@ def _cleanup_stale_manual(root):
         pass
 
 
+_SCORE_DIM_LABELS = {
+    "scenario_coverage": "场景覆盖",
+    "field_completeness": "字段定义",
+    "api_contract": "API 契约",
+    "exception_coverage": "异常场景",
+    "ambiguity_markers": "未决标记",
+}
+
+
+def _score_gap_text(module):
+    """SCORE 评分不足的明细：分数、一致性门禁、各维度具体缺口。"""
+    parts = []
+    score = module.get("last_score")
+    if score is not None:
+        parts.append(f"{score}/100")
+    if module.get("score_cross") == "FAIL":
+        parts.append("跨模块一致性 FAIL")
+    dims = module.get("score_dimensions") or {}
+    gaps = []
+    for k, v in dims.items():
+        if not isinstance(v, str) or not v.strip():
+            continue
+        if v.strip().lower() in ("ok", "strong", "pass", "good", "fine", "none"):
+            continue
+        label = _SCORE_DIM_LABELS.get(k, k)
+        gaps.append(f"{label}: {v.strip()}")
+    if gaps:
+        parts.append("；".join(gaps))
+    return f"SCORE 评分不足（{', '.join(parts)}）" if parts else "SCORE 评分不足（<90）"
+
+
 def _no_advance_reason(root):
     """Human-readable reason for a no_advance stop."""
     try:
@@ -763,7 +794,10 @@ def _no_advance_reason(root):
                     f"（{MAX_MAKER_ATTEMPTS}/{MAX_MAKER_ATTEMPTS}），"
                     f"需人工处理：修改代码对齐 spec，或调整 spec 后重新登记")
     if NEEDS_REFINEMENT in statuses:
-        return "SCORE 评分不足（<90），需要完善 spec"
+        refined = [(k, m) for k, m in state.get("modules", {}).items()
+                   if m.get("status") == NEEDS_REFINEMENT]
+        detail = "；".join(f"{k}: {_score_gap_text(m)}" for k, m in refined)
+        return f"需要完善 spec：{detail}"
     if BLOCKED in statuses:
         return "存在阻塞模块，需要人工处理"
     if DRAFT in statuses:

@@ -670,7 +670,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
             if root:
                 prompt += (
                     f"\n\n本需求的相关背景文件路径，需要时可自行读取：\n"
-                    f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿\n"
+                    f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿、SCORE 评分明细（评分不足时含具体缺口原因）\n"
                     f"- {root}/.loop/context.json —— 执行上下文（仅在运行中时存在）\n"
                     f"- ~/.qoder/loop_engine/requirements.json —— 全局需求注册表"
                 )

@@ -1428,6 +1428,24 @@ class TestNotify(SchedulerBase):
         self.assertIn("完善 spec", msg)
         self.assertNotIn("no_advance", msg)
 
+    def test_end_message_no_advance_includes_score_gaps(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        m = _module("c", "m", "NEEDS_REFINEMENT")
+        m["last_score"] = 88
+        m["score_cross"] = "PASS"
+        m["score_dimensions"] = {
+            "scenario_coverage": "只 3 个场景，缺支付失败场景",
+            "api_contract": "ok",
+            "ambiguity_markers": 2,
+        }
+        _make_state(root, {"c/m": m})
+        msg = scheduler._end_message(
+            "req", "no_advance", 2, 5, None, root)
+        self.assertIn("88/100", msg)
+        self.assertIn("场景覆盖", msg)
+        self.assertIn("缺支付失败场景", msg)
+        self.assertNotIn("api_contract", msg)
+
     def test_run_notifies_approved_user(self):
         root = self._register_pending("req")
         pend = scheduler.load_pending()

@@ -56,11 +56,15 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
             "no code fences, no commentary:\n"
             '{"score": 87, "cross_consistency": "PASS|FAIL", '
-            '"dimensions": {"scenario_coverage": "...", '
-            '"field_completeness": "...", "api_contract": "...", '
-            '"exception_coverage": "...", "ambiguity_markers": 3}}\n'
+            '"dimensions": {"scenario_coverage": "只 3 个场景，缺支付失败场景", '
+            '"field_completeness": "ok", "api_contract": "ok", '
+            '"exception_coverage": "ok", "ambiguity_markers": 3}}\n'
             "score: 0-100 integer. cross_consistency: PASS or FAIL "
-            "(FAIL when any cross-ref check fails; score is then capped at 85)."
+            "(FAIL when any cross-ref check fails; score is then capped at 85).\n"
+            "dimensions: for every dimension below strong, state the CONCRETE "
+            "gap in Chinese (exactly which scenario/field/API/edge case is "
+            "missing or contradicts); write \"ok\" when strong. "
+            "ambiguity_markers: count of TBD/TODO/待定/待确认 markers."
         )
 
     elif action == CLASSIFY_CHANGE:

@@ -156,7 +156,8 @@ def _score_from_json(data):
     if not isinstance(score, int) or isinstance(score, bool):
         raise _format_error("'score' must be an integer")
     return {"score": score,
-            "cross_consistency": data.get("cross_consistency")}
+            "cross_consistency": data.get("cross_consistency"),
+            "dimensions": data.get("dimensions")}
 
 
 def _classify_from_json(data):

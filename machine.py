@@ -331,6 +331,8 @@ class StateMachine:
             score = min(score, 85)
         module["last_score"] = score
         module["score_cross"] = cross
+        dims = parsed.get("dimensions")
+        module["score_dimensions"] = dims if isinstance(dims, dict) else None
         if score >= SCORE_THRESHOLD and cross != "FAIL":
             module["status"] = READY
             return MAKER_STEP0

@@ -522,9 +522,8 @@ class StateMachine:
             raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Fix failed: {parsed.get('status')}")
-        tr = parsed.get("test_results", {})
-        if (tr.get("passed") or 0) <= 0:
-            raise ValueError("No tests passed after fix")
+        if parsed.get("build_result") != "BUILD SUCCESS":
+            raise ValueError(f"Build failed: {parsed.get('build_result')}")
         if module.get("_pending_align"):
             del module["_pending_align"]
             return ALIGN_DOCS

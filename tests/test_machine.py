@@ -51,6 +51,16 @@ def _maker_step2_green_json(files_created=None, files_modified=None,
     })
 
 
+def _maker_fix_json(fixed_items=None, remaining_items=None,
+                    build_result="BUILD SUCCESS"):
+    return json.dumps({
+        "status": "SUCCESS",
+        "fixed_items": fixed_items or [],
+        "remaining_items": remaining_items or [],
+        "build_result": build_result,
+    })
+
+
 def _checker_consistent_json():
     return json.dumps({
         "status": "CONSISTENT",
@@ -449,7 +459,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             r = machine.next()
             self.assertEqual(r["action"], "MAKER_FIX")
             self._write_result(
-                f"---MAKER_OUTPUT---\n{_maker_step2_green_json()}\n"
+                f"---MAKER_OUTPUT---\n{_maker_fix_json()}\n"
                 f"---END_MAKER_OUTPUT---")
             machine.commit()
             r = machine.next()

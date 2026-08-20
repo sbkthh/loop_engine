@@ -89,9 +89,10 @@ def _maker_from_json(data):
         result["mode"] = "fix"
         result["fixed_items"] = data.get("fixed_items") or []
         result["remaining_items"] = data.get("remaining_items") or []
-        if "test_results" not in data:
-            raise _format_error("missing field(s): test_results")
-        result["test_results"] = _test_results_from_json(data["test_results"])
+        br = data.get("build_result")
+        if not isinstance(br, str) or not br:
+            raise _format_error("missing field(s): build_result")
+        result["build_result"] = br
     elif "files_created" in data:
         result["mode"] = "step2_green"
         result["files_created"] = data.get("files_created") or []

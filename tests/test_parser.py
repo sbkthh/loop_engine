@@ -104,13 +104,21 @@ class TestParseMakerOutputFixMode(unittest.TestCase):
                 '"fixed_items": ["Missing field \'skuCode\' in Entity", '
                 '"Method signature mismatch"], '
                 '"remaining_items": [], '
-                '"test_results": {"class_name": "FooTest", "total": 5, '
-                '"passed": 5, "failed": 0}}')
+                '"build_result": "BUILD SUCCESS"}')
         result = parse_maker_output(text)
         self.assertEqual(result['mode'], 'fix')
         self.assertEqual(result['status'], 'SUCCESS')
         self.assertEqual(len(result['fixed_items']), 2)
         self.assertEqual(len(result['remaining_items']), 0)
+        self.assertEqual(result['build_result'], 'BUILD SUCCESS')
+
+    def test_fix_mode_requires_build_result(self):
+        text = ('{"status": "SUCCESS", '
+                '"fixed_items": ["fixed something"], '
+                '"remaining_items": []}')
+        with self.assertRaises(ValueError) as ctx:
+            parse_maker_output(text)
+        self.assertIn('build_result', str(ctx.exception))
 
 
 class TestParseCheckerOutput(unittest.TestCase):
@@ -281,11 +289,11 @@ class TestJsonOutput(unittest.TestCase):
     def test_maker_fix_json(self):
         text = ('{"status": "SUCCESS", "fixed_items": ["fixed a"], '
                 '"remaining_items": [], '
-                '"test_results": {"class_name": "T", "total": 3, '
-                '"passed": 3, "failed": 0}}')
+                '"build_result": "BUILD SUCCESS"}')
         result = parse_maker_output(text)
         self.assertEqual(result['mode'], 'fix')
         self.assertEqual(result['fixed_items'], ['fixed a'])
+        self.assertEqual(result['build_result'], 'BUILD SUCCESS')
 
     def test_json_inside_markdown_fence(self):
         text = ('Some reasoning text.\n\n```json\n'

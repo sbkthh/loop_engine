@@ -391,6 +391,12 @@ def _approve_prefix_block(name, registry):
         if "APPROVE" in STATUS_TABLE.get(m.get("status"), {}).get(
                 "prefixes", ()):
             return None
+    # poll 已检测到自动执行条目（如 NEEDS_REFINEMENT 模块 spec 完善后
+    # 触发 SPEC_CHANGED）时放行：state.json 的状态要等 run 持锁后才转换
+    import scheduler as _sched
+    entry = _sched._find_entry(_sched.load_pending(), name)
+    if entry and _sched._entry_auto_exec(entry):
+        return None
     return (f"无法批准：{name} 当前没有可批准执行的工作"
             f"（模块状态不支持自动执行）")
 

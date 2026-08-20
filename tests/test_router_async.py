@@ -171,6 +171,43 @@ def test_approve_allows_ready_via_status_table(monkeypatch, tmp_path):
     assert "已批准并开始执行" in reply
 
 
+def test_approve_allows_pending_spec_changed_via_status_table(monkeypatch, tmp_path):
+    """NEEDS_REFINEMENT state.json + poll 已检测到 SPEC_CHANGED 条目：
+    快速拦截放行，达到 scheduler.approve。"""
+    import json
+    from wecom_server import router
+    import scheduler
+
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {"c/m": {"status": "NEEDS_REFINEMENT"}},
+        "current": None,
+    }))
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__APPROVE__ req"))
+    called = []
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        called.append(name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending", lambda: {"pending": [
+        {"requirement": "req", "trigger": "SPEC_CHANGED",
+         "modules": [{"status": "PARTIAL"}]}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": str(root)}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert called == ["req"]
+    assert "已批准并开始执行" in reply
+
+
 def test_approve_report_only_returns_error(monkeypatch):
     from wecom_server import router
     import scheduler

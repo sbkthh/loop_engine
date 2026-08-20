@@ -148,20 +148,25 @@ def _poll_requirement(root, name):
     for key, module in modules.items():
         status = module.get("status")
         hash_changed = False
-        if status == SYNCED:
+        if status in (SYNCED, NEEDS_REFINEMENT):
+            # NEEDS_REFINEMENT: spec 完善后重新进入评分循环；
+            # 未变时保持报告状态，不能像 SYNCED 一样整体跳过
             spec_path = os.path.join(
                 root, "openspec", "changes", module.get("change_id", ""),
                 "specs", module.get("module_name", ""), "spec.md")
             current_hash = compute_spec_hash(spec_path)
-            if not current_hash or current_hash == module.get("spec_hash"):
-                continue
-            norm_hash = compute_spec_norm_hash(spec_path)
-            old_norm = module.get("spec_norm_hash")
-            if old_norm is not None and norm_hash and \
-                    norm_hash == old_norm:
-                continue  # comment/format-only edit, machine skips the loop
-            hash_changed = True
-            status = PARTIAL
+            if current_hash and current_hash != module.get("spec_hash"):
+                norm_hash = compute_spec_norm_hash(spec_path)
+                old_norm = module.get("spec_norm_hash")
+                if old_norm is not None and norm_hash and \
+                        norm_hash == old_norm:
+                    if status == SYNCED:
+                        continue  # comment/format-only edit, machine skips
+                else:
+                    hash_changed = True
+                    status = PARTIAL
+            elif status == SYNCED:
+                continue  # unchanged synced module: nothing to do
         if status not in _TRIGGER_FOR_STATUS:
             continue
         detected.append({

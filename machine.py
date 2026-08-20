@@ -104,7 +104,8 @@ class StateMachine:
             return self._build(state, action, module_key, module)
 
         for key, module in list(state["modules"].items()):
-            if module["status"] == SYNCED:
+            if module["status"] in (SYNCED, NEEDS_REFINEMENT):
+                # NEEDS_REFINEMENT: spec 完善后重新进入评分循环
                 spec_path = derive_spec_path(
                     module["change_id"], module["module_name"], self.root_dir
                 )

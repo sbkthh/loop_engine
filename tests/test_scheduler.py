@@ -238,12 +238,30 @@ class TestPoll(SchedulerBase):
 
     def test_poll_needs_refinement_report_only(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
-        _make_spec(root, "c", "m")
-        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT")})
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT",
+                                          spec_hash=h)})
 
         entries = scheduler.poll()
         self.assertEqual(entries[0]["trigger"], "NEEDS_REFINEMENT")
         self.assertFalse(scheduler._entry_auto_exec(entries[0]))
+
+    def test_poll_needs_refinement_hash_changed(self):
+        """NEEDS_REFINEMENT 模块 spec 完善后 → SPEC_CHANGED，可批准执行。"""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT",
+                                          spec_hash=h)})
+        _make_spec(root, "c", "m", content="refined spec")
+
+        entries = scheduler.poll()
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["trigger"], "SPEC_CHANGED")
+        self.assertEqual(e["modules"][0]["status"], "PARTIAL")
+        self.assertTrue(e["modules"][0]["spec_hash_changed"])
+        self.assertTrue(scheduler._entry_auto_exec(e))
+        self.assertEqual(scheduler.approve("req"), 1)
 
     def test_poll_blocked_report_only(self):
         """A BLOCKED module (checker hard errors exhausted) is report-only:
@@ -375,8 +393,9 @@ class TestApprove(SchedulerBase):
 
     def test_approve_report_only_raises(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
-        _make_spec(root, "c", "m")
-        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT")})
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT",
+                                          spec_hash=h)})
         scheduler.poll()
 
         with self.assertRaises(ValueError):
@@ -391,8 +410,9 @@ class TestApprove(SchedulerBase):
         _make_spec(r1, "c", "m")
         _make_state(r1, {"c/m": _module("c", "m", "READY")})
         r2 = self.register("req-b", os.path.join(self.tmp.name, "req-b"))
-        _make_spec(r2, "c", "m")
-        _make_state(r2, {"c/m": _module("c", "m", "NEEDS_REFINEMENT")})
+        h2 = _make_spec(r2, "c", "m")
+        _make_state(r2, {"c/m": _module("c", "m", "NEEDS_REFINEMENT",
+                                        spec_hash=h2)})
         scheduler.poll()
 
         self.assertEqual(scheduler.approve(all_=True), 1)

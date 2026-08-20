@@ -806,6 +806,27 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertIsNotNone(
             state["modules"][self.key].get("spec_norm_hash"))
 
+    def test_needs_refinement_hash_change_routes_classify(self):
+        """NEEDS_REFINEMENT 模块的 spec 完善后重新进入评分循环。"""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = NEEDS_REFINEMENT
+        sm.save(state)
+
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "a") as f:
+            f.write("\n## New Scenario\n")
+
+        machine = StateMachine(self.root)
+        r = machine.next()
+        self.assertEqual(r["action"], "CLASSIFY_CHANGE")
+
+        sm = StateManager(self.root)
+        state = sm.load()
+        self.assertEqual(state["modules"][self.key]["status"], "PARTIAL")
+
     def test_cosmetic_spec_change_skips_loop(self):
         """Comment/format-only spec edit: hashes refreshed, stays SYNCED,
         no CLASSIFY_CHANGE routing."""

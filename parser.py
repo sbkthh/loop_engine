@@ -43,8 +43,18 @@ def _require_fields(data, *fields):
 
 
 def _test_results_from_json(tr):
+    if isinstance(tr, list):
+        if not tr:
+            raise _format_error("'test_results' array is empty")
+        totals = {"total": 0, "passed": 0, "failed": 0, "errors": 0}
+        for item in tr:
+            _require_fields(item, "class_name", "total", "passed", "failed")
+            for k in totals:
+                v = item.get(k, 0) or 0
+                totals[k] += v if isinstance(v, (int, float)) else 0
+        return {"class_name": f"{len(tr)} test suites", **totals}
     if not isinstance(tr, dict):
-        raise _format_error("'test_results' must be an object")
+        raise _format_error("'test_results' must be an object or array")
     _require_fields(tr, "class_name", "total", "passed", "failed")
     return {
         "class_name": tr.get("class_name"),

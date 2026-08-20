@@ -9,6 +9,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -407,6 +408,45 @@ def notify_text(message, user_id=None):
         return False
 
 
+_GRAY_REF_RE = re.compile(
+    r"([\w./-]+\.(?:java|md|xml|yml|yaml|properties|sql)"
+    r"[:：](\d+)(?:-\d+)?)|([\w./-]+\.(?:java|md|xml|yml|yaml|"
+    r"properties|sql)\s+L\d+)")
+
+# WeCom text messages cap at 2048 bytes; keep the list skimmable.
+_GRAY_EVIDENCE_MAX = 6
+_GRAY_SUMMARY_MAX = 120
+
+
+def _format_gray_draft(d):
+    """One pending gray draft as skimmable text: type, location, summary.
+
+    The raw summary is free-form checker prose (markdown links, backticks,
+    embedded [type] prefixes, 700+ chars) — flatten it into three short
+    lines so the adjudication message stays readable on WeChat.
+    """
+    summary = (d.get("summary") or "").strip()
+    type_label = d.get("type_label")
+    if not type_label:
+        m = re.match(r"^\[([^\]]+)\]", summary)
+        type_label = m.group(1) if m else "其他"
+    m = _GRAY_REF_RE.search(summary)
+    location = m.group(1) or m.group(3) if m else ""
+    clean = summary
+    if re.match(r"^\[[^\]]+\]", clean):
+        clean = clean.split("]", 1)[1].lstrip()
+    clean = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", r"\1(\2)", clean)
+    clean = clean.replace("`", "")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if len(clean) > _GRAY_SUMMARY_MAX:
+        clean = clean[:_GRAY_SUMMARY_MAX].rstrip() + "…"
+    lines = [f"#{d['id']} [{type_label}]"]
+    if location:
+        lines.append(f"  位置：{location}")
+    lines.append(f"  说明：{clean}")
+    return "\n".join(lines)
+
+
 def _pending_gray_evidence(root):
     """Load pending gray-list drafts from state.json, return formatted lines."""
     state_path = os.path.join(root, ".loop", "state.json")
@@ -415,12 +455,12 @@ def _pending_gray_evidence(root):
             state = json.load(f)
     except (OSError, ValueError):
         return []
-    lines = []
-    for d in state.get("gray_drafts", []):
-        if d.get("status") == "pending":
-            lines.append(
-                f"  #{d['id']} [{d.get('type_label', '?')}] "
-                f"{d.get('summary', '')}")
+    drafts = [d for d in state.get("gray_drafts", [])
+              if d.get("status") == "pending"]
+    lines = [_format_gray_draft(d) for d in drafts[:_GRAY_EVIDENCE_MAX]]
+    rest = len(drafts) - len(lines)
+    if rest > 0:
+        lines.append(f"…另有 {rest} 条，回复「查看灰名单」看全部")
     return lines
 
 

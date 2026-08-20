@@ -1419,6 +1419,45 @@ class TestNotify(SchedulerBase):
             self.assertTrue(scheduler.notify_text("hello", user_id="LiChuan"))
         self.assertEqual(mock_send.call_args[0][0], "LiChuan")
 
+    def test_format_gray_draft_extracts_location_flattens_markdown(self):
+        text = scheduler._format_gray_draft({
+            "id": 4,
+            "summary": "StockStrategyMaterialServiceImpl.java:373-392 "
+                       "appends '[点击下载](errorExcelUrl)' to the message; "
+                       "never emits '[点击查看](detailPageUrl)'",
+        })
+        self.assertIn("#4 [其他]", text)
+        self.assertIn("位置：StockStrategyMaterialServiceImpl.java:373-392",
+                      text)
+        self.assertIn("点击下载(errorExcelUrl)", text)
+        self.assertNotIn("](", text)
+
+    def test_format_gray_draft_uses_embedded_type_and_truncates(self):
+        text = scheduler._format_gray_draft({
+            "id": 9,
+            "summary": "[类型不一致] " + "长描述" * 300,
+        })
+        self.assertIn("#9 [类型不一致]", text)
+        self.assertIn("…", text)
+        self.assertNotIn("] 长描述", text)  # embedded [type] prefix stripped
+        self.assertLess(len(text), 200)
+
+    def test_pending_gray_evidence_caps_list_and_counts_rest(self):
+        root = os.path.join(self.tmp.name, "req-cap")
+        os.makedirs(os.path.join(root, ".loop"), exist_ok=True)
+        drafts = [
+            {"id": i, "type_label": "测试覆盖",
+             "summary": f"Foo.java:{i} 描述 {i}", "status": "pending"}
+            for i in range(1, scheduler._GRAY_EVIDENCE_MAX + 3)
+        ]
+        state = {"version": 1, "root_dir": root,
+                 "modules": {}, "gray_drafts": drafts}
+        with open(os.path.join(root, ".loop", "state.json"), "w") as f:
+            json.dump(state, f)
+        lines = scheduler._pending_gray_evidence(root)
+        self.assertEqual(len(lines), scheduler._GRAY_EVIDENCE_MAX + 1)
+        self.assertTrue(any("另有 2 条" in ln for ln in lines))
+
     def test_run_sends_start_and_finish(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE"])

@@ -6,7 +6,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import patch, MagicMock
 
-from wecom_server.wecom_api import get_access_token, send_text, sanitize_markdown, split_segments
+from wecom_server.wecom_api import (
+    get_access_token, send_text, sanitize_markdown, split_segments,
+    md_bold, md_color,
+)
 
 CONFIG = {"corp_id": "test_corp", "secret": "test_secret", "agent_id": "1000002"}
 
@@ -108,3 +111,17 @@ def test_split_segments_char_boundary_no_cjk_cut():
 def test_split_segments_single_when_short():
     assert split_segments("hello") == ["hello"]
     assert split_segments("") == []
+
+
+def test_md_helpers_wrap_wecom_markdown():
+    assert md_bold("req-a") == "**req-a**"
+    assert md_color("执行完成（成功）", "info") == \
+        '<font color="info">执行完成（成功）</font>'
+    assert md_color("执行暂停") == '<font color="comment">执行暂停</font>'
+
+
+def test_sanitize_keeps_font_color_tags():
+    raw = ('[调度] **req-a** <font color="warning">执行失败</font>'
+           '：detail')
+    cleaned = sanitize_markdown(raw)
+    assert cleaned == raw

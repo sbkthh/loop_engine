@@ -1324,6 +1324,9 @@ class TestNotify(SchedulerBase):
                  "modules": [{"key": "c/m", "status": "NEEDS_REFINEMENT"}]},
             ])
         text = nt.call_args.args[0]
+        self.assertTrue(text.startswith("**[调度] 检测到待处理项：**"))
+        self.assertIn("**req-a**（Spec变更）：c/m", text)
+        self.assertIn("**req-b**（待完善）：c/m", text)
         self.assertIn("微信回复「批准执行 req-a」即可开始执行", text)
         self.assertIn("请回复「完善spec」进一步完善 spec", text)
         self.assertNotIn("终端执行", text)
@@ -1426,7 +1429,7 @@ class TestNotify(SchedulerBase):
                        "appends '[点击下载](errorExcelUrl)' to the message; "
                        "never emits '[点击查看](detailPageUrl)'",
         })
-        self.assertIn("#4 [其他]", text)
+        self.assertIn("**#4 [其他]**", text)
         self.assertIn("位置：StockStrategyMaterialServiceImpl.java:373-392",
                       text)
         self.assertIn("点击下载(errorExcelUrl)", text)
@@ -1437,7 +1440,7 @@ class TestNotify(SchedulerBase):
             "id": 9,
             "summary": "[类型不一致] " + "长描述" * 300,
         })
-        self.assertIn("#9 [类型不一致]", text)
+        self.assertIn("**#9 [类型不一致]**", text)
         self.assertIn("…", text)
         self.assertNotIn("] 长描述", text)  # embedded [type] prefix stripped
         self.assertLess(len(text), 200)
@@ -1465,8 +1468,12 @@ class TestNotify(SchedulerBase):
              mock.patch.object(scheduler, "notify_text") as mock_notify:
             scheduler.run_requirement("req")
         messages = [c.args[0] for c in mock_notify.call_args_list]
-        self.assertTrue(any(m.startswith("[调度] 开始执行 req") for m in messages))
+        self.assertTrue(any(
+            m.startswith("[调度] 开始执行") and "**req**" in m
+            for m in messages))
         self.assertTrue(any("执行完成（成功）" in m for m in messages))
+        self.assertTrue(any('<font color="info">执行完成（成功）</font>' in m
+                            for m in messages))
 
     def test_end_message_gray_list_guides_adjudication(self):
         msg = scheduler._end_message(
@@ -1475,6 +1482,7 @@ class TestNotify(SchedulerBase):
         self.assertIn("执行暂停", msg)
         self.assertIn("灰名单", msg)
         self.assertIn("查看灰名单", msg)
+        self.assertIn('<font color="comment">执行暂停</font>', msg)
         self.assertNotIn("批准执行 req", msg)
         self.assertNotIn("gray_list", msg)
 

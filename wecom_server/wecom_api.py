@@ -71,6 +71,16 @@ def split_segments(content, max_bytes=_MAX_BYTES):
     return segments
 
 
+def md_bold(text):
+    """WeCom markdown bold."""
+    return f"**{text}**"
+
+
+def md_color(text, color="comment"):
+    """WeCom markdown font color: info (green), comment (gray), warning (orange-red)."""
+    return f'<font color="{color}">{text}</font>'
+
+
 def send_text(user_id, content, config):
     """Push content as WeCom markdown, segmented if long. Returns True if all sent."""
     token = get_access_token(config)

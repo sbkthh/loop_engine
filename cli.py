@@ -15,6 +15,7 @@ from setup import setup_requirement, init_from_prd, add_project_to_requirement
 import report
 import registry
 import scheduler
+from wecom_server.wecom_api import md_bold
 
 
 def _require_lock(root, cmd):
@@ -316,7 +317,7 @@ def cmd_poll(args):
     try:
         merged = scheduler.poll()
     except Exception as e:
-        scheduler.notify_text(f"[调度失败] poll 异常：{e}")
+        scheduler.notify_text(f"[调度失败] poll 异常：{md_bold(str(e))}")
         print(f"Poll failed: {e}")
         sys.exit(1)
     config = scheduler.load_config()

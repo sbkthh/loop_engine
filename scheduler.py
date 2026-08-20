@@ -24,6 +24,7 @@ import requests  # noqa: E402 — used by notify_pending()
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         discover_modules)
+from wecom_server.wecom_api import md_bold, md_color
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
@@ -440,7 +441,7 @@ def _format_gray_draft(d):
     clean = re.sub(r"\s+", " ", clean).strip()
     if len(clean) > _GRAY_SUMMARY_MAX:
         clean = clean[:_GRAY_SUMMARY_MAX].rstrip() + "…"
-    lines = [f"#{d['id']} [{type_label}]"]
+    lines = [md_bold(f"#{d['id']} [{type_label}]")]
     if location:
         lines.append(f"  位置：{location}")
     lines.append(f"  说明：{clean}")
@@ -468,14 +469,14 @@ def notify_pending(fresh_entries):
     """Push WeCom notification for newly detected pending items."""
     if not fresh_entries:
         return
-    lines = ["[调度] 检测到待处理项："]
+    lines = [md_bold("[调度] 检测到待处理项：")]
     advice = []
     for entry in fresh_entries:
         trigger = entry.get("trigger", "UNKNOWN")
         modules = entry.get("modules", [])
         names = ", ".join(m.get("key", "?") for m in modules)
         label = _TRIGGER_LABELS.get(trigger, trigger)
-        lines.append(f"• {entry['requirement']}（{label}）：{names}")
+        lines.append(f"{md_bold(entry['requirement'])}（{label}）：{names}")
         if _entry_auto_exec(entry):
             if trigger == GRAY_LIST:
                 evidence = _pending_gray_evidence(entry.get("root", ""))
@@ -854,32 +855,32 @@ def _no_advance_reason(root):
 
 def _end_message(name, end, steps, elapsed_min, failure_detail, root):
     """User-facing run-end notification: outcome + what to do next."""
-    base = f"[调度] {name} "
+    base = f"[调度] {md_bold(name)} "
     if end == "idle":
-        return (f"{base}执行完成（成功）：所有模块已同步 SYNCED，"
+        return (f"{base}{md_color('执行完成（成功）', 'info')}：所有模块已同步 SYNCED，"
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
     if end == "gray_list":
-        return (f"{base}执行暂停：Checker 发现待人工裁决的问题（灰名单）。"
+        return (f"{base}{md_color('执行暂停', 'comment')}：Checker 发现待人工裁决的问题（灰名单）。"
                 f"微信回复「查看灰名单」了解详情")
     if end == "no_advance":
         reason = _no_advance_reason(root)
         next_hint = ("处理完成后回复「批准执行 {name}」继续"
                      if reason != "所有模块已同步"
                      else "无需进一步操作")
-        return (f"{base}执行暂停：{reason}，共 {steps} 步，耗时 {elapsed_min} 分钟。"
+        return (f"{base}{md_color('执行暂停', 'comment')}：{reason}，共 {steps} 步，耗时 {elapsed_min} 分钟。"
                 f"{next_hint}")
     if end in ("qodercli_failed", "commit_error",
                "bad_next_output", "bad_commit_output"):
         detail = failure_detail or end
-        return (f"{base}执行失败：{detail}，共 {steps} 步，"
+        return (f"{base}{md_color('执行失败', 'warning')}：{detail}，共 {steps} 步，"
                 f"耗时 {elapsed_min} 分钟。修复后回复「批准执行 {name}」重试")
     if end == "repeat_limit":
-        return (f"{base}执行停止：同一步骤重复多次未推进，需人工检查，"
+        return (f"{base}{md_color('执行停止', 'comment')}：同一步骤重复多次未推进，需人工检查，"
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
     if end == "max_steps":
-        return (f"{base}执行停止：达到最大步数上限，需人工检查，"
+        return (f"{base}{md_color('执行停止', 'comment')}：达到最大步数上限，需人工检查，"
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
-    return f"{base}执行结束（{end}），共 {steps} 步，耗时 {elapsed_min} 分钟"
+    return f"{base}{md_color(f'执行结束（{end}）', 'comment')}，共 {steps} 步，耗时 {elapsed_min} 分钟"
 
 
 def running_count(registry_entries=None):
@@ -940,7 +941,7 @@ def run_requirement(name):
     start = time.time()
     last_beat = start
     beat_interval = HEARTBEAT_SECONDS
-    notify_text(f"[调度] 开始执行 {name} ({root})", user_id)
+    notify_text(f"[调度] 开始执行 {md_bold(name)} ({root})", user_id)
     _log(f"run {name}: start ({root})")
     try:
         steps = 0
@@ -958,8 +959,8 @@ def run_requirement(name):
             if time.time() - last_beat >= beat_interval:
                 elapsed_min = int((time.time() - start) // 60)
                 pos = f"（{active_action} {active_module}）" if active_action else ""
-                notify_text(f"[调度] {name} 仍在执行{pos}，已 {elapsed_min} 分钟",
-                            user_id)
+                notify_text(f"[调度] {md_bold(name)} {md_color('仍在执行', 'comment')}{pos}，"
+                            f"已 {elapsed_min} 分钟", user_id)
                 last_beat = time.time()
                 beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1

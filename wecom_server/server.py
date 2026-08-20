@@ -222,7 +222,8 @@ def _async_worker(fn, user_id, config):
         logger.info("[wecom] async reply: %s", reply[:200])
     except Exception as e:
         logger.error("[wecom] async handler error: %s", e)
-        reply = f"处理失败：{e}"
+        from .wecom_api import md_bold
+        reply = f"处理失败：{md_bold(str(e))}"
     try:
         from .wecom_api import send_text
         send_text(user_id, reply, config)

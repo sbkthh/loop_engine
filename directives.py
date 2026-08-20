@@ -116,6 +116,18 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "is a format error and the plan will be rejected — verify each "
             "claim against the real code with grep/read BEFORE writing it. "
             "Spec line citations (spec.md:NN) do NOT count as evidence.\n"
+            "EVIDENCE PATH FORM — the cited FilePath is resolved against the "
+            "project_root in the context below. Bare file names like "
+            "`Foo.java:10` FAIL when the file is not directly under "
+            "project_root (multi-module repos). Use an absolute path "
+            "(`/Users/.../module/src/main/java/x/Foo.java:10`) or a path "
+            "relative to project_root that includes the module directory "
+            "(`zkh-opc-sna-manager/src/main/java/x/Foo.java:10`). Never cite "
+            "a file that does not exist on disk.\n"
+            "EVIDENCE WORDING — do NOT use '已有' or '无需变更' as section "
+            "headers or lead-in phrases (e.g. a bare line "
+            "'> 已有/无需变更（附证据）：' is rejected). Only use the words "
+            "on concrete item lines, each carrying its file:line reference.\n"
             "Do NOT write any test or implementation code."
         )
         d["context"]["prev_spec_hash"] = module.get("prev_spec_hash", "")

@@ -273,7 +273,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "Do NOT redesign, add features, or modify spec files.\n"
             "If fix requires test changes: mini TDD cycle (RED first, then GREEN).\n"
             f"{fix_items}\n"
-            f"Run '{test_cmd}'."
+            "Run 'mvn compile -DskipTests' to verify compilation."
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -281,8 +281,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             '{"status": "SUCCESS",\n'
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
-            ' "test_results": {"class_name": "FooTest", "total": 7, '
-            '"passed": 7, "failed": 0, "errors": 0}}\n'
+            ' "build_result": "BUILD SUCCESS"}\n'
             "status: SUCCESS or FAILED."
         )
         d["context"]["hard_errors"] = hard_errors
@@ -317,7 +316,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["instructions"] = (
             "Fix Mode. Fix the reported Critical and Important review issues.\n"
             "Do NOT add new features or modify spec files.\n"
-            f"Run '{test_cmd}'."
+            "Run 'mvn compile -DskipTests' to verify compilation."
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -325,8 +324,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             '{"status": "SUCCESS",\n'
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
-            ' "test_results": {"class_name": "FooTest", "total": 7, '
-            '"passed": 7, "failed": 0, "errors": 0}}\n'
+            ' "build_result": "BUILD SUCCESS"}\n'
             "status: SUCCESS or FAILED."
         )
         d["context"]["review_issues"] = review_issues

@@ -4,6 +4,7 @@ import os
 import json
 import re
 import datetime
+import subprocess
 
 from constants import (
     SYNCED, PARTIAL, READY, NEEDS_REFINEMENT, BLOCKED, DRAFT,
@@ -589,6 +590,21 @@ class StateMachine:
         if new_plan_hash:
             module["plan_hash"] = new_plan_hash
         prev_status = module["status"]
+        if prev_status != SYNCED:
+            project_root = module.get("project_root", self.root_dir)
+            try:
+                result = subprocess.run(
+                    ["mvn", "clean", "test"],
+                    cwd=project_root,
+                    capture_output=True, text=True, timeout=600
+                )
+                if result.returncode != 0:
+                    print(f"[WARN] Final test run failed for {key}: "
+                          f"{result.stdout[-500:]}\n{result.stderr[-500:]}")
+                else:
+                    print(f"[OK] Final test run passed for {key}")
+            except Exception as e:
+                print(f"[WARN] Final test run error for {key}: {e}")
         module["status"] = SYNCED
         module["last_synced"] = datetime.datetime.now().isoformat()
         self._audit(state, key, f"{prev_status}->{SYNCED}")

@@ -75,8 +75,6 @@ LOOP_AGENT_PROMPT = (
 
 MAX_SAME_ACTION = 3
 MAX_TOTAL_STEPS = 200
-HEARTBEAT_SECONDS = 300
-HEARTBEAT_MAX_SECONDS = 1800  # backoff ceiling: 5min -> 15min -> 30min
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
 MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
@@ -978,8 +976,6 @@ def run_requirement(name):
     except (OSError, ValueError):
         pass
     start = time.time()
-    last_beat = start
-    beat_interval = HEARTBEAT_SECONDS
     notify_text(f"[调度] 开始执行 {md_bold(name)} ({root})", user_id)
     _log(f"run {name}: start ({root})")
     try:
@@ -987,21 +983,10 @@ def run_requirement(name):
         same_action = 0
         last_action = None
         retries = 0
-        active_action = None
-        active_module = None
         failure_detail = None
         prev_result = None  # previous step's result.md content, fed to next step
         end = "max_steps"
         while steps < MAX_TOTAL_STEPS:
-            # heartbeat: ping WeCom with backoff (5min -> 15min -> 30min)
-            # so long runs stay visibly alive without spamming
-            if time.time() - last_beat >= beat_interval:
-                elapsed_min = int((time.time() - start) // 60)
-                pos = f"（{active_action} {active_module}）" if active_action else ""
-                notify_text(f"[调度] {md_bold(name)} {md_color('仍在执行', 'comment')}{pos}，"
-                            f"已 {elapsed_min} 分钟", user_id)
-                last_beat = time.time()
-                beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
             failure_detail = None  # don't leak a retried step's error into a later failure notice
             step_start = time.monotonic()
@@ -1021,8 +1006,6 @@ def run_requirement(name):
                 end = "bad_next_output"
                 break
             action = directives.get("action")
-            active_action = action
-            active_module = directives.get("module")
             if action == "IDLE":
                 end = "idle"
                 break

@@ -1735,54 +1735,6 @@ class TestNotify(SchedulerBase):
                  if len(c.args) > 1}
         self.assertIn("LiChuan", users)
 
-    def test_run_sends_heartbeat_for_long_run(self):
-        root = self._register_pending("req")
-        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
-        t0 = 1000.0
-        times = [t0, t0, t0 + 301, t0 + 301, t0 + 301, t0 + 301, t0 + 302]
-        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
-             mock.patch.object(scheduler, "notify_text") as mock_notify, \
-             mock.patch.object(scheduler.time, "time", side_effect=times):
-            scheduler.run_requirement("req")
-        messages = [c.args[0] for c in mock_notify.call_args_list]
-        self.assertTrue(any("仍在执行" in m and "5 分钟" in m for m in messages))
-
-    def test_run_heartbeat_backs_off(self):
-        root = self._register_pending("req")
-        fake = self._fake_run(next_actions=["SCORE", "PLAN"] * 4)
-        t0 = 1000.0
-        # 5min heartbeat at iter1, 15min heartbeat at iter3; after that
-        # 30min ceiling means iter5 (t0+1501) must NOT fire a third beat.
-        # Each beat consumes 3 time calls (check, elapsed, last_beat).
-        times = [t0, t0 + 301, t0 + 301, t0 + 301, t0 + 302,
-                 t0 + 1201, t0 + 1201, t0 + 1201, t0 + 1301,
-                 t0 + 1501, t0 + 1800, t0 + 2100,
-                 t0 + 2400, t0 + 2700, t0 + 2701]
-        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
-             mock.patch.object(scheduler, "notify_text") as mock_notify, \
-             mock.patch.object(scheduler.time, "time", side_effect=times):
-            scheduler.run_requirement("req")
-        messages = [c.args[0] for c in mock_notify.call_args_list]
-        beats = [m for m in messages if "仍在执行" in m]
-        self.assertEqual(len(beats), 2)
-
-    def test_heartbeat_includes_position(self):
-        root = self._register_pending("req")
-        fake = self._fake_run(next_actions=["SCORE", "PLAN"] * 4)
-        t0 = 1000.0
-        times = [t0, t0 + 301, t0 + 301, t0 + 301, t0 + 302,
-                 t0 + 1201, t0 + 1201, t0 + 1201, t0 + 1301,
-                 t0 + 1501, t0 + 1800, t0 + 2100,
-                 t0 + 2400, t0 + 2700, t0 + 2701]
-        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
-             mock.patch.object(scheduler, "notify_text") as mock_notify, \
-             mock.patch.object(scheduler.time, "time", side_effect=times):
-            scheduler.run_requirement("req")
-        messages = [c.args[0] for c in mock_notify.call_args_list]
-        beats = [m for m in messages if "仍在执行" in m]
-        # second beat (after iter2 finished) shows the last activity
-        self.assertIn("PLAN c/m", beats[1])
-
     def test_failure_notify_includes_detail(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE", "SCORE"],

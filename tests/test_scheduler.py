@@ -334,7 +334,7 @@ class TestPoll(SchedulerBase):
                     current={"module": "c/m", "action": "SCORE", "attempt": 0})
 
         entries = scheduler.poll()
-        self.assertEqual(entries[0]["trigger"], "READY_PENDING")
+        self.assertEqual(entries[0]["trigger"], "RESUME")
 
     def test_poll_preserves_current_as_resume_checkpoint(self):
         """A dead run's mid-progress current must survive poll — it is the
@@ -348,7 +348,7 @@ class TestPoll(SchedulerBase):
                              "attempt": 0})
 
         entries = scheduler.poll()
-        self.assertTrue(entries)
+        self.assertEqual(entries[0]["trigger"], "RESUME")
         with open(os.path.join(root, ".loop", "state.json")) as f:
             state = json.load(f)
         self.assertEqual(state["current"]["action"], "MAKER_FIX")

@@ -50,6 +50,7 @@ SPEC_CHANGED = "SPEC_CHANGED"
 READY_PENDING = "READY_PENDING"
 GRAY_LIST = "GRAY_LIST"
 PLAN_CHANGED = "PLAN_CHANGED"
+RESUME = "RESUME"
 
 _TRIGGER_FOR_STATUS = {s: v["trigger"] for s, v in STATUS_TABLE.items()
                        if v["trigger"]}
@@ -60,6 +61,7 @@ _TRIGGER_LABELS = {v["trigger"]: v["label"]
                    for v in STATUS_TABLE.values() if v["trigger"]}
 _TRIGGER_LABELS[GRAY_LIST] = "灰名单"  # non-status exception: draft adjudication
 _TRIGGER_LABELS[PLAN_CHANGED] = "方案变更"  # non-status exception: plan rewrite
+_TRIGGER_LABELS[RESUME] = "断点续跑"  # non-status exception: current checkpoint
 
 DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 
@@ -214,6 +216,10 @@ def _poll_requirement(root, name):
         # gray-list drafts await human adjudication — this overrides the
         # READY_PENDING trigger so the notification guides adjudication
         trigger = GRAY_LIST
+    elif state.get("current", {}).get("action"):
+        # a mid-progress checkpoint exists (run died mid-action): the next
+        # run resumes that exact step, not a fresh status-based cycle
+        trigger = RESUME
     else:
         trigger = next(_TRIGGER_FOR_STATUS[s] for s in _TRIGGER_PRIORITY
                        if any(m["status"] == s for m in detected))

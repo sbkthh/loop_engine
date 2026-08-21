@@ -26,10 +26,12 @@ def test_system_prompt_has_prd_bootstrap_rules():
         "manual-loop skill deprecated, prompt should not reference it"
     assert "__JSON_ACTION__" in router._LLM_SYSTEM_PROMPT
     assert "spec_result" in router._LLM_SYSTEM_PROMPT
-    assert "Code edit boundary" in router._LLM_SYSTEM_PROMPT, \
-        "G must know the bugfix-vs-requirement code edit boundary"
-    assert "NO follow-up turn" in router._LLM_SYSTEM_PROMPT, \
-        "G must know --print is one-shot; never launch background agents"
+    assert "Change boundary" in router._LLM_SYSTEM_PROMPT, \
+        "G must know the bugfix-vs-requirement change boundary"
+    assert "grill-me" in router._LLM_SYSTEM_PROMPT, \
+        "G must drive the spec-session + grill-me flow itself, not bounce back"
+    assert "one --print turn" in router._LLM_SYSTEM_PROMPT, \
+        "G must know each message is one-shot; never launch background agents"
     assert "Bash|Edit|Write" in router._audit_settings(), \
         "G sessions must audit-trail every Edit/Write"
 

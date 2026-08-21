@@ -154,6 +154,67 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertNotEqual(m["plan_hash"], "stale_plan_hash")
         self.assertEqual(m["maker_attempt"], 0)
 
+    def test_ready_with_valid_plan_skips_score_and_step0(self):
+        """A READY module that already has a plan for the current spec
+        (and the plan passes evidence audit) routes straight to
+        MAKER_STEP1_RED — a retried run does not re-run SCORE/STEP0."""
+        from constants import MAKER_STEP1_RED
+        import hashlib
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash=spec_hash)
+        state["modules"][self.key]["status"] = READY
+        # plan exists for the current spec; evidence claims cite real files
+        plan_path = os.path.join(self.root,
+            "openspec/changes/test-change/plans/test-module-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        src_dir = os.path.join(self.root, "src/main/java/x")
+        os.makedirs(src_dir, exist_ok=True)
+        src = os.path.join(src_dir, "Foo.java")
+        with open(src, "w") as f:
+            f.write("\n".join(f"line{i}" for i in range(1, 30)) + "\n")
+        with open(plan_path, "w") as f:
+            f.write("- 已有 `src/main/java/x/Foo.java:10`，无需变更\n")
+        state["modules"][self.key]["plan_path"] = plan_path
+        state["modules"][self.key]["project_root"] = self.root
+        sm.save(state)
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], MAKER_STEP1_RED)
+        state = sm.load()
+        self.assertEqual(state["modules"][self.key]["status"], READY)
+
+    def test_ready_with_invalid_plan_falls_back_to_score(self):
+        """A READY module whose plan fails the evidence audit does NOT
+        skip to MAKER_STEP1_RED — it falls back to the normal SCORE path."""
+        from constants import SCORE
+        import hashlib
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash=spec_hash)
+        state["modules"][self.key]["status"] = READY
+        # plan exists but its '已有' claim cites nothing -> audit fails
+        plan_path = os.path.join(self.root,
+            "openspec/changes/test-change/plans/test-module-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("- 已有功能，无需变更\n")
+        state["modules"][self.key]["plan_path"] = plan_path
+        sm.save(state)
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], SCORE)
+
     def test_plan_hash_initialized_silently_when_none(self):
         """A SYNCED module without plan_hash (upgraded state) silently
         initialises it without triggering a status change."""

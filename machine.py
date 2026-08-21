@@ -233,6 +233,26 @@ class StateMachine:
             self.sm.save(state)
             module = state["modules"][module_key]
             return self._build(state, action, module_key, module)
+        # A READY module that already has a valid plan for the CURRENT spec
+        # skips SCORE/MAKER_STEP0: the plan survived a previous run (e.g. a
+        # MAKER_STEP0 commit that failed later), and re-running STEP0 would
+        # rewrite the plan and can reintroduce the rejected formatting.
+        if module["status"] == READY:
+            plan_file = module.get("plan_path")
+            if plan_file and os.path.exists(plan_file):
+                spec_path = derive_spec_path(
+                    module["change_id"], module["module_name"], self.root_dir)
+                if compute_spec_hash(spec_path) == module.get("spec_hash") \
+                        and not audit_plan_existing_evidence(
+                            plan_file,
+                            project_root=module.get("project_root")):
+                    action = MAKER_STEP1_RED
+                    StateManager.set_current(state, module_key, action)
+                    self._trace(state, "SCAN", module_key,
+                                "valid plan exists -> skip SCORE/STEP0")
+                    dirty = True
+                    self.sm.save(state)
+                    return self._build(state, action, module_key, module)
         entry = STATUS_TABLE.get(module["status"])
         if not entry:
             if dirty:

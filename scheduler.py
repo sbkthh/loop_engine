@@ -234,23 +234,13 @@ def poll():
     """Run one detection cycle and merge into pending.json."""
     for req in _read_registry():
         _cleanup_stale_manual(req.get("root", ""))
-        # Clear stuck current field when the manual session died but left
-        # state.json mid-progress — the flock is already released by the OS
-        # when the process exited, so another run can't conflict.
-        root = req.get("root", "")
-        state_path = os.path.join(root, STATE_FILE)
-        if os.path.exists(state_path) and not is_locked(root):
-            try:
-                with open(state_path) as f:
-                    state = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if state.get("current", {}).get("action"):
-                state["current"] = {}
-                with open(state_path, "w") as f:
-                    json.dump(state, f, indent=2)
-                _log(f"poll: cleared stuck current in {req.get('name')} "
-                     f"(manual session ended)")
+        # Do NOT clear state["current"] here even when the lock is free:
+        # current is the resume checkpoint for a run that died mid-action
+        # (commit_error / crash). The next run's machine.next() picks it up
+        # via find_mid_progress and resumes the exact step instead of
+        # restarting from CLASSIFY_CHANGE. Stale current cannot hide pending
+        # work — _poll_requirement treats lock, not current, as the
+        # "executing" signal.
     fresh = []
     for req in _read_registry():
         entry = _poll_requirement(req.get("root"), req.get("name"))

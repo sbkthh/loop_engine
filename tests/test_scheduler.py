@@ -336,6 +336,23 @@ class TestPoll(SchedulerBase):
         entries = scheduler.poll()
         self.assertEqual(entries[0]["trigger"], "READY_PENDING")
 
+    def test_poll_preserves_current_as_resume_checkpoint(self):
+        """A dead run's mid-progress current must survive poll — it is the
+        resume checkpoint; clearing it restarts the module from
+        CLASSIFY_CHANGE (regression: run died in MAKER_FIX commit_error,
+        poll wiped current, retry re-ran the whole module)."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "PARTIAL")},
+                    current={"module": "c/m", "action": "MAKER_FIX",
+                             "attempt": 0})
+
+        entries = scheduler.poll()
+        self.assertTrue(entries)
+        with open(os.path.join(root, ".loop", "state.json")) as f:
+            state = json.load(f)
+        self.assertEqual(state["current"]["action"], "MAKER_FIX")
+
     def test_poll_detects_new_draft_module(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {})

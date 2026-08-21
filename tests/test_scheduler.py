@@ -858,6 +858,44 @@ class TestRun(SchedulerBase):
         result = scheduler.run_requirement("ghost")
         self.assertIn("error", result)
 
+    def test_run_stale_failure_detail_not_leaked(self):
+        """A retried step's error must not surface in a later step's
+        failure notice (real run: stale 'No tests passed' shown for a
+        bad_commit_output ending two steps later)."""
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "SCORE", "CHECKER"]
+        commit_results = [
+            {"error": "No tests passed"},                       # retried, recovers
+            {"action": "SCORE", "next_action": "MAKER_STEP0"},  # success
+        ]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    if commit_results:
+                        out = json.dumps(commit_results.pop(0))
+                        return types.SimpleNamespace(
+                            stdout=out, stderr="", returncode=0)
+                    return types.SimpleNamespace(
+                        stdout="not json", stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "bad_commit_output")
+        finals = [str(c) for c in scheduler.notify_text.call_args_list
+                  if "执行失败" in str(c)]
+        self.assertTrue(finals, "expected a failure notification")
+        self.assertNotIn("No tests passed", finals[-1])
+        self.assertIn("bad_commit_output", finals[-1])
+
     def test_run_passes_previous_result_to_next_step(self):
         root = self._register_pending("req")
         next_actions = ["SCORE", "MAKER_STEP0"]

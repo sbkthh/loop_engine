@@ -3,6 +3,7 @@
 import sys
 import os
 import json
+import types
 import tempfile
 import unittest
 
@@ -1348,6 +1349,38 @@ class TestSetProjectRootRecordsMapping(unittest.TestCase):
         state = sm.load()
         self.assertIsNone(state["current"]["module"])
         self.assertIsNone(state["current"]["action"])
+
+
+class TestExecuteSyncedOutput(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        self.key = StateManager.module_key("test-change", "test-module")
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash="abc")
+        state["modules"][self.key]["status"] = READY
+        sm.save(state)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_diagnostics_go_to_stderr_not_stdout(self):
+        """commit() stdout is the scheduler's JSON channel — a stray
+        [OK]/[WARN] print there makes json.loads fail (bad_commit_output)."""
+        import io
+        from unittest import mock
+        machine = StateMachine(self.root)
+        state = machine.sm.load()
+        module = state["modules"][self.key]
+        fake = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("machine.subprocess.run", return_value=fake), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            machine._execute_synced(state, self.key, module)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("[OK] Final test run passed", err.getvalue())
 
 
 if __name__ == '__main__':

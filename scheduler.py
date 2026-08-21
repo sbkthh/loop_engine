@@ -967,6 +967,7 @@ def run_requirement(name):
                 last_beat = time.time()
                 beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
+            failure_detail = None  # don't leak a retried step's error into a later failure notice
             try:
                 r = subprocess.run(_engine_cmd("next", "--root", root),
                                    capture_output=True, text=True,

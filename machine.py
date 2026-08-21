@@ -1,6 +1,7 @@
 """StateMachine: deterministic routing, retry, and state transitions."""
 
 import os
+import sys
 import json
 import re
 import datetime
@@ -613,12 +614,16 @@ class StateMachine:
                     capture_output=True, text=True, timeout=600
                 )
                 if result.returncode != 0:
+                    # stderr: commit stdout is the scheduler's JSON channel
                     print(f"[WARN] Final test run failed for {key}: "
-                          f"{result.stdout[-500:]}\n{result.stderr[-500:]}")
+                          f"{result.stdout[-500:]}\n{result.stderr[-500:]}",
+                          file=sys.stderr)
                 else:
-                    print(f"[OK] Final test run passed for {key}")
+                    print(f"[OK] Final test run passed for {key}",
+                          file=sys.stderr)
             except Exception as e:
-                print(f"[WARN] Final test run error for {key}: {e}")
+                print(f"[WARN] Final test run error for {key}: {e}",
+                      file=sys.stderr)
         module["status"] = SYNCED
         module["last_synced"] = datetime.datetime.now().isoformat()
         self._audit(state, key, f"{prev_status}->{SYNCED}")

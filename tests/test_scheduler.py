@@ -933,6 +933,42 @@ class TestRun(SchedulerBase):
         self.assertNotIn("No tests passed", finals[-1])
         self.assertIn("bad_commit_output", finals[-1])
 
+    def test_run_notifies_per_committed_step(self):
+        """Each successfully committed step pushes a WeCom progress notice
+        (step number, action, duration, next action)."""
+        self._register_pending("req")
+        next_actions = ["SCORE", "MAKER_STEP0"]
+        commit_results = [
+            {"action": "SCORE", "next_action": "MAKER_STEP0"},
+            {"action": "MAKER_STEP0", "next_action": "_SYNCED_"},
+        ]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit" and commit_results:
+                    return types.SimpleNamespace(
+                        stdout=json.dumps(commit_results.pop(0)),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "idle")
+        step_notes = [str(c) for c in scheduler.notify_text.call_args_list
+                      if "第 1 步" in str(c) or "第 2 步" in str(c)]
+        self.assertEqual(len(step_notes), 2)
+        self.assertIn("SCORE 完成", step_notes[0])
+        self.assertIn("MAKER_STEP0", step_notes[0])
+        self.assertIn("MAKER_STEP0 完成", step_notes[1])
+        self.assertIn("SYNCED", step_notes[1])
+
     def test_run_passes_previous_result_to_next_step(self):
         root = self._register_pending("req")
         next_actions = ["SCORE", "MAKER_STEP0"]

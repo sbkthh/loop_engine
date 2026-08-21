@@ -990,6 +990,7 @@ def run_requirement(name):
                 beat_interval = min(beat_interval * 3, HEARTBEAT_MAX_SECONDS)
             steps += 1
             failure_detail = None  # don't leak a retried step's error into a later failure notice
+            step_start = time.monotonic()
             try:
                 r = subprocess.run(_engine_cmd("next", "--root", root),
                                    capture_output=True, text=True,
@@ -1148,6 +1149,10 @@ def run_requirement(name):
                 _log(f"run {name}: no state advance, stopping")
                 end = "no_advance"
                 break
+            step_min = max(1, int((time.monotonic() - step_start) // 60))
+            notify_text(f"[调度] {md_bold(name)} 第 {steps} 步 {action} 完成"
+                        f"（{step_min} 分钟）→ "
+                        f"{commit['next_action'].strip('_')}", user_id)
             if commit.get("next_action") == "_GRAY_LIST_":
                 _log(f"run {name}: gray-listed, stopping for human review")
                 end = "gray_list"

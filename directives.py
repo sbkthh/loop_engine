@@ -10,7 +10,7 @@ from constants import (
 )
 from spec_utils import (
     derive_spec_path, derive_plan_path, read_test_command,
-    read_checker_test_command,
+    read_checker_test_command, read_maker_test_command,
 )
 
 
@@ -20,7 +20,9 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
     module_name = module["module_name"]
     spec_path = derive_spec_path(change_id, module_name, root_dir)
     plan_path = derive_plan_path(change_id, module_name, root_dir)
-    project_root = module.get("project_root", ".")
+    project_root = module.get("project_root") or root_dir
+    if not os.path.isabs(project_root):
+        project_root = os.path.normpath(os.path.join(root_dir, project_root))
     test_cmd = read_test_command(project_root)
     spec_hash = module.get("spec_hash", "")
     attempt = module.get("maker_attempt", 0)
@@ -138,7 +140,12 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         )
 
     elif action == MAKER_STEP1_RED:
-        d["plan_path"] = module.get("plan_path") or plan_path
+        plan_ref = module.get("plan_path") or plan_path
+        d["plan_path"] = plan_ref
+        maker_cmd = read_maker_test_command(
+            test_cmd, project_root,
+            plan_ref if os.path.isabs(plan_ref)
+            else os.path.join(root_dir, plan_ref))
         d["instructions"] = (
             "TDD RED Mode. Read the spec file and the plan file.\n"
             "AUDIT STEP — before writing tests, find every '已有/无需变更' "
@@ -151,7 +158,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "gap_audit with verified: false. Do not silently trust the "
             "plan's claims.\n"
             "Write test classes for all 'must TDD' methods from the plan's classification table.\n"
-            f"Run '{test_cmd}'. Tests MUST fail with assertion failures (not compile errors).\n"
+            f"Run '{maker_cmd}'. Tests MUST fail with assertion failures (not compile errors).\n"
             "Do NOT write any implementation code (src/main).\n"
             "If the plan's classification table has NO 'must TDD' methods (all entries are "
             "'skip' because tests already exist), do NOT write new tests: run the existing "
@@ -176,12 +183,18 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         )
 
     elif action == MAKER_STEP2_GREEN:
-        d["plan_path"] = module.get("plan_path") or plan_path
+        plan_ref = module.get("plan_path") or plan_path
+        d["plan_path"] = plan_ref
+        maker_cmd = read_maker_test_command(
+            test_cmd, project_root,
+            plan_ref if os.path.isabs(plan_ref)
+            else os.path.join(root_dir, plan_ref))
         d["instructions"] = (
             "TDD GREEN Mode. Read the spec, plan, and test files from Step 1.\n"
             "Write implementation code. Do NOT modify test assertions.\n"
-            f"Run '{test_cmd}'. All tests must pass.\n"
-            "Then run 'mvn clean compile' at the project root to verify the full project compiles.\n"
+            f"Run '{maker_cmd}'. All tests must pass.\n"
+            "The scoped test only covers the plan's modules; run 'mvn clean compile' "
+            "at the project root to verify the FULL project still compiles.\n"
             "Never run 'mvn compile' or 'mvn test' without clean first.\n"
             "Max 3 retries on failure (fix impl, not tests)."
         )

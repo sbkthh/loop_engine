@@ -7,7 +7,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants import CHECKER, MAKER_STEP0, ALIGN_DOCS
+from constants import (CHECKER, MAKER_STEP0, ALIGN_DOCS,
+                       MAKER_STEP1_RED, MAKER_STEP2_GREEN)
 from directives import build
 
 
@@ -129,3 +130,44 @@ class TestAlignDocsDirective(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestMakerScopedCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        os.makedirs(os.path.join(self.root, "mod-a/src/main/java"))
+        self.plan = os.path.join(
+            self.root, "openspec/changes/chg1/plans/m1-plan.md")
+        os.makedirs(os.path.dirname(self.plan), exist_ok=True)
+        with open(self.plan, "w", encoding="utf-8") as f:
+            f.write("- 改 mod-a/src/main/java/Foo.java\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _module(self):
+        return {
+            "change_id": "chg1", "module_name": "m1",
+            "project_root": self.root, "spec_hash": "abc",
+            "maker_attempt": 1, "plan_path": self.plan,
+        }
+
+    def test_red_uses_plan_scoped_command(self):
+        out = build(MAKER_STEP1_RED, "chg1/m1", self._module(), self.root)
+        self.assertIn("Run 'mvn clean test -pl mod-a -am'.",
+                      out["directives"]["instructions"])
+
+    def test_green_uses_scoped_command_plus_full_compile(self):
+        out = build(MAKER_STEP2_GREEN, "chg1/m1", self._module(), self.root)
+        ins = out["directives"]["instructions"]
+        self.assertIn("Run 'mvn clean test -pl mod-a -am'.", ins)
+        self.assertIn("mvn clean compile", ins)
+
+    def test_green_without_plan_falls_back_to_full(self):
+        os.remove(self.plan)
+        m = self._module()
+        m["plan_path"] = None
+        out = build(MAKER_STEP2_GREEN, "chg1/m1", m, self.root)
+        self.assertIn("Run 'mvn clean test'. All tests must pass.",
+                      out["directives"]["instructions"])

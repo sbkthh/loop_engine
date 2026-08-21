@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         normalize_spec,
-                        count_plan_existing_claims)
+                        count_plan_existing_claims,
+                        read_maker_test_command)
 
 
 class TestNormalizeSpec(unittest.TestCase):
@@ -102,3 +103,51 @@ class TestPlanExistingClaimCount(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMakerTestCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        for m in ("mod-a", "mod-b"):
+            os.makedirs(os.path.join(self.root, m, "src/main/java"))
+        self.plan = os.path.join(self.root, "plan.md")
+        with open(self.plan, "w", encoding="utf-8") as f:
+            f.write("- 改 mod-a/src/main/java/Foo.java\n"
+                    "- 测 mod-b/src/test/java/FooTest.java\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_scopes_to_plan_modules_and_keeps_clean(self):
+        self.assertEqual(
+            read_maker_test_command("mvn clean test", self.root, self.plan),
+            "mvn clean test -pl mod-a,mod-b -am")
+
+    def test_relative_plan_resolved_against_root(self):
+        self.assertEqual(
+            read_maker_test_command("mvn clean test", self.root, "plan.md"),
+            "mvn clean test -pl mod-a,mod-b -am")
+
+    def test_missing_plan_falls_back(self):
+        self.assertEqual(
+            read_maker_test_command("mvn clean test", self.root, None),
+            "mvn clean test")
+        self.assertEqual(
+            read_maker_test_command(
+                "mvn clean test", self.root,
+                os.path.join(self.root, "nope.md")),
+            "mvn clean test")
+
+    def test_nonexistent_module_dir_filtered_out(self):
+        with open(self.plan, "w", encoding="utf-8") as f:
+            f.write("- 改 ghost/src/main/java/Foo.java\n")
+        self.assertEqual(
+            read_maker_test_command("mvn clean test", self.root, self.plan),
+            "mvn clean test")
+
+    def test_already_scoped_cmd_untouched(self):
+        self.assertEqual(
+            read_maker_test_command(
+                "mvn clean test -pl mod-a -am", self.root, self.plan),
+            "mvn clean test -pl mod-a -am")

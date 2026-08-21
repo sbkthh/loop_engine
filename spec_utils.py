@@ -178,6 +178,12 @@ def read_test_command(project_root):
     return cmd
 
 
+def _with_module_scope(cmd, modules):
+    if modules:
+        cmd = f"{cmd} -pl {','.join(sorted(modules))} -am"
+    return cmd
+
+
 def read_checker_test_command(cmd, root, files=()):
     """CHECKER-only incremental test command.
 
@@ -196,9 +202,30 @@ def read_checker_test_command(cmd, root, files=()):
             first = path[len(root):].split("/", 1)[0]
             if first:
                 modules.add(first)
-    if modules:
-        cmd = f"{cmd} -pl {','.join(sorted(modules))} -am"
-    return cmd
+    return _with_module_scope(cmd, modules)
+
+
+_PLAN_SRC_RE = re.compile(r"([\w.-]+)/src/(?:main|test)/")
+
+
+def read_maker_test_command(cmd, root, plan_path):
+    """Scope the maker (RED/GREEN) test run to the modules the plan
+    touches — the plan cites its sources as <module>/src/... paths and
+    usually edits 1-2 modules, while a full-reactor 'mvn clean test'
+    costs 20-30 min on zkh projects. Keeps clean (edits invalidate
+    incremental builds). Falls back to the full command when the plan
+    is missing or cites no recognizable module paths."""
+    if not plan_path or " -pl" in cmd:
+        return cmd
+    full = plan_path if os.path.isabs(plan_path) else os.path.join(
+        root, plan_path)
+    if not os.path.exists(full):
+        return cmd
+    with open(full, encoding="utf-8") as f:
+        text = f.read()
+    modules = {m.group(1) for m in _PLAN_SRC_RE.finditer(text)}
+    modules = {m for m in modules if os.path.isdir(os.path.join(root, m))}
+    return _with_module_scope(cmd, modules)
 
 
 PLAN_EXISTING_MARKERS = ("已有", "无需变更")

@@ -444,12 +444,14 @@ _GRAY_EVIDENCE_MAX = 6
 _GRAY_SUMMARY_MAX = 120
 
 
-def _format_gray_draft(d):
+def _format_gray_draft(d, summary_max=_GRAY_SUMMARY_MAX, prefix=""):
     """One pending gray draft as skimmable text: type, location, summary.
 
     The raw summary is free-form checker prose (markdown links, backticks,
     embedded [type] prefixes, 700+ chars) — flatten it into three short
     lines so the adjudication message stays readable on WeChat.
+    summary_max=None keeps the full text (used by the 查看灰名单 reply,
+    where the full reasoning is needed to adjudicate).
     """
     summary = (d.get("summary") or "").strip()
     type_label = d.get("type_label")
@@ -464,9 +466,10 @@ def _format_gray_draft(d):
     clean = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", r"\1(\2)", clean)
     clean = clean.replace("`", "")
     clean = re.sub(r"\s+", " ", clean).strip()
-    if len(clean) > _GRAY_SUMMARY_MAX:
-        clean = clean[:_GRAY_SUMMARY_MAX].rstrip() + "…"
-    lines = [md_bold(f"#{d['id']} [{type_label}]")]
+    if summary_max and len(clean) > summary_max:
+        clean = clean[:summary_max].rstrip() + "…"
+    header = md_bold(f"草稿 {d['id']} [{type_label}]")
+    lines = [f"{prefix}{header}"]
     if location:
         lines.append(f"  位置：{location}")
     lines.append(f"  说明：{clean}")

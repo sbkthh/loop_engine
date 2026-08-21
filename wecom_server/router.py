@@ -205,13 +205,14 @@ def _execute_gray_list_view(name, registry, data_dir):
             available = ", ".join(r.get("name", "?") for r in registry) or "无"
             return f"没有找到需求：{name}（可用：{available}）"
         return "当前没有待裁决的灰名单草稿。"
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import scheduler
     lines = []
     for req_name, d in found:
-        label = d.get("type_label", "")
-        summary = d.get("summary", "")
-        lines.append(f"「{req_name}」草稿 {d['id']}："
-                     f"[{label}] {summary}")
+        lines.append(scheduler._format_gray_draft(
+            d, summary_max=None, prefix=f"「{req_name}」"))
         lines.append(f"→ 回复「接受 {d['id']}」或「拒绝 {d['id']}」裁决该条")
+        lines.append("")
     lines.append("多条可一起处理：「全部接受」/「全部拒绝」，"
                  "或混合：「接受 1，拒绝 2 3」")
     return "\n".join(lines)

@@ -1573,7 +1573,7 @@ class TestNotify(SchedulerBase):
                        "appends '[点击下载](errorExcelUrl)' to the message; "
                        "never emits '[点击查看](detailPageUrl)'",
         })
-        self.assertIn("**#4 [其他]**", text)
+        self.assertIn("**草稿 4 [其他]**", text)
         self.assertIn("位置：StockStrategyMaterialServiceImpl.java:373-392",
                       text)
         self.assertIn("点击下载(errorExcelUrl)", text)
@@ -1584,10 +1584,15 @@ class TestNotify(SchedulerBase):
             "id": 9,
             "summary": "[类型不一致] " + "长描述" * 300,
         })
-        self.assertIn("**#9 [类型不一致]**", text)
+        self.assertIn("**草稿 9 [类型不一致]**", text)
         self.assertIn("…", text)
         self.assertNotIn("] 长描述", text)  # embedded [type] prefix stripped
         self.assertLess(len(text), 200)
+        full = scheduler._format_gray_draft(
+            {"id": 9, "summary": "[类型不一致] " + "长描述" * 300},
+            summary_max=None)
+        self.assertNotIn("…", full)
+        self.assertGreater(len(full), 900)
 
     def test_pending_gray_evidence_caps_list_and_counts_rest(self):
         root = os.path.join(self.tmp.name, "req-cap")

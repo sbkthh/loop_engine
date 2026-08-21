@@ -546,6 +546,9 @@ loop_engine wecom status
 # 停止服务器
 loop_engine wecom stop
 
+# 重启服务器（代码改动后）
+loop_engine wecom stop && loop_engine wecom start --port 5000
+
 # 配置
 loop_engine wecom config --show
 loop_engine wecom config --set key=value
@@ -556,9 +559,23 @@ loop_engine wecom config --set key=value
 企业微信回调 URL 需要公网可达。使用 autossh 建立反向隧道：
 
 ```bash
+# 启动隧道（服务器 IP 见 ~/.qoder/loop_engine/wecom.json 或历史记录）
 autossh -M 0 -N -o ServerAliveInterval=30 \
-  -R 0.0.0.0:5000:localhost:5000 root@<server-ip>
+  -R 5000:localhost:5000 root@<server-ip>
+
+# 查看隧道状态
+pgrep -fl autossh
+
+# 停止隧道
+pkill -f "autossh.*5000:localhost:5000"
+
+# 重启隧道
+pkill -f "autossh.*5000:localhost:5000"
+autossh -M 0 -N -o ServerAliveInterval=30 \
+  -R 5000:localhost:5000 root@<server-ip>
 ```
+
+隧道断线后 autossh 会自动重连；只有服务器 IP 或 SSH 密钥变更时才需手动重启。
 
 ### 异步推送
 

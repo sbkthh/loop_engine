@@ -8,12 +8,12 @@ HOOK = os.path.join(os.path.dirname(__file__), "..", "wecom_server",
                     "hooks", "audit_hook.sh")
 
 
-def _run_hook(tool_input, session_id="sid-1"):
+def _run_hook(tool_input, session_id="sid-1", tool_name="Bash"):
     tmp = tempfile.mkdtemp()
     audit_log = os.path.join(tmp, "audit.log")
     payload = json.dumps({
         "session_id": session_id,
-        "tool_name": "Bash",
+        "tool_name": tool_name,
         "tool_input": tool_input,
     })
     env = {**os.environ, "AUDIT_LOG": audit_log}
@@ -54,4 +54,26 @@ def test_hook_ignores_harmless_commands():
 
 def test_hook_ignores_missing_command():
     log = _run_hook({})
+    assert _read(log) == ""
+
+
+def test_hook_logs_edit_file_path():
+    path = "/proj/src/main/java/Foo.java"
+    log = _run_hook({"file_path": path}, tool_name="Edit")
+    content = _read(log)
+    assert path in content
+    assert "tool=Edit" in content
+    assert "session=sid-1" in content
+
+
+def test_hook_logs_write_file_path():
+    path = "/proj/src/main/java/Bar.java"
+    log = _run_hook({"file_path": path}, tool_name="Write")
+    content = _read(log)
+    assert path in content
+    assert "tool=Write" in content
+
+
+def test_hook_ignores_edit_without_path():
+    log = _run_hook({}, tool_name="Edit")
     assert _read(log) == ""

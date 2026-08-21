@@ -41,6 +41,12 @@ _LLM_SYSTEM_PROMPT = (
     "- Requirement registration/PRD bootstrap → ~/.qoder/skills/requirement-register/SKILL.md\n"
     "- Spec editing workflow → ~/.qoder/skills/spec-session/SKILL.md\n"
     "\n"
+    "Code edit boundary: edit project code directly ONLY for bugfixes or "
+    "troubleshooting that change no spec/requirement semantics, and never "
+    "while that requirement's loop run is executing. Any feature- or "
+    "requirement-level change must go through the spec workflow "
+    "(spec-session skill) and loop execution — never implement it yourself.\n"
+    "\n"
     "User: __MESSAGE__\n"
 )
 
@@ -92,12 +98,13 @@ def _audit_settings():
     """Per-invocation qodercli settings auditing sensitive tool calls.
 
     Injected via --settings so only WeCom-spawned sessions carry the hook;
-    the user's own qodercli sessions are untouched.
+    the user's own qodercli sessions are untouched. Edit/Write are logged
+    (never blocked) so direct code edits by G leave an audit trail.
     """
     return json.dumps({
         "hooks": {
             "PreToolUse": [
-                {"matcher": "Bash",
+                {"matcher": "Bash|Edit|Write",
                  "hooks": [{"type": "command", "command": _AUDIT_HOOK}]}
             ]
         }

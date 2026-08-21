@@ -155,14 +155,24 @@ class TestMakerScopedCommand(unittest.TestCase):
 
     def test_red_uses_plan_scoped_command(self):
         out = build(MAKER_STEP1_RED, "chg1/m1", self._module(), self.root)
-        self.assertIn("Run 'mvn clean test -pl mod-a -am'.",
-                      out["directives"]["instructions"])
+        ins = out["directives"]["instructions"]
+        self.assertIn(
+            "Run ONLY the new tests: 'mvn clean test -pl mod-a -am "
+            "-Dtest=<the test classes you wrote> "
+            "-Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false'.",
+            ins)
+        self.assertIn(
+            "run the full 'mvn clean test -pl mod-a -am' WITHOUT the -Dtest filter",
+            ins)
 
     def test_green_uses_scoped_command_plus_full_compile(self):
         out = build(MAKER_STEP2_GREEN, "chg1/m1", self._module(), self.root)
         ins = out["directives"]["instructions"]
-        self.assertIn("Run 'mvn clean test -pl mod-a -am'.", ins)
+        self.assertIn("Run 'mvn clean test -pl mod-a -am'. All tests must pass.", ins)
         self.assertIn("mvn clean compile", ins)
+        self.assertIn("-Dsurefire.failIfNoSpecifiedTests=false", ins)
+        self.assertIn("evidence MUST come from the full "
+                      "'mvn clean test -pl mod-a -am' run", ins)
 
     def test_green_without_plan_falls_back_to_full(self):
         os.remove(self.plan)

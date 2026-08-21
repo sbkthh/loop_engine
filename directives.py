@@ -158,11 +158,14 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "gap_audit with verified: false. Do not silently trust the "
             "plan's claims.\n"
             "Write test classes for all 'must TDD' methods from the plan's classification table.\n"
-            f"Run '{maker_cmd}'. Tests MUST fail with assertion failures (not compile errors).\n"
+            "Run ONLY the new tests: '" + maker_cmd + " -Dtest=<the test classes you wrote> "
+            "-Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false'. "
+            "Tests MUST fail with assertion failures (not compile errors).\n"
             "Do NOT write any implementation code (src/main).\n"
             "If the plan's classification table has NO 'must TDD' methods (all entries are "
-            "'skip' because tests already exist), do NOT write new tests: run the existing "
-            "tests, confirm they pass, and declare 'tdd_skip: true' in TDD_RED_EVIDENCE."
+            "'skip' because tests already exist), do NOT write new tests: run the full '"
+            + maker_cmd + "' WITHOUT the -Dtest filter, confirm those tests pass, and "
+            "declare 'tdd_skip: true' in TDD_RED_EVIDENCE."
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -195,6 +198,10 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             f"Run '{maker_cmd}'. All tests must pass.\n"
             "The scoped test only covers the plan's modules; run 'mvn clean compile' "
             "at the project root to verify the FULL project still compiles.\n"
+            "While iterating on failures you may narrow the run to the failing tests: '"
+            + maker_cmd + " -Dtest=<failing test classes> "
+            "-Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false'; "
+            "the final test_results evidence MUST come from the full '" + maker_cmd + "' run.\n"
             "Never run 'mvn compile' or 'mvn test' without clean first.\n"
             "Max 3 retries on failure (fix impl, not tests)."
         )

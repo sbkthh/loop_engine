@@ -303,7 +303,9 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
             ' "build_result": "BUILD SUCCESS"}\n'
-            "status: SUCCESS or FAILED."
+            "status: SUCCESS or FAILED. "
+            'build_result: exactly "BUILD SUCCESS" or "BUILD FAILURE", '
+            "no annotations."
         )
         d["context"]["hard_errors"] = hard_errors
         d["context"]["accepted_warnings"] = (accepted_drafts or [])
@@ -346,7 +348,9 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
             ' "build_result": "BUILD SUCCESS"}\n'
-            "status: SUCCESS or FAILED."
+            "status: SUCCESS or FAILED. "
+            'build_result: exactly "BUILD SUCCESS" or "BUILD FAILURE", '
+            "no annotations."
         )
         d["context"]["review_issues"] = review_issues
         d["context"]["test_command"] = test_cmd

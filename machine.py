@@ -538,7 +538,10 @@ class StateMachine:
             raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Fix failed: {parsed.get('status')}")
-        if parsed.get("build_result") != "BUILD SUCCESS":
+        # prefix match, not equality: makers annotate the literal, e.g.
+        # "BUILD SUCCESS（mvn compile 通过；238/238 通过）" — still a success
+        br = (parsed.get("build_result") or "").strip()
+        if not br.startswith("BUILD SUCCESS"):
             raise ValueError(f"Build failed: {parsed.get('build_result')}")
         if module.get("_pending_align"):
             del module["_pending_align"]

@@ -1383,5 +1383,31 @@ class TestExecuteSyncedOutput(unittest.TestCase):
         self.assertIn("[OK] Final test run passed", err.getvalue())
 
 
+class TestCommitMakerFixBuildResult(unittest.TestCase):
+    def _commit(self, build_result):
+        from machine import CHECKER
+        m = StateMachine(".")
+        return m._commit_maker_fix(
+            {}, "k", {}, _maker_fix_json(build_result=build_result)), CHECKER
+
+    def test_annotated_build_success_accepted(self):
+        """Maker appending detail after the literal must not fail commit
+        (regression: run died with 'Build failed: BUILD SUCCESS（…238/238）')."""
+        r, checker = self._commit(
+            "BUILD SUCCESS（mvn compile 通过；238/238 通过）")
+        self.assertEqual(r, checker)
+
+    def test_build_success_with_whitespace_accepted(self):
+        r, checker = self._commit(" BUILD SUCCESS\n")
+        self.assertEqual(r, checker)
+
+    def test_build_failure_still_rejected(self):
+        m = StateMachine(".")
+        with self.assertRaises(ValueError) as ctx:
+            m._commit_maker_fix(
+                {}, "k", {}, _maker_fix_json(build_result="BUILD FAILURE"))
+        self.assertIn("BUILD FAILURE", str(ctx.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

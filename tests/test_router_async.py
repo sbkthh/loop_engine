@@ -39,7 +39,7 @@ def test_system_prompt_has_prd_bootstrap_rules():
     assert "__JSON_ACTION__" in router._LLM_SYSTEM_PROMPT
     assert "spec_result" in router._LLM_SYSTEM_PROMPT
     assert "Change boundary" in router._LLM_SYSTEM_PROMPT, \
-        "G must know the bugfix-vs-requirement change boundary"
+        "G must know all code changes go through spec-session, no bugfix exception"
     assert "grill-me" in router._LLM_SYSTEM_PROMPT, \
         "G must drive the spec-session + grill-me flow itself, not bounce back"
     assert "one --print turn" in router._LLM_SYSTEM_PROMPT, \

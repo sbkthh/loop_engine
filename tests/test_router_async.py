@@ -3,9 +3,21 @@ import os
 import sys
 import types
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from wecom_server.router import dispatch
+
+
+@pytest.fixture(autouse=True)
+def _isolate_recent_activity():
+    """_recent_activity is a module global; clear it between tests so one
+    test's touched requirement can't steer another's keyword-less reply."""
+    from wecom_server import router
+    router._recent_activity.clear()
+    yield
+    router._recent_activity.clear()
 
 
 def test_dispatch_always_returns_callable():
@@ -42,6 +54,64 @@ def _fake_llm_reply(stdout):
             return types.SimpleNamespace(stdout=stdout, returncode=0)
         return types.SimpleNamespace(stdout="", stderr="", returncode=1)
     return fake_run
+
+
+def test_recent_requirement_returns_most_recent(monkeypatch):
+    """Most recently touched requirement wins for a user."""
+    from wecom_server import router
+    t = [1000.0]
+    monkeypatch.setattr(router.time, "time", lambda: t[0])
+    router._recent_activity.clear()
+    router._touch_recent("u1", "reqA")
+    t[0] = 1001.0
+    router._touch_recent("u1", "reqB")
+    t[0] = 1002.0
+    assert router._recent_requirement("u1") == "reqB"
+
+
+def test_recent_requirement_expires(monkeypatch):
+    """Stale activity (older than _RECENT_WINDOW) is ignored."""
+    from wecom_server import router
+    t = [1000.0]
+    monkeypatch.setattr(router.time, "time", lambda: t[0])
+    router._recent_activity.clear()
+    router._touch_recent("u1", "reqA")
+    t[0] = 1000.0 + router._RECENT_WINDOW + 1
+    assert router._recent_requirement("u1") is None
+
+
+def test_recent_requirement_scoped_per_user(monkeypatch):
+    """u1's recent activity does not leak to u2."""
+    from wecom_server import router
+    monkeypatch.setattr(router.time, "time", lambda: 1000.0)
+    router._recent_activity.clear()
+    router._touch_recent("u1", "reqA")
+    assert router._recent_requirement("u2") is None
+
+
+def test_keywordless_reply_routes_to_recent_requirement(monkeypatch):
+    """A short grill-me answer with no keyword routes to the recently
+    active requirement session; the LLM classifier is never invoked."""
+    from wecom_server import router
+
+    routed = {}
+    monkeypatch.setattr(router, "_detect_requirement",
+                        lambda msg, reg: None)
+    monkeypatch.setattr(router, "_recent_requirement",
+                        lambda uid: "reqA")
+    monkeypatch.setattr(router, "_classify_requirement",
+                        lambda msg, reg: routed.__setitem__("classified", True) or "x")
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        routed.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("【reqA】grill-me: 改动1 要加哪几列？"))
+
+    fn = dispatch("加三列：planNo、confirmStatus",
+                  [{"name": "reqA", "root": "/tmp/x"}], "/tmp", "u1")
+    fn()
+    assert routed.get("req") == "reqA"
+    assert "classified" not in routed
 
 
 def test_approve_prefix_executes(monkeypatch):

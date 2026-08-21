@@ -675,14 +675,48 @@ def _llm_lock(requirement):
         return _llm_locks.setdefault(requirement, threading.Lock())
 
 
+# Recent-activity routing fallback: when a reply lacks any requirement
+# keyword (typical for short grill-me answers), route to the requirement
+# this user most recently talked to. In-memory only — resets on server
+# restart, but the first message after restart carries the requirement
+# name (users are told to), so deterministic routing re-seeds it.
+# ponytail: 全进程内存 dict，不做磁盘持久化；重启后靠首条带名消息重建
+_RECENT_WINDOW = 1800  # 30 min covers a grill-me round-trip
+_recent_activity = {}  # (user_id, requirement) -> last-active timestamp
+_recent_guard = threading.Lock()
+
+
+def _touch_recent(user_id, requirement):
+    if not requirement:
+        return
+    with _recent_guard:
+        _recent_activity[(user_id, requirement)] = time.time()
+
+
+def _recent_requirement(user_id):
+    now = time.time()
+    with _recent_guard:
+        candidates = [
+            (ts, req) for (uid, req), ts in _recent_activity.items()
+            if uid == user_id and now - ts < _RECENT_WINDOW
+        ]
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
     model = _get_model()
     requirement = _detect_requirement(message, registry)
     if not requirement:
-        # exact match failed — ask the LLM which requirement this is about
-        requirement = _classify_requirement(message, registry)
+        # no keyword hit — try the most recently active requirement session
+        # first (covers short grill-me answers), then the LLM classifier
+        requirement = _recent_requirement(user_id) \
+            or _classify_requirement(message, registry)
+    _touch_recent(user_id, requirement)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__MESSAGE__", message, 1)
     # Tell G about background files so it can read them when needed, instead

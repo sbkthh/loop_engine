@@ -18,7 +18,6 @@ from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash,
                         compute_spec_norm_hash, compute_plan_hash,
                         derive_spec_path, derive_plan_path, resolve_project_root,
-                        audit_plan_existing_evidence,
                         count_plan_existing_claims)
 from parser import (
     parse_maker_output, parse_checker_output,
@@ -233,7 +232,7 @@ class StateMachine:
             self.sm.save(state)
             module = state["modules"][module_key]
             return self._build(state, action, module_key, module)
-        # A READY module that already has a valid plan for the CURRENT spec
+        # A READY module that already has a plan for the CURRENT spec
         # skips SCORE/MAKER_STEP0: the plan survived a previous run (e.g. a
         # MAKER_STEP0 commit that failed later), and re-running STEP0 would
         # rewrite the plan and can reintroduce the rejected formatting.
@@ -242,14 +241,11 @@ class StateMachine:
             if plan_file and os.path.exists(plan_file):
                 spec_path = derive_spec_path(
                     module["change_id"], module["module_name"], self.root_dir)
-                if compute_spec_hash(spec_path) == module.get("spec_hash") \
-                        and not audit_plan_existing_evidence(
-                            plan_file,
-                            project_root=module.get("project_root")):
+                if compute_spec_hash(spec_path) == module.get("spec_hash"):
                     action = MAKER_STEP1_RED
                     StateManager.set_current(state, module_key, action)
                     self._trace(state, "SCAN", module_key,
-                                "valid plan exists -> skip SCORE/STEP0")
+                                "plan exists -> skip SCORE/STEP0")
                     dirty = True
                     self.sm.save(state)
                     return self._build(state, action, module_key, module)
@@ -391,11 +387,6 @@ class StateMachine:
             self.root_dir, plan_path)
         if not os.path.exists(full):
             raise ValueError(f"Plan file not found: {plan_path}")
-        evidence_errors = audit_plan_existing_evidence(
-            full, project_root=module.get("project_root"))
-        if evidence_errors:
-            raise ValueError(
-                "Plan evidence errors: " + "; ".join(evidence_errors[:5]))
         module["plan_path"] = plan_path
         return MAKER_STEP1_RED
 

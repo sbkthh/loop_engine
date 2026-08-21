@@ -189,9 +189,10 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], READY)
 
-    def test_ready_with_invalid_plan_falls_back_to_score(self):
-        """A READY module whose plan fails the evidence audit does NOT
-        skip to MAKER_STEP1_RED — it falls back to the normal SCORE path."""
+    def test_ready_with_stale_plan_falls_back_to_score(self):
+        """A READY module whose plan_path exists but targets an OLD spec
+        (spec hash changed since the plan was written) does NOT skip to
+        MAKER_STEP1_RED — the plan must be regenerated for the new spec."""
         from constants import SCORE
         import hashlib
         sm = StateManager(self.root)
@@ -201,9 +202,8 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         with open(spec_path, "rb") as f:
             spec_hash = hashlib.md5(f.read()).hexdigest()
         StateManager.add_module(state, self.key, "test-change",
-                                "test-module", spec_hash=spec_hash)
+                                "test-module", spec_hash="stale_spec_hash")
         state["modules"][self.key]["status"] = READY
-        # plan exists but its '已有' claim cites nothing -> audit fails
         plan_path = os.path.join(self.root,
             "openspec/changes/test-change/plans/test-module-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
@@ -1083,8 +1083,9 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             f.write("a\nb\nc\n")
         return f"- C1: 已有，见 {java}:2\n"
 
-    def test_step0_rejects_plan_without_evidence(self):
-        """MAKER_STEP0 plan '已有' claim without file:line → rejected."""
+    def test_step0_accepts_plan_without_evidence(self):
+        """MAKER_STEP0 plan '已有' claim without file:line is NOT rejected
+        by the engine — the audit moved to STEP1's gap_audit check."""
         self._init_module_ready()
         machine = StateMachine(self.root)
         machine.next()
@@ -1098,8 +1099,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             f.write("- C1: 已有实现，无需变更\n")
         self._write_maker_step0(plan_path)
         r = machine.commit()
-        self.assertIn("Plan evidence errors", r.get("error", ""))
-        self.assertIn("without code evidence", r.get("error", ""))
+        self.assertEqual(r["next_action"], "MAKER_STEP1_RED")
 
     def test_step1_red_requires_gap_audit_when_claims_exist(self):
         """Plan has '已有' claims → gap_audit is mandatory in RED output."""

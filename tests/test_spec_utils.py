@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         normalize_spec,
-                        audit_plan_existing_evidence,
                         count_plan_existing_claims)
 
 
@@ -73,15 +72,12 @@ class TestSpecHashes(unittest.TestCase):
         self.assertIsNone(compute_spec_norm_hash(missing))
 
 
-class TestPlanEvidenceAudit(unittest.TestCase):
-    """'已有/无需变更' claims in plans must cite code file:line evidence."""
+class TestPlanExistingClaimCount(unittest.TestCase):
+    """count_plan_existing_claims feeds the gap_audit completeness check."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = self.tmp.name
-        self.java = os.path.join(self.root, "Foo.java")
-        with open(self.java, "w") as f:
-            f.write("line1\nline2\nline3\n")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -92,76 +88,6 @@ class TestPlanEvidenceAudit(unittest.TestCase):
             f.write(text)
         return path
 
-    def test_valid_evidence_passes(self):
-        path = self._plan("- C1: 已有，见 Foo.java:2\n")
-        self.assertEqual(audit_plan_existing_evidence(path, self.root), [])
-
-    def test_bare_existing_without_evidence_rejected(self):
-        path = self._plan("- C2: 已有实现，无需变更\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("without code evidence", errs[0])
-
-    def test_spec_md_reference_not_evidence(self):
-        path = self._plan("- C1: 已有，见 spec.md:111\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("without code evidence", errs[0])
-
-    def test_missing_file_rejected(self):
-        path = self._plan("- C1: 已有，见 Nope.java:2\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("evidence file not found", errs[0])
-
-    def test_line_out_of_range_rejected(self):
-        path = self._plan("- C1: 已有，见 Foo.java:99\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("out of range", errs[0])
-
-    def test_unique_basename_resolves(self):
-        sub = os.path.join(self.root, "a", "b")
-        os.makedirs(sub)
-        with open(os.path.join(sub, "Foo.java"), "w") as f:
-            f.write("x\n")
-        path = self._plan("- C1: 已有，见 Foo.java:1\n")
-        self.assertEqual(audit_plan_existing_evidence(path, self.root), [])
-
-    def test_ambiguous_basename_rejected(self):
-        for d in ("a", "b"):
-            os.makedirs(os.path.join(self.root, d))
-            with open(os.path.join(self.root, d, "Bar.java"), "w") as f:
-                f.write("x\n")
-        path = self._plan("- C1: 已有，见 Bar.java:1\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("ambiguous evidence file", errs[0])
-
-    def test_basename_skips_build_dirs(self):
-        os.makedirs(os.path.join(self.root, "target", "classes"))
-        with open(os.path.join(self.root, "target", "classes",
-                               "Baz.java"), "w") as f:
-            f.write("x\n")
-        path = self._plan("- C1: 已有，见 Baz.java:1\n")
-        errs = audit_plan_existing_evidence(path, self.root)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("evidence file not found", errs[0])
-
-    def test_chinese_colon_and_L_notation_supported(self):
-        path = self._plan(
-            "- C1: 已有，见 Foo.java：2\n"
-            "- C2: 无需变更，见 Foo.java L3\n")
-        self.assertEqual(audit_plan_existing_evidence(path, self.root), [])
-
-    def test_absolute_path_evidence(self):
-        path = self._plan(f"- C1: 已有，见 {self.java}:3\n")
-        self.assertEqual(audit_plan_existing_evidence(path, None), [])
-
-    def test_no_existing_markers_no_errors(self):
-        path = self._plan("- C1: 新增 PurchasePlanService.save()\n")
-        self.assertEqual(audit_plan_existing_evidence(path, self.root), [])
-
     def test_count_existing_claims(self):
         path = self._plan(
             "- C1: 已有，见 Foo.java:2\n"
@@ -171,9 +97,6 @@ class TestPlanEvidenceAudit(unittest.TestCase):
 
     def test_missing_plan_file(self):
         missing = os.path.join(self.root, "missing.md")
-        errs = audit_plan_existing_evidence(missing)
-        self.assertEqual(len(errs), 1)
-        self.assertIn("plan file missing", errs[0])
         self.assertEqual(count_plan_existing_claims(missing), 0)
 
 

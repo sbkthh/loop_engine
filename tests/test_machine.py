@@ -355,6 +355,25 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertEqual(len(issues), 3)
         self.assertEqual(issues[0]["severity"], "important")
 
+    def test_score_clears_stale_review_fix_attempt(self):
+        """review_fix_attempt left over from a run that died mid-fix must
+        reset on the next cycle's SCORE commit, else the
+        MAX_REVIEW_FIX_CYCLES guard skips CODE_REVIEW_FIX."""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["review_fix_attempt"] = 1
+        sm.save(state)
+        machine = StateMachine(self.root)
+
+        machine.next()
+        self._write_score()
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "MAKER_STEP0")
+
+        state = sm.load()
+        self.assertEqual(state["modules"][self.key]["review_fix_attempt"], 0)
+
     def test_score_below_threshold(self):
         self._init_module_ready()
         machine = StateMachine(self.root)

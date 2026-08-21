@@ -339,6 +339,10 @@ class StateMachine:
         module["score_dimensions"] = dims if isinstance(dims, dict) else None
         if score >= SCORE_THRESHOLD and cross != "FAIL":
             module["status"] = READY
+            # new run cycle: clear fix-cycle counters left over from a run
+            # that died mid-cycle (commit_error), else CODE_REVIEW_FIX is
+            # skipped by the MAX_REVIEW_FIX_CYCLES guard on the next run
+            module["review_fix_attempt"] = 0
             return MAKER_STEP0
         module["status"] = NEEDS_REFINEMENT
         return None

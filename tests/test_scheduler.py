@@ -1059,6 +1059,49 @@ class TestRun(SchedulerBase):
             sids[0],
             str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root}:SCORE:0")))
 
+    def _run_capture_first_qodercli_cmd(self, model_value):
+        root = self._register_pending("req")
+        captured = []
+        next_actions = ["SCORE", "IDLE"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(cmd)
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run), \
+                mock.patch.object(scheduler, "_qodercli_model",
+                                  return_value=model_value):
+            scheduler.run_requirement("req")
+        return captured[0]
+
+    def test_run_qodercli_cmd_carries_configured_model(self):
+        """Loop-agent qodercli subprocesses use the configured model (same
+        settings the WeCom G path reads), not the qodercli default."""
+        cmd = self._run_capture_first_qodercli_cmd("gmodel")
+        self.assertIn("--model", cmd)
+        self.assertEqual(cmd[cmd.index("--model") + 1], "gmodel")
+
+    def test_run_qodercli_cmd_omits_model_when_unset(self):
+        """No configured model → no --model flag → qodercli default."""
+        cmd = self._run_capture_first_qodercli_cmd("")
+        self.assertNotIn("--model", cmd)
+
     def test_run_retry_gets_new_session_id(self):
         """A retried step (same action, retries incremented) gets a fresh ID,
         keeping the replay session clean of the failed attempt's context."""

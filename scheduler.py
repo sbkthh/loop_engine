@@ -90,6 +90,17 @@ COMMIT_TIMEOUT_SECONDS = 900
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
 
 
+def _qodercli_model():
+    """Model for loop-agent qodercli subprocesses, from the same settings
+    the WeCom G path uses (~/.qoder/settings.json model.name). Empty string
+    means pass no --model and keep qodercli's own default."""
+    try:
+        with open(os.path.expanduser("~/.qoder/settings.json")) as f:
+            return json.load(f).get("model", {}).get("name") or ""
+    except (OSError, ValueError):
+        return ""
+
+
 # ---------- file helpers ----------
 
 def _atomic_write_json(path, data):
@@ -930,13 +941,17 @@ def _repair_result(root, sid, detail):
     output envelope was malformed. Returns False when the repair call fails.
     """
     try:
+        cmd = [_QODERCLI, "--print", "--session-id", sid,
+               "--no-session-persistence",
+               "--dangerously-skip-permissions",
+               "--cwd", root, "--append-system-prompt",
+               _REPAIR_PROMPT.format(detail=detail)]
+        model = _qodercli_model()
+        if model:
+            cmd += ["--model", model]
+        cmd.append("Rewrite .loop/result.md with the required JSON object")
         q = subprocess.run(
-            [_QODERCLI, "--print", "--session-id", sid,
-             "--no-session-persistence",
-             "--dangerously-skip-permissions",
-             "--cwd", root, "--append-system-prompt",
-             _REPAIR_PROMPT.format(detail=detail),
-             "Rewrite .loop/result.md with the required JSON object"],
+            cmd,
             capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _log("repair: qodercli timed out")
@@ -1037,12 +1052,16 @@ def run_requirement(name):
             sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                  f"{root}:{action}:{retries}"))
             try:
+                cmd = [_QODERCLI, "--print", "--session-id", sid,
+                       "--no-session-persistence",
+                       "--dangerously-skip-permissions",
+                       "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT]
+                model = _qodercli_model()
+                if model:
+                    cmd += ["--model", model]
+                cmd.append(json.dumps(payload))
                 q = subprocess.run(
-                    [_QODERCLI, "--print", "--session-id", sid,
-                     "--no-session-persistence",
-                     "--dangerously-skip-permissions",
-                     "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT,
-                     json.dumps(payload)],
+                    cmd,
                     capture_output=True, text=True,
                     timeout=STEP_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:

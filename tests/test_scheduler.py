@@ -811,6 +811,39 @@ class TestRun(SchedulerBase):
         self.assertEqual(result["steps"], 1)
         self.assertFalse(scheduler.is_locked(root))
 
+    def test_run_crashed_commit_is_error_not_no_advance(self):
+        """Empty stdout + non-zero exit (torn code state, ImportError)
+        must surface as commit_error — not 'committed, no next action'."""
+        root = self._register_pending("req")
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout="",
+                        stderr=("Traceback (most recent call last):\n"
+                                'ImportError: cannot import name '
+                                "'audit_plan_existing_evidence'"),
+                        returncode=1)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run):
+            result = scheduler.run_requirement("req")
+
+        self.assertEqual(result["end"], "commit_error")
+        with open(scheduler.LOG_PATH) as f:
+            log = f.read()
+        self.assertIn("commit crashed", log)
+        self.assertIn("ImportError", log)
+        self.assertNotIn("no state advance", log)
+        self.assertFalse(scheduler.is_locked(root))
+
     def test_run_same_action_cap(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["SCORE"] * 10, commit_next="SCORE")

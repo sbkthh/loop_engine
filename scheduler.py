@@ -1070,8 +1070,22 @@ def run_requirement(name):
                     _log(f"run {name}: commit timed out")
                     commit = {"error": "commit 超时"}
                     break
+                # a crashed commit (torn code state, ImportError, etc.)
+                # exits non-zero with empty stdout; treating that as an
+                # empty dict would read as "committed, no next action"
+                # and silently strand the module mid-step
+                _out = (c.stdout or "").strip()
+                _err = (c.stderr or "").strip()
+                if c.returncode != 0 or not _out:
+                    tail = ((_err or _out or "no output")
+                            .splitlines()[-1])[:300]
+                    _log(f"run {name}: commit crashed "
+                         f"(exit {c.returncode}): {tail}")
+                    commit = {"error": f"commit 子进程崩溃 "
+                              f"(exit {c.returncode}): {tail}"}
+                    break
                 try:
-                    commit = json.loads(c.stdout or "{}")
+                    commit = json.loads(c.stdout)
                 except json.JSONDecodeError:
                     _log(f"run {name}: invalid commit output")
                     end = "bad_commit_output"

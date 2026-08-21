@@ -77,7 +77,10 @@ MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 # Per-step caps are hung-call backstops, not task budgets.
 STEP_TIMEOUT_SECONDS = 6 * 3600  # one qodercli/LLM step
-QUICK_TIMEOUT_SECONDS = 30       # local next/commit CLI calls (pure Python, <1s)
+QUICK_TIMEOUT_SECONDS = 30       # local next CLI calls (pure Python, <1s)
+# commit may run the final full test suite (_execute_synced, mvn bounded
+# at 600s internally), so it gets a wider backstop than next()
+COMMIT_TIMEOUT_SECONDS = 900
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
 
@@ -1062,7 +1065,7 @@ def run_requirement(name):
                 try:
                     c = subprocess.run(_engine_cmd("commit", "--root", root),
                                        capture_output=True, text=True,
-                                       timeout=QUICK_TIMEOUT_SECONDS)
+                                       timeout=COMMIT_TIMEOUT_SECONDS)
                 except subprocess.TimeoutExpired:
                     _log(f"run {name}: commit timed out")
                     commit = {"error": "commit 超时"}

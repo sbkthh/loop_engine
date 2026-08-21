@@ -4,6 +4,8 @@ All messages go through async LLM path (qodercli subprocess, result pushed
 via WeCom API). No keyword matching — LLM handles everything.
 """
 import datetime
+import difflib
+import glob
 import json
 import logging
 import os
@@ -54,6 +56,16 @@ _LLM_SYSTEM_PROMPT = (
     "one question at a time to sharpen the spec, edit spec.md yourself, "
     "then SCORE. Do NOT edit code directly, do NOT just tell the user to "
     "do it, do NOT promise to implement later.\n"
+    "\n"
+    "Spec edit guardrails (hard rules):\n"
+    "- Before editing spec.md, list the concrete change points (which "
+    "Requirement/Scenario/fields) and get the user's explicit confirmation "
+    "for each one via grill-me. Never add whole new Requirement/Scenario "
+    "blocks, copy content from other modules, or append anything the user "
+    "did not confirm.\n"
+    "- Never edit .loop/state.json, pending.json, or other loop runtime "
+    "state files directly — they are write-protected. Registration happens "
+    "through the __JSON_ACTION__ spec_result flow after editing spec.md.\n"
     "\n"
     "User: __MESSAGE__\n"
 )
@@ -575,6 +587,30 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     sm.save(st)
     _audit_line(f"SPEC {name} {module_key} {old_hash or 'new'}->{new_hash} "
                 f"backup={backup_note}")
+    # Change-size summary from the latest pre-edit snapshot (taken by the
+    # audit hook before each Edit) so the user sees how big the change is
+    # before approving execution.
+    summary = ""
+    snap_dir = os.path.join(data_dir, "spec-snapshots")
+    try:
+        snaps = sorted(
+            glob.glob(os.path.join(snap_dir, f"*-{module_name}.md")),
+            key=os.path.getmtime)
+    except OSError:
+        snaps = []
+    if snaps:
+        try:
+            old_text = open(snaps[-1], encoding="utf-8").read()
+            new_text = open(spec_path, encoding="utf-8").read()
+            lines = difflib.unified_diff(
+                old_text.splitlines(), new_text.splitlines(), lineterm="")
+            added = sum(1 for l in lines
+                        if l.startswith("+") and not l.startswith("+++"))
+            removed = sum(1 for l in lines
+                          if l.startswith("-") and not l.startswith("---"))
+            summary = f"变更规模: +{added} 行 / -{removed} 行\n"
+        except OSError:
+            pass
     # Refresh pending.json so approve works immediately
     import scheduler as _sched
     _sched.poll()
@@ -582,6 +618,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     if module_key in st["modules"] and st["modules"][module_key].get("project_root") == ".":
         bind_hint = "新模块尚未绑定项目，请先确认所属项目（set-project-root）\n"
     return (f"spec 变更已登记：{module_key}\n"
+            f"{summary}"
             f"旧 hash: {(old_hash or 'new')[:8]}  新 hash: {new_hash[:8]}\n"
             f"备份: {backup_note}\n"
             f"{bind_hint}请回复『批准执行 {name}』开始实现")
@@ -617,6 +654,24 @@ def _classify_requirement(message, registry):
         if name in reply:
             return name
     return None
+
+
+_APPROVE_INTENT_RE = re.compile(r"批准|同意执行|可以执行|开始实现|执行吧|批了")
+_APPROVE_NEGATION_RE = re.compile(r"不批准|不要批准|别批准|不同意|取消批准")
+
+
+def _user_intends_approve(message):
+    """approve 必须由用户本人的批准意图触发，防止 G 自行批准自己的登记。
+
+    G 的 LLM 回复可以携带 __JSON_ACTION__ approve；若最近一条用户消息
+    没有『批准』等确认词（或明确否定），说明是 G 自作主张，拒绝并请
+    用户本人确认。
+    """
+    if not message:
+        return False
+    if _APPROVE_NEGATION_RE.search(message):
+        return False
+    return bool(_APPROVE_INTENT_RE.search(message))
 
 
 def _dispatch_json_action(payload, registry, data_dir, user_id):
@@ -772,6 +827,10 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                            "falling back to legacy prefixes")
             payload = None
         if payload is not None:
+            if payload.get("action") == "approve" and not _user_intends_approve(message):
+                name = payload.get("requirement") or ""
+                return (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
+                        f"如需执行，请本人回复：批准执行 {name}")
             return _dispatch_json_action(payload, registry, data_dir,
                                          user_id)
     if reply.startswith(_LEGACY_PREFIXES):
@@ -779,6 +838,9 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                     "__JSON_ACTION__)")
     if reply.startswith("__APPROVE__"):
         name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
+        if not _user_intends_approve(message):
+            return (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
+                    f"如需执行，请本人回复：批准执行 {name}")
         blocked = _approve_prefix_block(name, registry)
         if blocked:
             return blocked

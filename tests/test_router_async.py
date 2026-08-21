@@ -1,4 +1,5 @@
 """Tests for router async dispatch (all messages go through LLM)."""
+import datetime
 import os
 import sys
 import types
@@ -38,6 +39,10 @@ def test_system_prompt_has_prd_bootstrap_rules():
         "manual-loop skill deprecated, prompt should not reference it"
     assert "__JSON_ACTION__" in router._LLM_SYSTEM_PROMPT
     assert "spec_result" in router._LLM_SYSTEM_PROMPT
+    assert "MUST append __JSON_ACTION__" in router._LLM_SYSTEM_PROMPT, \
+        "G must be required to emit spec_result in the SAME reply after editing spec.md"
+    assert "spec_result MANDATORY" in router._LLM_SYSTEM_PROMPT, \
+        "Actions list must mark spec_result as mandatory exception after spec edits"
     assert "Change boundary" in router._LLM_SYSTEM_PROMPT, \
         "G must know all code changes go through spec-session, no bugfix exception"
     assert "grill-me" in router._LLM_SYSTEM_PROMPT, \
@@ -54,6 +59,30 @@ def _fake_llm_reply(stdout):
             return types.SimpleNamespace(stdout=stdout, returncode=0)
         return types.SimpleNamespace(stdout="", stderr="", returncode=1)
     return fake_run
+
+
+def _fake_llm_sequence(replies):
+    """fake_run returning replies in call order; records prompts."""
+    state = {"inputs": [], "calls": 0}
+
+    def fake_run(cmd, **kwargs):
+        if any("qodercli" in part for part in cmd):
+            state["inputs"].append(kwargs.get("input", ""))
+            idx = state["calls"]
+            state["calls"] += 1
+            return types.SimpleNamespace(
+                stdout=replies[min(idx, len(replies) - 1)], returncode=0)
+        return types.SimpleNamespace(stdout="", stderr="", returncode=1)
+    return fake_run, state
+
+
+def _seed_spec_snapshot(snap_dir, session_id, module, ts=None):
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    if ts is None:
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    path = snap_dir / f"{ts}-{session_id}-{module}.md"
+    path.write_text("# pre-edit")
+    return str(path)
 
 
 def test_recent_requirement_returns_most_recent(monkeypatch):
@@ -119,7 +148,7 @@ def test_approve_prefix_executes(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
     calls = {}
@@ -145,7 +174,7 @@ def test_approve_prefix_executes(monkeypatch):
 def test_approve_unknown_requirement(monkeypatch):
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ ghost"))
 
@@ -160,7 +189,7 @@ def test_approve_prefix_passes_user_id(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     calls = {}
@@ -196,7 +225,7 @@ def test_approve_rejected_fast_via_status_table(monkeypatch, tmp_path):
         "current": None,
     }))
     monkeypatch.setattr(router, "_get_session_id",
-                        lambda uid, req="global": ("sid", True))
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     called = []
@@ -227,7 +256,7 @@ def test_approve_allows_ready_via_status_table(monkeypatch, tmp_path):
         "current": None,
     }))
     monkeypatch.setattr(router, "_get_session_id",
-                        lambda uid, req="global": ("sid", True))
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     called = []
@@ -263,7 +292,7 @@ def test_approve_allows_pending_spec_changed_via_status_table(monkeypatch, tmp_p
         "current": None,
     }))
     monkeypatch.setattr(router, "_get_session_id",
-                        lambda uid, req="global": ("sid", True))
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     called = []
@@ -290,7 +319,7 @@ def test_approve_report_only_returns_error(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req"))
     monkeypatch.setattr(scheduler, "approve",
@@ -316,7 +345,7 @@ def test_history_prefix_lists_runs(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ req\n最近记录如下"))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
@@ -332,7 +361,7 @@ def test_history_prefix_all(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ ALL\n总体情况"))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
@@ -348,7 +377,7 @@ def test_history_empty(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__HISTORY__ ALL"))
     monkeypatch.setattr(scheduler, "load_runs", lambda: {"runs": []})
@@ -362,7 +391,7 @@ def test_history_empty(monkeypatch):
 def test_normal_reply_untouched(monkeypatch):
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("两个需求的当前状态如下…"))
 
@@ -422,7 +451,7 @@ def test_spec_result_registers_change(monkeypatch, tmp_path):
                 stdout="__SPEC_RESULT__ req chg1/m1\n已修改", returncode=0)
         return real_run(cmd, **kwargs)  # git show must run for real
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run", fake_run)
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
@@ -450,7 +479,7 @@ def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -467,7 +496,7 @@ def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
     from wecom_server import router
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ ghost chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -487,7 +516,7 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
     st = StateManager(root).load()
     st["modules"]["chg1/m1"]["status"] = "SYNCED"
     StateManager(root).save(st)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -503,7 +532,7 @@ def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
 
     root, spec_path = _make_spec_root(tmp_path)
     os.remove(spec_path)  # module registered but spec file gone
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -520,7 +549,7 @@ def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req onlyname"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -545,7 +574,7 @@ def test_spec_result_registers_new_module(monkeypatch, tmp_path):
     with open(new_spec, "w") as f:
         f.write("# m2 complete spec")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -568,7 +597,7 @@ def test_spec_result_new_module_no_spec_file(monkeypatch, tmp_path):
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -632,7 +661,7 @@ def test_spec_result_promotes_draft_module(monkeypatch, tmp_path):
     st["modules"]["chg1/m1"]["status"] = "DRAFT"
     sm.save(st)
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -657,7 +686,7 @@ def _seed_gray_drafts(root, drafts):
 
 def _gray_test(monkeypatch, tmp_path, llm_reply, registry_root):
     from wecom_server import router
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply(llm_reply))
     return dispatch("灰名单", [{"name": "req", "root": registry_root}],
@@ -894,7 +923,7 @@ def test_spec_result_autocompletes_module_name(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -927,7 +956,7 @@ def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ req m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -948,7 +977,7 @@ def test_spec_result_single_token_full_key(monkeypatch, tmp_path):
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ chg1/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -966,7 +995,7 @@ def test_spec_result_single_token_unknown_key(monkeypatch, tmp_path):
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__SPEC_RESULT__ ghost/m1"))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
@@ -1077,7 +1106,7 @@ def test_llm_lock_serializes_same_requirement(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router.subprocess, "run", fake_run)
     monkeypatch.setattr(router, "_get_session_id",
-                        lambda uid, req="global": ("sid", True))
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
 
     def worker():
         router._llm_dispatch("改一下 m1 的 spec", registry, "/tmp", "u1")
@@ -1197,7 +1226,7 @@ def test_dispatch_json_approve(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply('好的\n__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
@@ -1225,7 +1254,7 @@ def test_dispatch_json_missing_params(monkeypatch):
     """JSON action with missing required fields returns 缺少参数."""
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply('__JSON_ACTION__ {"action":"approve"}'))
@@ -1239,7 +1268,7 @@ def test_dispatch_json_missing_params(monkeypatch):
 def test_dispatch_json_unknown_action(monkeypatch):
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply('__JSON_ACTION__ {"action":"fly"}'))
@@ -1255,7 +1284,7 @@ def test_dispatch_json_prefix_priority(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply("__HISTORY__ ghost\n"
@@ -1282,7 +1311,7 @@ def test_dispatch_json_invalid_falls_back_to_legacy(monkeypatch):
     """Malformed JSON block degrades to the legacy prefix path."""
     from wecom_server import router
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply("__APPROVE__ ghost"))
@@ -1298,7 +1327,7 @@ def test_dispatch_old_prefix_compat(monkeypatch):
     from wecom_server import router
     import scheduler
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
                         _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
     calls = {}
@@ -1326,7 +1355,7 @@ def test_dispatch_json_spec_result(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
     registry = [{"name": "req", "root": root}]
 
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("sid", True))
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
         _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
@@ -1339,3 +1368,189 @@ def test_dispatch_json_spec_result(monkeypatch, tmp_path):
     from state import StateManager
     st = StateManager(root).load()
     assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"
+
+
+def test_correction_loop_registers_spec_after_edit(monkeypatch, tmp_path):
+    """G edited spec.md (snapshot exists) but replied approve → the server
+    re-drives the same session; G appends spec_result; registration runs
+    and the approve is never executed."""
+    import scheduler as sched_mod
+    from wecom_server import router
+    from state import StateManager
+
+    root, spec_path = _make_spec_root(tmp_path)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+    snap_dir = tmp_path / "snaps"
+    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m1")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+
+    fake_run, state = _fake_llm_sequence([
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+        '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+        '"module":"chg1/m1"}',
+    ])
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+    approved = []
+    monkeypatch.setattr(sched_mod, "approve",
+                        lambda name, approved_by=None:
+                        approved.append(name) or 1)
+    monkeypatch.setattr(sched_mod, "poll", lambda: None)
+    monkeypatch.setattr(sched_mod, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(sched_mod, "dispatch",
+                        lambda entries, max_concurrency=2: [])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": root}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert state["calls"] == 2
+    assert "spec_result" in state["inputs"][1]
+    assert "已登记" in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "PARTIAL"
+    assert not approved
+
+
+def test_correction_loop_skipped_without_spec_edit(monkeypatch, tmp_path):
+    """No spec snapshot for this session → approve executes on the first
+    reply, exactly one LLM turn."""
+    import scheduler as sched_mod
+    from wecom_server import router
+
+    snap_dir = tmp_path / "snaps"  # never created
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+    fake_run, state = _fake_llm_sequence([
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+    ])
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    approved = []
+    monkeypatch.setattr(sched_mod, "approve",
+                        lambda name, approved_by=None:
+                        approved.append(name) or 1)
+    monkeypatch.setattr(sched_mod, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(sched_mod, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(sched_mod, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert state["calls"] == 1
+    assert approved == ["req"]
+    assert "已批准并开始执行" in reply
+
+
+def test_correction_loop_exhausts_then_dispatch(monkeypatch, tmp_path):
+    """G ignores two corrections and keeps replying approve → the last
+    approve goes through the normal path (no infinite loop)."""
+    import scheduler as sched_mod
+    from wecom_server import router
+
+    snap_dir = tmp_path / "snaps"
+    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m1")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+    fake_run, state = _fake_llm_sequence([
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+    ])
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    approved = []
+    monkeypatch.setattr(sched_mod, "approve",
+                        lambda name, approved_by=None:
+                        approved.append(name) or 1)
+    monkeypatch.setattr(sched_mod, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(sched_mod, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(sched_mod, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert state["calls"] == 3
+    assert approved == ["req"]
+    assert "已批准并开始执行" in reply
+
+
+def test_correction_loop_ignores_stale_snapshots(monkeypatch, tmp_path):
+    """Snapshots outside the edit window (e.g. a previous grill-me round)
+    do not trigger the correction loop."""
+    import scheduler as sched_mod
+    from wecom_server import router
+
+    snap_dir = tmp_path / "snaps"
+    _seed_spec_snapshot(snap_dir, "sid", "m1", ts="20260819T181858")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+    fake_run, state = _fake_llm_sequence([
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+    ])
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    approved = []
+    monkeypatch.setattr(sched_mod, "approve",
+                        lambda name, approved_by=None:
+                        approved.append(name) or 1)
+    monkeypatch.setattr(sched_mod, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(sched_mod, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(sched_mod, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert state["calls"] == 1
+    assert approved == ["req"]
+    assert "已批准并开始执行" in reply
+
+
+def test_correction_loop_other_sessions_snapshots_ignored(monkeypatch,
+                                                         tmp_path):
+    """Snapshots from a different session never trigger correction."""
+    import scheduler as sched_mod
+    from wecom_server import router
+
+    snap_dir = tmp_path / "snaps"
+    _seed_spec_snapshot(snap_dir, "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb", "m1")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+    fake_run, state = _fake_llm_sequence([
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+    ])
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    approved = []
+    monkeypatch.setattr(sched_mod, "approve",
+                        lambda name, approved_by=None:
+                        approved.append(name) or 1)
+    monkeypatch.setattr(sched_mod, "load_pending",
+                        lambda: {"pending": [{"requirement": "req"}]})
+    monkeypatch.setattr(sched_mod, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(sched_mod, "dispatch",
+                        lambda entries, max_concurrency=2: ["req"])
+
+    fn = dispatch("批准执行 req", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert state["calls"] == 1
+    assert approved == ["req"]
+    assert "已批准并开始执行" in reply

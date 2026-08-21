@@ -38,7 +38,9 @@ _LLM_SYSTEM_PROMPT = (
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
     "Actions: approve | spec_result(requirement+module) | history | "
     "gray_list | adjudicate(requirement+target+decision)\n"
-    "Do NOT add __JSON_ACTION__ when no action is needed.\n\n"
+    "Do NOT add __JSON_ACTION__ when no action is needed — EXCEPT: "
+    "editing spec.md in this turn makes spec_result MANDATORY in this "
+    "same reply.\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → ~/.qoder/skills/requirement-register/SKILL.md\n"
     "- Spec editing workflow → ~/.qoder/skills/spec-session/SKILL.md\n"
@@ -64,8 +66,11 @@ _LLM_SYSTEM_PROMPT = (
     "blocks, copy content from other modules, or append anything the user "
     "did not confirm.\n"
     "- Never edit .loop/state.json, pending.json, or other loop runtime "
-    "state files directly — they are write-protected. Registration happens "
-    "through the __JSON_ACTION__ spec_result flow after editing spec.md.\n"
+    "state files directly — they are write-protected.\n"
+    "- After editing any spec.md you MUST append __JSON_ACTION__ "
+    "spec_result (requirement + module) at the end of that SAME reply, "
+    "before any other action. Never reply about a spec edit without the "
+    "registration.\n"
     "\n"
     "User: __MESSAGE__\n"
 )
@@ -77,6 +82,16 @@ _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # change_id/module_name must be single path segments: blocks ".." and "/"
 # from escaping the requirement root when building spec paths.
 _MODULE_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+# Audit-hook SPEC_SNAPSHOT files (<YYYYMMDDTHHMMSS>-<session-id>-<module>.md)
+# mark that G edited a spec.md this session; used to re-drive G when it
+# replies without a spec_result registration.
+_SPEC_SNAP_DIR = os.path.expanduser("~/.qoder/loop_engine/spec-snapshots")
+_SPEC_SNAP_RE = re.compile(
+    r"^(\d{8}T\d{6})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12})-(.+)\.md$")
+_SPEC_EDIT_WINDOW = 300  # seconds: covers one grill-me edit + reply round
+_CORRECTION_MAX_ROUNDS = 2
 
 
 # Per-requirement module index: reload only when state.json changes.
@@ -759,6 +774,62 @@ def _recent_requirement(user_id):
     return candidates[0][1]
 
 
+def _recent_spec_snapshots(session_id, now=None):
+    """Modules this session edited within the window, per audit-hook
+    SPEC_SNAPSHOT files. Returns {module_name: mtime}; empty when none."""
+    if not session_id:
+        return {}
+    now = time.time() if now is None else now
+    edited = {}
+    try:
+        names = os.listdir(_SPEC_SNAP_DIR)
+    except OSError:
+        return edited
+    for name in names:
+        m = _SPEC_SNAP_RE.match(name)
+        if not m or m.group(2) != session_id:
+            continue
+        try:
+            ts = time.mktime(time.strptime(m.group(1), "%Y%m%dT%H%M%S"))
+        except ValueError:
+            continue
+        if now - ts <= _SPEC_EDIT_WINDOW:
+            edited.setdefault(m.group(3), ts)
+    return edited
+
+
+def _spec_correction_prompt(session_id):
+    """Prompt re-driving G to append a spec_result registration when it
+    edited spec.md but replied without one. None when nothing to register."""
+    modules = sorted(_recent_spec_snapshots(session_id))
+    if not modules:
+        return None
+    return (
+        "[系统纠正] 你刚才编辑了 spec：" + "、".join(modules) +
+        "，但回复中没有 __JSON_ACTION__ spec_result 登记。硬性规则："
+        "编辑 spec.md 后必须在回复末尾追加 "
+        "__JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":"
+        "\"<需求名>\",\"module\":\"<change_id>/<module_name>\"} 完成登记"
+        "（服务器会备份旧 spec、置 PARTIAL、刷新 pending），登记后由用户"
+        "『批准执行』触发实现，不要直接 approve。请补充 spec_result 登记"
+        "动作后回复。"
+    )
+
+
+def _run_llm_turn(qodercli_path, session_flag, session_id, model, settings,
+                  prompt):
+    """One qodercli --print turn with startup-noise cleanup. Returns the
+    LLM reply text ('' when qodercli produced no usable stdout)."""
+    r = subprocess.run(
+        [qodercli_path, "--print", session_flag, session_id, "--model", model,
+         "--dangerously-skip-permissions", "--settings", settings],
+        input=prompt, capture_output=True, text=True, timeout=900)
+    lines = (r.stdout or "").splitlines()
+    while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
@@ -790,32 +861,48 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     settings = _audit_settings()
     with _llm_lock(requirement or "global"):
         try:
-            r = subprocess.run(
-                [qodercli_path, "--print", session_flag, session_id, "--model", model,
-                 "--dangerously-skip-permissions", "--settings", settings],
-                input=prompt, capture_output=True, text=True, timeout=900,
-            )
-            lines = (r.stdout or "").splitlines()
-            while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
-                lines.pop(0)
-            reply = "\n".join(lines).strip()
+            reply = _run_llm_turn(qodercli_path, session_flag, session_id,
+                                  model, settings, prompt)
             # resume failed (session lost, e.g. after server restart) → create fresh
             if not reply and not is_new:
-                logger.info("[wecom] session %s not found, creating new", session_id)
-                r = subprocess.run(
-                    [qodercli_path, "--print", "--session-id", session_id, "--model", model,
-                     "--dangerously-skip-permissions", "--settings", settings],
-                    input=prompt, capture_output=True, text=True, timeout=900,
-                )
-                lines = (r.stdout or "").splitlines()
-                while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
-                    lines.pop(0)
-                reply = "\n".join(lines).strip()
+                logger.info("[wecom] session %s not found, creating new",
+                            session_id)
+                reply = _run_llm_turn(qodercli_path, "--session-id", session_id,
+                                      model, settings, prompt)
         except Exception as e:
             logger.error("[wecom] LLM dispatch error: %s", e)
             return f"处理失败：{e}"
     if not reply:
         return "无响应，请稍后再试。"
+    # Correction loop: G edited spec.md this round (audit-hook snapshot
+    # within the window) but replied without a spec_result registration.
+    # Re-drive the same session so it appends __JSON_ACTION__ spec_result
+    # before we act on its reply — approve must not run on unregistered
+    # spec changes. Give up after a few rounds so a stubborn G can't hang
+    # the reply; its last action then goes through the normal dispatch.
+    rounds = 0
+    while (rounds < _CORRECTION_MAX_ROUNDS
+           and _recent_spec_snapshots(session_id)
+           and "spec_result" not in reply):
+        correction = _spec_correction_prompt(session_id)
+        if not correction:
+            break
+        logger.info("[wecom] correction round %d for session %s",
+                    rounds + 1, session_id)
+        corrected = _run_llm_turn(qodercli_path, "--resume", session_id,
+                                  model, settings, correction)
+        if not corrected:
+            break
+        reply = corrected
+        rounds += 1
+    return _process_llm_reply(reply, message, requirement, registry,
+                              data_dir, user_id)
+
+
+def _process_llm_reply(reply, message, requirement, registry, data_dir,
+                       user_id):
+    """Parse and execute a G reply: __JSON_ACTION__ block wins over legacy
+    prefixes; otherwise plain text passes through. Returns user-facing text."""
     if requirement and not reply.startswith(("__", "【")):
         reply = f"【{requirement}】\n{reply}"
     json_match = _JSON_ACTION_RE.search(reply)

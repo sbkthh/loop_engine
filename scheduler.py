@@ -23,6 +23,7 @@ import requests  # noqa: E402 — used by notify_pending()
 
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
+                        compute_plan_hash, derive_plan_path,
                         discover_modules)
 from wecom_server.wecom_api import md_bold, md_color
 
@@ -48,6 +49,7 @@ DRAFT = "DRAFT"
 SPEC_CHANGED = "SPEC_CHANGED"
 READY_PENDING = "READY_PENDING"
 GRAY_LIST = "GRAY_LIST"
+PLAN_CHANGED = "PLAN_CHANGED"
 
 _TRIGGER_FOR_STATUS = {s: v["trigger"] for s, v in STATUS_TABLE.items()
                        if v["trigger"]}
@@ -57,6 +59,7 @@ _TRIGGER_PRIORITY = tuple(s for s in STATUS_TABLE
 _TRIGGER_LABELS = {v["trigger"]: v["label"]
                    for v in STATUS_TABLE.values() if v["trigger"]}
 _TRIGGER_LABELS[GRAY_LIST] = "灰名单"  # non-status exception: draft adjudication
+_TRIGGER_LABELS[PLAN_CHANGED] = "方案变更"  # non-status exception: plan rewrite
 
 DEFAULT_CONFIG = {"max_concurrency": 2, "last_run": None}
 
@@ -153,6 +156,7 @@ def _poll_requirement(root, name):
     for key, module in modules.items():
         status = module.get("status")
         hash_changed = False
+        plan_changed = False
         if status in (SYNCED, NEEDS_REFINEMENT):
             # NEEDS_REFINEMENT: spec 完善后重新进入评分循环；
             # 未变时保持报告状态，不能像 SYNCED 一样整体跳过
@@ -171,13 +175,28 @@ def _poll_requirement(root, name):
                     hash_changed = True
                     status = PARTIAL
             elif status == SYNCED:
-                continue  # unchanged synced module: nothing to do
+                # spec unchanged — a rewritten plan still re-enters the
+                # loop (machine.next() routes plan-hash mismatch to
+                # MAKER_STEP1_RED); without this, approval after a plan
+                # rewrite finds no pending entry and does nothing
+                plan_path = derive_plan_path(
+                    module.get("change_id", ""),
+                    module.get("module_name", ""), root)
+                current_plan = compute_plan_hash(plan_path)
+                stored_plan = module.get("plan_hash")
+                if stored_plan and current_plan and \
+                        current_plan != stored_plan:
+                    plan_changed = True
+                    status = PARTIAL
+                else:
+                    continue  # unchanged synced module: nothing to do
         if status not in _TRIGGER_FOR_STATUS:
             continue
         detected.append({
             "key": key,
             "status": status,
             "spec_hash_changed": hash_changed,
+            "plan_hash_changed": plan_changed,
             "cross_project": bool(module.get("project_root"))
             and module.get("project_root") != ".",
         })
@@ -198,6 +217,9 @@ def _poll_requirement(root, name):
     else:
         trigger = next(_TRIGGER_FOR_STATUS[s] for s in _TRIGGER_PRIORITY
                        if any(m["status"] == s for m in detected))
+        if not any(m.get("spec_hash_changed") for m in detected) and \
+                any(m.get("plan_hash_changed") for m in detected):
+            trigger = PLAN_CHANGED
     return {
         "requirement": name,
         "root": root,

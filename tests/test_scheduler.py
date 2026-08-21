@@ -228,6 +228,43 @@ class TestPoll(SchedulerBase):
 
         self.assertEqual(scheduler.poll(), [])
 
+    def test_poll_plan_changed_creates_pending_entry(self):
+        """A SYNCED module whose plan was rewritten (spec unchanged) must be
+        detected as pending work — otherwise approval after a plan rewrite
+        finds no entry and does nothing."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        m = _module("c", "m", "SYNCED", spec_hash=h)
+        m["plan_hash"] = "stale"
+        _make_state(root, {"c/m": m})
+        plan_path = os.path.join(root, "openspec/changes/c/plans/m-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("rewritten plan")
+
+        entries = scheduler.poll()
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["trigger"], "PLAN_CHANGED")
+        mods = entries[0]["modules"]
+        self.assertEqual(mods[0]["status"], "PARTIAL")
+        self.assertTrue(mods[0]["plan_hash_changed"])
+        self.assertFalse(mods[0]["spec_hash_changed"])
+        self.assertEqual(scheduler.approve("req"), 1)
+
+    def test_poll_synced_matching_plan_not_detected(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        plan_path = os.path.join(root, "openspec/changes/c/plans/m-plan.md")
+        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+        with open(plan_path, "w") as f:
+            f.write("same plan")
+        m = _module("c", "m", "SYNCED", spec_hash=h)
+        m["plan_hash"] = scheduler.compute_plan_hash(plan_path)
+        _make_state(root, {"c/m": m})
+
+        self.assertEqual(scheduler.poll(), [])
+
     def test_poll_ready(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_spec(root, "c", "m")

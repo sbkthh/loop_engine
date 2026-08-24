@@ -118,6 +118,71 @@ def test_recent_requirement_scoped_per_user(monkeypatch):
     assert router._recent_requirement("u2") is None
 
 
+def test_system_state_snapshot_lists_partial_modules(tmp_path):
+    """PARTIAL modules appear in the shared snapshot; SYNCED ones do not."""
+    from wecom_server import router
+    import json
+    root = tmp_path / "proj"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {
+            "c/a": {"status": "PARTIAL"},
+            "c/b": {"status": "SYNCED"},
+        }
+    }))
+    snap = router._system_state_snapshot([{"name": "reqA", "root": str(root)}])
+    assert "reqA" in snap
+    assert "c/a:PARTIAL" in snap
+    assert "c/b" not in snap
+
+
+def test_system_state_snapshot_includes_pending(tmp_path, monkeypatch):
+    """Pending entries carry requirement, trigger, approval state, modules."""
+    from wecom_server import router
+    import json
+    import scheduler
+    monkeypatch.setattr(scheduler, "PENDING_PATH", str(tmp_path / "pending.json"))
+    (tmp_path / "pending.json").write_text(json.dumps({
+        "pending": [{
+            "requirement": "reqA",
+            "trigger": "SPEC_CHANGED",
+            "approved": False,
+            "modules": [{"key": "c/a"}],
+        }]
+    }))
+    snap = router._system_state_snapshot([])
+    assert "待办 reqA" in snap
+    assert "待批准" in snap
+    assert "SPEC_CHANGED" in snap
+    assert "c/a" in snap
+
+
+def test_system_state_snapshot_all_synced(tmp_path, monkeypatch):
+    """No pending work yields an explicit 'nothing pending' statement."""
+    from wecom_server import router
+    import scheduler
+    monkeypatch.setattr(scheduler, "PENDING_PATH", str(tmp_path / "missing.json"))
+    snap = router._system_state_snapshot([])
+    assert "无待办变更" in snap
+    assert "git" in snap, "must steer G away from git-history answers"
+
+
+def test_dispatch_prompt_injects_state_snapshot(monkeypatch):
+    """Every LLM dispatch prompt carries the shared system-state snapshot."""
+    from wecom_server import router
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router, "_system_state_snapshot",
+                        lambda registry: "\n\n【当前系统状态】FAKE-STATE")
+    fake, state = _fake_llm_sequence(["普通回复"])
+    monkeypatch.setattr(router.subprocess, "run", fake)
+    fn = dispatch("查看 req 状态", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+    assert "FAKE-STATE" in state["inputs"][0]
+
+
 def test_keywordless_reply_routes_to_recent_requirement(monkeypatch):
     """A short grill-me answer with no keyword routes to the recently
     active requirement session; the LLM classifier is never invoked."""
@@ -1277,6 +1342,52 @@ def test_dispatch_json_unknown_action(monkeypatch):
     reply = fn()
 
     assert reply == "未知 action：fly"
+
+
+def test_dispatch_json_keeps_assistant_body(monkeypatch):
+    """JSON action 动作结果与 G 正文拼接返回：spec_result 的变更披露不再被吞。"""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply(
+                            "【req】刚修正一处 spec 笔误：SKU → SKU销售单位。\n\n"
+                            '__JSON_ACTION__ {"action":"spec_result",'
+                            '"requirement":"req","module":"c/m"}'))
+    monkeypatch.setattr(router, "_dispatch_json_action",
+                        lambda payload, registry, data_dir, user_id:
+                        "spec 变更已登记：req/c/m")
+
+    fn = dispatch("查看 req 需求情况", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert "刚修正一处 spec 笔误" in reply
+    assert "spec 变更已登记：req/c/m" in reply
+    assert "__JSON_ACTION__" not in reply
+
+
+def test_dispatch_json_without_body_returns_result_only(monkeypatch):
+    """无正文的纯动作回复保持原行为：只返回动作结果。"""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply(
+                            '__JSON_ACTION__ {"action":"history"}'))
+    monkeypatch.setattr(router, "_dispatch_json_action",
+                        lambda payload, registry, data_dir, user_id:
+                        "最近 0 次执行")
+
+    fn = dispatch("查 req 历史", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert reply == "最近 0 次执行"
 
 
 def test_dispatch_json_prefix_priority(monkeypatch):

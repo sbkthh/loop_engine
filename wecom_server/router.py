@@ -774,6 +774,46 @@ def _recent_requirement(user_id):
     return candidates[0][1]
 
 
+def _system_state_snapshot(registry):
+    """Compact real-time state across requirements: PARTIAL modules and
+    pending approvals. Injected into every G prompt so answers about the
+    current state come from a shared fact layer, not session memory — a
+    spec edit made in one session is visible to every other session."""
+    lines = []
+    for req in registry:
+        root = req.get("root", "")
+        name = req.get("name")
+        if not root or not name:
+            continue
+        try:
+            with open(os.path.join(root, ".loop", "state.json")) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            continue
+        mods = sorted(f"{key}:{m.get('status')}"
+                      for key, m in st.get("modules", {}).items()
+                      if m.get("status") == "PARTIAL")
+        if mods:
+            lines.append(f"- {name}：{', '.join(mods)}")
+    import scheduler as _sched
+    try:
+        with open(_sched.PENDING_PATH) as f:
+            pend = json.load(f)
+        for p in pend.get("pending", []):
+            state = "已批准" if p.get("approved") else "待批准"
+            keys = ", ".join(m.get("key", "?") for m in p.get("modules", []))
+            lines.append(f"- 待办 {p.get('requirement')}：{state}（触发 "
+                         f"{p.get('trigger')}，模块 {keys}）")
+    except (OSError, ValueError):
+        pass
+    if not lines:
+        return ("\n\n【当前系统状态】所有需求模块已同步，无待办变更。回答"
+                "『当前变更/状态』类问题时直接据此作答，不要用 git 提交历史推测。")
+    return ("\n\n【当前系统状态】（server 从 .loop/state.json 与 pending.json "
+            "实时生成，所有会话一致；回答『当前变更/状态』类问题以此为准，"
+            "不要用 git 提交历史推测）\n" + "\n".join(lines))
+
+
 def _recent_spec_snapshots(session_id, now=None):
     """Modules this session edited within the window, per audit-hook
     SPEC_SNAPSHOT files. Returns {module_name: mtime}; empty when none."""
@@ -843,6 +883,9 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     _touch_recent(user_id, requirement)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__MESSAGE__", message, 1)
+    # Shared fact layer: real-time state injected into every session so
+    # answers never depend on which session the message landed in.
+    prompt += _system_state_snapshot(registry)
     # Tell G about background files so it can read them when needed, instead
     # of relying on static injection that would waste tokens on every message.
     if requirement:
@@ -914,12 +957,18 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
                            "falling back to legacy prefixes")
             payload = None
         if payload is not None:
+            body = _JSON_ACTION_RE.sub("", reply).strip()
             if payload.get("action") == "approve" and not _user_intends_approve(message):
                 name = payload.get("requirement") or ""
-                return (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
-                        f"如需执行，请本人回复：批准执行 {name}")
-            return _dispatch_json_action(payload, registry, data_dir,
-                                         user_id)
+                result = (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
+                          f"如需执行，请本人回复：批准执行 {name}")
+            else:
+                result = _dispatch_json_action(payload, registry, data_dir,
+                                               user_id)
+            if not body:
+                return result
+            # G 正文（含 spec 变更披露）与动作结果拼接，避免动作执行吞掉正文
+            return f"{body}\n\n{result}"
     if reply.startswith(_LEGACY_PREFIXES):
         logger.info("[wecom] legacy prefix reply (deprecated, prefer "
                     "__JSON_ACTION__)")

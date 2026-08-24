@@ -183,6 +183,30 @@ def test_dispatch_prompt_injects_state_snapshot(monkeypatch):
     assert "FAKE-STATE" in state["inputs"][0]
 
 
+def test_unregistered_edits_missing_detection(monkeypatch, tmp_path):
+    """Correction gap = edited modules minus registered spec_result modules;
+    full registration yields an empty gap."""
+    from wecom_server import router
+
+    snap_dir = tmp_path / "snaps"
+    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m1")
+    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m2")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
+    sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    missing = router._unregistered_edits(
+        sid, '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"chg1/m1"}')
+    assert missing == {"m2"}
+
+    missing = router._unregistered_edits(
+        sid, '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"chg1/m1"}\n'
+             '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"m2"}')
+    assert missing == set()
+
+
 def test_keywordless_reply_routes_to_recent_requirement(monkeypatch):
     """A short grill-me answer with no keyword routes to the recently
     active requirement session; the LLM classifier is never invoked."""
@@ -590,6 +614,28 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
     reply = fn()
 
     assert "没有变化" in reply
+
+
+def test_spec_result_duplicate_registration_returns_registered(monkeypatch, tmp_path):
+    """PARTIAL module with matching hash = already registered; a repeat
+    spec_result says '已登记' instead of a misleading '没有变化' error."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    st = StateManager(root).load()
+    st["modules"]["chg1/m1"]["status"] = "PARTIAL"
+    StateManager(root).save(st)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "已登记" in reply
+    assert "没有变化" not in reply
 
 
 def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
@@ -1390,6 +1436,38 @@ def test_dispatch_json_without_body_returns_result_only(monkeypatch):
     assert reply == "最近 0 次执行"
 
 
+def test_dispatch_json_multiple_blocks_all_executed(monkeypatch):
+    """G emits one spec_result block per edited module → every block
+    executes, the body is preserved, and no __JSON_ACTION__ residue stays."""
+    from wecom_server import router
+
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(
+        router.subprocess, "run",
+        _fake_llm_reply(
+            "【req】branch_stock_amount 类型已写入 3 处 spec。\n\n"
+            '__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"c/a"}\n'
+            '__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"c/b"}\n'
+            '__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"c/c"}'))
+    calls = []
+    monkeypatch.setattr(router, "_execute_spec_result",
+                        lambda name, module, registry, data_dir:
+                        calls.append(module) or f"spec 变更已登记：{module}")
+
+    fn = dispatch("战略备货 确认改类型", [{"name": "req", "root": "/tmp/x"}],
+                  "/tmp", "u1")
+    reply = fn()
+
+    assert calls == ["c/a", "c/b", "c/c"], "every JSON action block must run"
+    assert "branch_stock_amount 类型已写入" in reply
+    assert "spec 变更已登记：c/a" in reply
+    assert "spec 变更已登记：c/b" in reply
+    assert "spec 变更已登记：c/c" in reply
+    assert "__JSON_ACTION__" not in reply
+
+
 def test_dispatch_json_prefix_priority(monkeypatch):
     """JSON action block wins even when a legacy prefix is present."""
     from wecom_server import router
@@ -1482,9 +1560,10 @@ def test_dispatch_json_spec_result(monkeypatch, tmp_path):
 
 
 def test_correction_loop_registers_spec_after_edit(monkeypatch, tmp_path):
-    """G edited spec.md (snapshot exists) but replied approve → the server
-    re-drives the same session; G appends spec_result; registration runs
-    and the approve is never executed."""
+    """G edited spec.md (snapshot exists) but replied approve without
+    registration → the server re-drives the session; G appends spec_result;
+    registration runs AND the original approve is carried back, so the
+    user's approval takes effect in the same dispatch."""
     import scheduler as sched_mod
     from wecom_server import router
     from state import StateManager
@@ -1513,7 +1592,7 @@ def test_correction_loop_registers_spec_after_edit(monkeypatch, tmp_path):
     monkeypatch.setattr(sched_mod, "load_config",
                         lambda: {"max_concurrency": 2})
     monkeypatch.setattr(sched_mod, "dispatch",
-                        lambda entries, max_concurrency=2: [])
+                        lambda entries, max_concurrency=2: ["req"])
 
     fn = dispatch("批准执行 req", [{"name": "req", "root": root}],
                   "/tmp", "u1")
@@ -1523,7 +1602,8 @@ def test_correction_loop_registers_spec_after_edit(monkeypatch, tmp_path):
     assert "spec_result" in state["inputs"][1]
     assert "已登记" in reply
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "PARTIAL"
-    assert not approved
+    assert approved == ["req"], "approve declared before correction must still run"
+    assert "已批准并开始执行" in reply
 
 
 def test_correction_loop_skipped_without_spec_edit(monkeypatch, tmp_path):

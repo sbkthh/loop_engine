@@ -574,9 +574,12 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         old_hash = None
     else:
         old_hash = st["modules"][module_key].get("spec_hash")
-        if old_hash == new_hash and \
-                st["modules"][module_key].get("status") != DRAFT:
-            return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
+        if old_hash == new_hash:
+            if st["modules"][module_key].get("status") == PARTIAL:
+                return (f"{module_key} 已登记（spec hash {new_hash[:8]}），"
+                        f"等待『批准执行 {name}』触发实现")
+            if st["modules"][module_key].get("status") != DRAFT:
+                return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
     backup_dir = os.path.join(root, ".loop", "backup")
     os.makedirs(backup_dir, exist_ok=True)
     backup_path = os.path.join(
@@ -838,6 +841,29 @@ def _recent_spec_snapshots(session_id, now=None):
     return edited
 
 
+def _json_action_payloads(reply):
+    """All __JSON_ACTION__ payloads in a reply, in order; malformed blocks
+    are skipped. G may emit one block per module, so dispatch must not
+    stop at the first match."""
+    payloads = []
+    for m in _JSON_ACTION_RE.finditer(reply):
+        try:
+            payloads.append(json.loads(m.group(1)))
+        except ValueError:
+            continue
+    return payloads
+
+
+def _unregistered_edits(session_id, reply):
+    """Modules this session edited within the window but not covered by a
+    spec_result block in reply. Drives the correction loop."""
+    edited = set(_recent_spec_snapshots(session_id))
+    registered = {p.get("module", "").rsplit("/", 1)[-1]
+                  for p in _json_action_payloads(reply)
+                  if p.get("action") == "spec_result"}
+    return edited - registered
+
+
 def _spec_correction_prompt(session_id):
     """Prompt re-driving G to append a spec_result registration when it
     edited spec.md but replied without one. None when nothing to register."""
@@ -918,26 +944,39 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     if not reply:
         return "无响应，请稍后再试。"
     # Correction loop: G edited spec.md this round (audit-hook snapshot
-    # within the window) but replied without a spec_result registration.
+    # within the window) but its reply did not register every edited module.
     # Re-drive the same session so it appends __JSON_ACTION__ spec_result
     # before we act on its reply — approve must not run on unregistered
     # spec changes. Give up after a few rounds so a stubborn G can't hang
     # the reply; its last action then goes through the normal dispatch.
     rounds = 0
-    while (rounds < _CORRECTION_MAX_ROUNDS
-           and _recent_spec_snapshots(session_id)
-           and "spec_result" not in reply):
+    missing = _unregistered_edits(session_id, reply)
+    while rounds < _CORRECTION_MAX_ROUNDS and missing:
         correction = _spec_correction_prompt(session_id)
         if not correction:
             break
         logger.info("[wecom] correction round %d for session %s",
                     rounds + 1, session_id)
+        approved_before = [p for p in _json_action_payloads(reply)
+                           if p.get("action") == "approve"]
         corrected = _run_llm_turn(qodercli_path, "--resume", session_id,
                                   model, settings, correction)
         if not corrected:
             break
+        # G re-focusing on registration may drop the approve it already
+        # declared — carry it back so "register first, approve after"
+        # completes in this same dispatch and the user's approval is not
+        # swallowed by the correction round.
+        if approved_before and not any(
+                p.get("action") == "approve"
+                for p in _json_action_payloads(corrected)):
+            keep = "\n\n".join(
+                f"__JSON_ACTION__ {json.dumps(p, ensure_ascii=False)}"
+                for p in approved_before)
+            corrected = corrected.rstrip() + "\n\n" + keep
         reply = corrected
         rounds += 1
+        missing = _unregistered_edits(session_id, reply)
     return _process_llm_reply(reply, message, requirement, registry,
                               data_dir, user_id)
 
@@ -948,27 +987,24 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
     prefixes; otherwise plain text passes through. Returns user-facing text."""
     if requirement and not reply.startswith(("__", "【")):
         reply = f"【{requirement}】\n{reply}"
-    json_match = _JSON_ACTION_RE.search(reply)
-    if json_match:
-        try:
-            payload = json.loads(json_match.group(1))
-        except ValueError:
-            logger.warning("[wecom] __JSON_ACTION__ invalid JSON, "
-                           "falling back to legacy prefixes")
-            payload = None
-        if payload is not None:
-            body = _JSON_ACTION_RE.sub("", reply).strip()
+    payloads = _json_action_payloads(reply)
+    if payloads:
+        body = _JSON_ACTION_RE.sub("", reply).strip()
+        results = []
+        for payload in payloads:
             if payload.get("action") == "approve" and not _user_intends_approve(message):
                 name = payload.get("requirement") or ""
-                result = (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
-                          f"如需执行，请本人回复：批准执行 {name}")
+                results.append(
+                    f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
+                    f"如需执行，请本人回复：批准执行 {name}")
             else:
-                result = _dispatch_json_action(payload, registry, data_dir,
-                                               user_id)
-            if not body:
-                return result
-            # G 正文（含 spec 变更披露）与动作结果拼接，避免动作执行吞掉正文
-            return f"{body}\n\n{result}"
+                results.append(_dispatch_json_action(payload, registry,
+                                                     data_dir, user_id))
+        result = "\n\n".join(r for r in results if r)
+        if not body:
+            return result
+        # G 正文（含 spec 变更披露）与动作结果拼接，避免动作执行吞掉正文
+        return f"{body}\n\n{result}"
     if reply.startswith(_LEGACY_PREFIXES):
         logger.info("[wecom] legacy prefix reply (deprecated, prefer "
                     "__JSON_ACTION__)")

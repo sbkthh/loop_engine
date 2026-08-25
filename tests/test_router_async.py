@@ -232,6 +232,46 @@ def test_keywordless_reply_routes_to_recent_requirement(monkeypatch):
     assert "classified" not in routed
 
 
+def test_global_intent_message_stays_global(monkeypatch):
+    """'看一下需求状态' is a cross-requirement question: it must NOT fall
+    back to the recent requirement session (or the LLM classifier), so the
+    reply prefix is 【通用】 instead of the last-touched requirement."""
+    from wecom_server import router
+
+    routed = {}
+    monkeypatch.setattr(router, "_detect_requirement",
+                        lambda msg, reg: None)
+    monkeypatch.setattr(router, "_recent_requirement",
+                        lambda uid: routed.__setitem__("recent", True) or "reqA")
+    monkeypatch.setattr(router, "_classify_requirement",
+                        lambda msg, reg: routed.__setitem__("classified", True) or "reqA")
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        routed.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("【通用】当前所有需求均已同步。"))
+
+    fn = dispatch("看一下需求状态",
+                  [{"name": "reqA", "root": "/tmp/x"}], "/tmp", "u1")
+    fn()
+    assert routed.get("req") == "global"
+    assert "recent" not in routed
+    assert "classified" not in routed
+
+
+def test_global_intent_regex_does_not_catch_short_answers(monkeypatch):
+    """Short grill-me answers and bare status questions (no requirement
+    name) must keep routing to the recent requirement session."""
+    from wecom_server import router
+
+    for msg in ("可以", "改吧", "继续", "确认", "现在什么状态", "状态怎么样",
+                "随便聊聊", "好"):
+        assert not router._GLOBAL_INTENT_RE.search(msg), f"{msg!r} 不应是全局意图"
+    for msg in ("看一下需求状态", "所有需求状态", "总览一下", "全部需求汇总",
+                "各需求进度", "整体情况", "所有模块状态"):
+        assert router._GLOBAL_INTENT_RE.search(msg), f"{msg!r} 应为全局意图"
+
+
 def test_approve_prefix_executes(monkeypatch):
     """__APPROVE__ prefix triggers real scheduler.approve + dispatch."""
     from wecom_server import router

@@ -29,7 +29,9 @@ _LLM_STDOUT_NOISE = (
 _LLM_SYSTEM_PROMPT = (
     "You are a WeCom bot assistant for the loop_engine project.\n\n"
     "Answer concisely in Chinese. "
-    "Every reply MUST start with '【<requirement name>】' (use 【通用】 when unknown). "
+    "Every reply MUST start with '【<requirement name>】'; use 【通用】 "
+    "for global/cross-requirement questions (总览、所有需求状态) and when "
+    "unknown. "
     "Keep reply under 500 chars. "
     "Use only WeCom markdown: **bold**, > quote, "
     "<font color=\"info|comment|warning\">text</font>. "
@@ -176,6 +178,16 @@ def _get_session_id(user_id, requirement="global"):
     with open(path, "w") as f:
         f.write(sid)
     return sid, True
+
+
+# Global/cross-requirement intent: when no requirement name or module key
+# is mentioned, these words mean the message asks about ALL requirements
+# (总览/所有需求状态…) — stay in the global session instead of falling
+# back to the most recently active requirement session.
+_GLOBAL_INTENT_RE = re.compile(
+    r"总览|汇总|概览|一览|全局|整体|总体|所有需求|全部需求|每个需求|各需求|"
+    r"需求状态|模块状态|所有模块|全部模块"
+)
 
 
 def _detect_requirement(message, registry):
@@ -901,9 +913,11 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
     model = _get_model()
     requirement = _detect_requirement(message, registry)
-    if not requirement:
+    if not requirement and not _GLOBAL_INTENT_RE.search(message):
         # no keyword hit — try the most recently active requirement session
-        # first (covers short grill-me answers), then the LLM classifier
+        # first (covers short grill-me answers), then the LLM classifier.
+        # Global-intent questions (总览/所有需求状态…) skip the fallback and
+        # stay in the global session so the reply is prefixed 【通用】.
         requirement = _recent_requirement(user_id) \
             or _classify_requirement(message, registry)
     _touch_recent(user_id, requirement)

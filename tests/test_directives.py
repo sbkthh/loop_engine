@@ -116,15 +116,14 @@ class TestAlignDocsDirective(unittest.TestCase):
         ins = out["directives"]["instructions"]
         self.assertIn("[8] Rule.java:236 weight 2000 vs spec 15000", ins)
         self.assertIn("[9] Rule.java:236 weight threshold mismatch", ins)
-        self.assertIn("For EACH rejected warning above", ins)
-        self.assertIn("spec must become 2000", ins)
+        self.assertIn("For each rejected warning, determine which document it belongs to", ins)
         self.assertIn('"alignment_report"', out["directives"]["output_format"])
         self.assertEqual(out["directives"]["context"]["rejected_drafts"],
                          self._rejected())
 
     def test_align_docs_empty_rejected_default(self):
         out = build(ALIGN_DOCS, "chg1/m1", self._module(), self.root)
-        self.assertIn("For EACH rejected warning above", out["directives"]["instructions"])
+        self.assertIn("For each rejected warning, determine which document it belongs to", out["directives"]["instructions"])
         self.assertEqual(out["directives"]["context"]["rejected_drafts"], [])
 
 

@@ -15,6 +15,7 @@ from setup import setup_requirement, init_from_prd, add_project_to_requirement
 import report
 import registry
 import scheduler
+import scope_audit
 from wecom_server.wecom_api import md_bold
 
 
@@ -636,6 +637,10 @@ def cmd_wecom_config(args):
         print("No values entered, config not saved.")
 
 
+def cmd_scope_audit(args):
+    scope_audit.cmd_scope_audit(args)
+
+
 def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--root", "-r", default=".", help="Root directory")
@@ -784,6 +789,10 @@ def main():
                        help="(internal) Release a manual-session lock")
     p.add_argument("root", help="Requirement root dir")
     p.set_defaults(func=cmd_manual_end)
+
+    p = sub.add_parser("scope-audit", parents=[common],
+                       help="Compare declared file changes against actual git status")
+    p.set_defaults(func=cmd_scope_audit)
 
     p = sub.add_parser("session-clean", parents=[common],
                        help="Delete old qodercli session files (~/.qoder/projects)")

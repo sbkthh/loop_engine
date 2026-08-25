@@ -267,6 +267,8 @@ CHECKER ─→ 硬错误 → MAKER_FIX ─→ CHECKER（最多 3 次，用尽转
 BLOCKED（hard_errors 用尽 / 手动标记）：需人工介入，改 spec 或 reset 后恢复
 ```
 
+> **ALIGN_DOCS 文档分工**：spec.md 只承载**契约**（字段表、API 签名、状态机、业务规则、Scenarios）；**实现细节**（事务边界、IO 位置、算法参数、技术决策）写入 `openspec/changes/<change_id>/design.md`；plan.md 更新任务描述、文件归属、数据流。Checker 拒绝的每条警告按归属写入对应文档——契约分歧改 spec.md，实现层分歧改 design.md。
+
 ---
 
 ## 五、Layer 2 调度器（自动轮询）
@@ -400,12 +402,17 @@ loop_engine add-blocker --root <path> <module> <description>
 # 解决 DRAFT 决议
 loop_engine resolve-draft --root <path> <id> accept|reject
 
+# 审计未申报改动：比对模块声明的 files_created/files_modified 与实际 git 工作区改动
+loop_engine scope-audit --root <path>
+
 # 手动接管锁（调试用，已废弃——优先用 approve 走调度器）
 loop_engine manual-begin --root <path>
 
 # 手动结束循环（调试用，已废弃）
 loop_engine manual-end --root <path>
 ```
+
+> scope-audit 是**只读审计**：发现未申报改动时打印完整报告并自动推微信通知；工作区干净时静默无输出。检测基线是 git 未提交改动（含未跟踪文件），不含已提交历史。
 
 ---
 
@@ -510,7 +517,7 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 
 ### 可用命令
 
-- `查状态` — 查看所有需求状态
+- `查状态` / `总览` / `所有需求状态` — 查看所有需求状态。跨需求全局问题统一走 global 会话，回复前缀为 【通用】；消息带需求名/模块名时路由到对应需求会话（前缀【需求名】），无关键词的短应答自动回到最近会话
 - `批准执行` — 批准待执行的需求（有未裁决灰名单草稿时会被拒绝）
 - `注册需求`（发 PRD 路径 + 需求名/根目录/change-id/项目仓库）— 自动执行 `requirement-add --prd`
 - `给 XX 加项目`（如"给越库二期加项目 kunhe-wms"，附源仓库路径）— 自动执行 `requirement-add-project`：创建 worktree 并注册到需求，分支缺省沿用需求内第一个项目的分支
@@ -675,6 +682,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── report.py                   # 报告生成
 ├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
 ├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
+├── scope_audit.py              # 未申报改动审计（声明 vs git 实际，可推微信）
 ├── setup.py                    # Phase 0 初始化
 ├── registry.py                 # 需求注册表
 ├── constants.py                # 常量（含 STATUS_TABLE 状态真值表）

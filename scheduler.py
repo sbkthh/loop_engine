@@ -987,7 +987,6 @@ def run_requirement(name):
         prev_result = None  # previous step's result.md content, fed to next step
         end = "max_steps"
         while steps < MAX_TOTAL_STEPS:
-            steps += 1
             failure_detail = None  # don't leak a retried step's error into a later failure notice
             step_start = time.monotonic()
             try:
@@ -1019,7 +1018,7 @@ def run_requirement(name):
             else:
                 same_action = 1
                 last_action = action
-            _log(f"run {name}: step {steps} action={action} "
+            _log(f"run {name}: step {steps + 1} action={action} "
                  f"module={directives.get('module', '-')}")
             payload = directives
             if prev_result is not None:
@@ -1146,6 +1145,7 @@ def run_requirement(name):
                     continue
                 end = "commit_error"
                 break
+            steps += 1
             if not commit.get("next_action"):
                 _log(f"run {name}: no state advance, stopping")
                 end = "no_advance"

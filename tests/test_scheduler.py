@@ -804,7 +804,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "idle")
-        self.assertEqual(result["steps"], 3)
+        self.assertEqual(result["steps"], 2)
         self.assertFalse(scheduler.is_locked(root))
         self.assertEqual(scheduler.load_pending()["pending"], [])
         with open(scheduler.LOG_PATH) as f:
@@ -852,7 +852,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "commit_error")
-        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["steps"], 0)
         self.assertFalse(scheduler.is_locked(root))
 
     def test_run_no_advance_stops(self):
@@ -905,7 +905,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "repeat_limit")
-        self.assertEqual(result["steps"], 3)
+        self.assertEqual(result["steps"], 2)
         self.assertFalse(scheduler.is_locked(root))
 
     def test_run_not_registered(self):
@@ -1150,7 +1150,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "idle")
-        self.assertEqual(result["steps"], 3)
+        self.assertEqual(result["steps"], 1)
         self.assertFalse(scheduler.is_locked(root))
 
     def test_run_retries_commit_error_once(self):
@@ -1161,7 +1161,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "idle")
-        self.assertEqual(result["steps"], 3)
+        self.assertEqual(result["steps"], 1)
 
     def test_run_qodercli_failure_after_retry(self):
         root = self._register_pending("req")
@@ -1171,7 +1171,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "qodercli_failed")
-        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["steps"], 0)
 
     def test_run_commit_error_after_retry(self):
         root = self._register_pending("req")
@@ -1181,7 +1181,7 @@ class TestRun(SchedulerBase):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "commit_error")
-        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["steps"], 0)
 
     def test_run_qodercli_timeout_retries_then_fails(self):
         """A hung LLM call (TimeoutExpired) is killed and treated like an
@@ -1406,7 +1406,7 @@ class TestRun(SchedulerBase):
         r = runs[0]
         self.assertEqual(r["requirement"], "req")
         self.assertEqual(r["end"], "idle")
-        self.assertEqual(r["steps"], 3)
+        self.assertEqual(r["steps"], 2)
         self.assertGreaterEqual(r["duration_seconds"], 0)
         self.assertIn("started_at", r)
         self.assertIn("finished_at", r)

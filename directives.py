@@ -74,8 +74,10 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["instructions"] = (
             "Read the spec file. Compare with the previous version (hash changed).\n"
             "Classify the change magnitude:\n"
-            "- 轻量 (lightweight): typo, constraint tweak, field rename, enum value add, comment/format\n"
-            "- 重量 (heavy): new Scenario/field/API, business logic change, interface call-mode change"
+            "- 轻量 (lightweight): typo, constraint tweak, field rename, "
+            "enum value add, comment/format\n"
+            "- 重量 (heavy): new Scenario/field/API, business logic change, "
+            "interface call-mode change"
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -231,6 +233,20 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             f"Run '{checker_cmd}' to get baseline test results.\n"
             "Check: field existence, method signatures, line references, module dependencies,\n"
             "type consistency, import completeness, task status, cross-plan dependencies.\n"
+            "CRITICAL — field-by-field spec↔code comparison:\n"
+            "  For every field in the spec's field table, verify the corresponding "
+            "code class/DTO/entity has the EXACT same field name (not just similar).\n"
+            "  A renamed field (spec field 'X' vs code field 'Y') is a HARD_ERROR.\n"
+            "  A field present in spec but absent in code is a HARD_ERROR.\n"
+            "  This is your primary check — do NOT skip it even if tests pass.\n"
+            "CRITICAL — this may be a 轻量 path (field rename, enum add, comment/format), "
+            "where CHECKER is the ONLY gate before SYNCED (no MAKER TDD loop follows).\n"
+            "  A missed discrepancy means wrong code merges silently.\n"
+            "  If you are unsure whether a mismatch is intentional, report it "
+            "as SOFT_WARNING rather than staying silent.\n"
+            "CRITICAL — retry/repair safety: if this is a retry (previous output "
+            "had format issues), re-read all files fresh. Do NOT weaken your "
+            "analysis — inconsistencies you miss here get silently merged to SYNCED.\n"
             "Classify each discrepancy as HARD_ERROR (compile/logic failure),\n"
             "SOFT_WARNING (logic error/description inaccurate), or INFO (precision suggestion).\n"
             "Do NOT modify any files.\n"
@@ -253,6 +269,10 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             ' "test_results": {"class_name": "FooTest", "total": 7, '
             '"passed": 7, "failed": 0, "errors": 0},\n'
             ' "coverage": {"tested": 5, "total": 6}}\n'
+            "CRITICAL: test_results.class_name is REQUIRED. If the test "
+            "framework does not provide a class name, write "
+            "'\"class_name\": \"unknown\"'. Omitting class_name will trigger "
+            "a format error and rerun.\n"
             "Counts must exactly match the discrepancies array: "
             "discrepancy_count = array length, hard_error_count = number of "
             "HARD_ERROR items, etc. severity must be exactly one of "

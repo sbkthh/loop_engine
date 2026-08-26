@@ -530,6 +530,9 @@ class StateMachine:
             return None
         if soft > 0:
             return _GRAY_LIST
+        # 轻量路径：MAKER 没运行过（代码未改动），CHECKER 通过后直接 SYNCED
+        if module.get("maker_attempt", 0) == 0:
+            return _SYNCED
         return CODE_REVIEW
 
     def _commit_maker_fix(self, state, key, module, text):

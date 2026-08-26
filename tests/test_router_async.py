@@ -273,13 +273,13 @@ def test_global_intent_regex_does_not_catch_short_answers(monkeypatch):
 
 
 def test_approve_prefix_executes(monkeypatch):
-    """__APPROVE__ prefix triggers real scheduler.approve + dispatch."""
+    """JSON approve action triggers real scheduler.approve + dispatch."""
     from wecom_server import router
     import scheduler
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}\n好的，开始执行'))
     calls = {}
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -305,7 +305,7 @@ def test_approve_unknown_requirement(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ ghost"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"ghost"}'))
 
     fn = dispatch("批准 ghost", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
     reply = fn()
@@ -320,7 +320,7 @@ def test_approve_prefix_passes_user_id(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     calls = {}
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -341,8 +341,8 @@ def test_approve_prefix_passes_user_id(monkeypatch):
 
 
 def test_approve_rejected_fast_via_status_table(monkeypatch, tmp_path):
-    """DRAFT-only requirement: __APPROVE__ rejected via STATUS_TABLE
-    prefixes before scheduler.approve is ever reached."""
+    """DRAFT-only requirement: approve rejected via STATUS_TABLE
+    before scheduler.approve is ever reached."""
     import json
     from wecom_server import router
     import scheduler
@@ -356,7 +356,7 @@ def test_approve_rejected_fast_via_status_table(monkeypatch, tmp_path):
     monkeypatch.setattr(router, "_get_session_id",
                         lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     called = []
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -387,7 +387,7 @@ def test_approve_allows_ready_via_status_table(monkeypatch, tmp_path):
     monkeypatch.setattr(router, "_get_session_id",
                         lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     called = []
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -423,7 +423,7 @@ def test_approve_allows_pending_spec_changed_via_status_table(monkeypatch, tmp_p
     monkeypatch.setattr(router, "_get_session_id",
                         lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     called = []
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -450,7 +450,7 @@ def test_approve_report_only_returns_error(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None: (_ for _ in ()).throw(
                             ValueError("report-only")))
@@ -476,7 +476,7 @@ def test_history_prefix_lists_runs(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__HISTORY__ req\n最近记录如下"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"history","requirement":"req"}\n最近记录如下'))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
 
     fn = dispatch("查一下 req 的执行历史", [], "/tmp", "u1")
@@ -492,7 +492,7 @@ def test_history_prefix_all(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__HISTORY__ ALL\n总体情况"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"history","requirement":"ALL"}\n总体情况'))
     monkeypatch.setattr(scheduler, "load_runs", _fake_runs)
 
     fn = dispatch("最近执行情况怎么样", [], "/tmp", "u1")
@@ -508,7 +508,7 @@ def test_history_empty(monkeypatch):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__HISTORY__ ALL"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"history","requirement":"ALL"}'))
     monkeypatch.setattr(scheduler, "load_runs", lambda: {"runs": []})
 
     fn = dispatch("最近执行情况", [], "/tmp", "u1")
@@ -562,7 +562,7 @@ def _make_spec_root(tmp_path, git=True):
 
 
 def test_spec_result_registers_change(monkeypatch, tmp_path):
-    """__SPEC_RESULT__ verifies + backs up + updates hash/status to PARTIAL."""
+    """spec_result action verifies + backs up + updates hash/status to PARTIAL."""
     import subprocess as sp
     from wecom_server import router
     from state import StateManager
@@ -577,7 +577,7 @@ def test_spec_result_registers_change(monkeypatch, tmp_path):
     def fake_run(cmd, **kwargs):
         if any("qodercli" in part for part in cmd):
             return types.SimpleNamespace(
-                stdout="__SPEC_RESULT__ req chg1/m1\n已修改", returncode=0)
+                stdout='__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}\n已修改', returncode=0)
         return real_run(cmd, **kwargs)  # git show must run for real
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
@@ -610,7 +610,7 @@ def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -627,7 +627,7 @@ def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ ghost chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"ghost","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -647,7 +647,7 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
     StateManager(root).save(st)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -668,7 +668,7 @@ def test_spec_result_duplicate_registration_returns_registered(monkeypatch, tmp_
     StateManager(root).save(st)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -685,7 +685,7 @@ def test_spec_result_missing_spec_file(monkeypatch, tmp_path):
     os.remove(spec_path)  # module registered but spec file gone
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -702,7 +702,7 @@ def test_spec_result_unknown_module_name(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req onlyname"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"onlyname"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -727,7 +727,7 @@ def test_spec_result_registers_new_module(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m2"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("新增 m2 的 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -750,7 +750,7 @@ def test_spec_result_new_module_no_spec_file(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m2"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m2"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("新增 m2 的 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -801,7 +801,7 @@ def test_spec_result_rejects_slash_in_module_name(tmp_path):
 
 def test_spec_result_promotes_draft_module(monkeypatch, tmp_path):
     """DRAFT module (auto-discovered, never gated) with unchanged hash is
-    promoted to PARTIAL by __SPEC_RESULT__ — the confirmation gate."""
+    promoted to PARTIAL by spec_result — the confirmation gate."""
     from wecom_server import router
     from state import StateManager
     import spec_utils
@@ -814,7 +814,7 @@ def test_spec_result_promotes_draft_module(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req chg1/m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("确认 chg1/m1 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -845,7 +845,7 @@ def _gray_test(monkeypatch, tmp_path, llm_reply, registry_root):
 
 
 def test_gray_list_view_lists_pending_drafts(monkeypatch, tmp_path):
-    """__GRAY_LIST__ lists only pending drafts + adjudication instructions."""
+    """gray_list action lists only pending drafts + adjudication instructions."""
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
@@ -858,7 +858,7 @@ def test_gray_list_view_lists_pending_drafts(monkeypatch, tmp_path):
          "status": "accepted"},
     ])
 
-    fn = _gray_test(monkeypatch, tmp_path, "__GRAY_LIST__ ALL", root)
+    fn = _gray_test(monkeypatch, tmp_path, '__JSON_ACTION__ {"action":"gray_list","requirement":"ALL"}', root)
     reply = fn()
 
     assert "草稿 1" in reply and "warn A" in reply
@@ -872,14 +872,14 @@ def test_gray_list_view_empty(monkeypatch, tmp_path):
     """No pending drafts → clear message."""
     root, _ = _make_spec_root(tmp_path)
 
-    fn = _gray_test(monkeypatch, tmp_path, "__GRAY_LIST__ ALL", root)
+    fn = _gray_test(monkeypatch, tmp_path, '__JSON_ACTION__ {"action":"gray_list","requirement":"ALL"}', root)
     reply = fn()
 
     assert "没有待裁决" in reply
 
 
 def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
-    """__ADJUDICATE__ accept marks the draft and reports remaining."""
+    """adjudicate accept marks the draft and reports remaining."""
     from state import StateManager
 
     root, _ = _make_spec_root(tmp_path)
@@ -891,7 +891,7 @@ def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
     ])
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req 1 accept\n已接受", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"1","decision":"accept"}\n已接受', root)
     reply = fn()
 
     st = StateManager(root).load()
@@ -926,7 +926,7 @@ def test_adjudicate_all_done_auto_dispatches(monkeypatch, tmp_path):
     monkeypatch.setattr(sched_mod, "dispatch", _fake_dispatch)
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req all reject\n已拒绝", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"all","decision":"reject"}\n已拒绝', root)
     reply = fn()
 
     st = StateManager(root).load()
@@ -949,7 +949,7 @@ def test_adjudicate_unknown_id(monkeypatch, tmp_path):
     ])
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req 99 accept", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"99","decision":"accept"}', root)
     reply = fn()
 
     assert "找不到草稿 99" in reply
@@ -957,7 +957,7 @@ def test_adjudicate_unknown_id(monkeypatch, tmp_path):
 
 
 def test_adjudicate_mixed_decisions(monkeypatch, tmp_path):
-    """__ADJUDICATE__ mixed applies per-draft decisions in one message."""
+    """adjudicate mixed applies per-draft decisions in one message."""
     import scheduler as sched_mod
     from state import StateManager
 
@@ -985,7 +985,7 @@ def test_adjudicate_mixed_decisions(monkeypatch, tmp_path):
     monkeypatch.setattr(sched_mod, "dispatch", _fake_dispatch)
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req mixed 1=accept, 2=reject,3=reject\n"
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"mixed","decision":"1=accept, 2=reject,3=reject"}\n'
                     "已处理", root)
     reply = fn()
 
@@ -1015,7 +1015,7 @@ def test_adjudicate_mixed_last_remaining_reports(monkeypatch, tmp_path):
     ])
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req mixed 1=accept,2=reject", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"mixed","decision":"1=accept,2=reject"}', root)
     reply = fn()
 
     st = StateManager(root).load()
@@ -1035,7 +1035,7 @@ def test_adjudicate_mixed_bad_format(monkeypatch, tmp_path):
     ])
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ req mixed 1=maybe", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"mixed","decision":"1=maybe"}', root)
     reply = fn()
 
     assert "混合裁决格式" in reply
@@ -1047,7 +1047,7 @@ def test_adjudicate_all_requires_single_decision(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ ALL mixed 1=accept,2=reject", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"ALL","target":"mixed","decision":"1=accept,2=reject"}', root)
     reply = fn()
 
     assert "单一决策" in reply
@@ -1059,7 +1059,7 @@ def test_adjudicate_unknown_requirement(monkeypatch, tmp_path):
     root, _ = _make_spec_root(tmp_path)
 
     fn = _gray_test(monkeypatch, tmp_path,
-                    "__ADJUDICATE__ ghost 1 accept", root)
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"ghost","target":"1","decision":"accept"}', root)
     reply = fn()
 
     assert "没有找到需求" in reply
@@ -1076,7 +1076,7 @@ def test_spec_result_autocompletes_module_name(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -1109,7 +1109,7 @@ def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ req m1"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"m1"}'))
     monkeypatch.setattr(router, "_audit_line", lambda text: None)
 
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
@@ -1119,43 +1119,6 @@ def test_spec_result_ambiguous_module_name(monkeypatch, tmp_path):
     assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
 
 
-def test_spec_result_single_token_full_key(monkeypatch, tmp_path):
-    """One-token full key (name merged with key) → owner located by key."""
-    from wecom_server import router
-    from state import StateManager
-
-    root, spec_path = _make_spec_root(tmp_path)
-    with open(spec_path, "w") as f:
-        f.write("# v2 changed")
-
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
-    monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ chg1/m1"))
-    monkeypatch.setattr(router, "_audit_line", lambda text: None)
-
-    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
-    reply = fn()
-
-    assert "已登记" in reply and "chg1/m1" in reply
-    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "PARTIAL"
-
-
-def test_spec_result_single_token_unknown_key(monkeypatch, tmp_path):
-    """One-token key that no requirement owns → helpful error, no change."""
-    from wecom_server import router
-    from state import StateManager
-
-    root, _ = _make_spec_root(tmp_path)
-    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
-    monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__SPEC_RESULT__ ghost/m1"))
-    monkeypatch.setattr(router, "_audit_line", lambda text: None)
-
-    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
-    reply = fn()
-
-    assert "找不到模块" in reply
-    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] != "PARTIAL"
 
 
 
@@ -1516,7 +1479,7 @@ def test_dispatch_json_prefix_priority(monkeypatch):
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
-        _fake_llm_reply("__HISTORY__ ghost\n"
+        _fake_llm_reply('__JSON_ACTION__ {"action":"history","requirement":"ghost"}\n'
                         '__JSON_ACTION__ {"action":"approve","requirement":"req"}'))
     calls = {}
     monkeypatch.setattr(scheduler, "approve",
@@ -1536,14 +1499,14 @@ def test_dispatch_json_prefix_priority(monkeypatch):
     assert "已批准并开始执行" in reply
 
 
-def test_dispatch_json_invalid_falls_back_to_legacy(monkeypatch):
-    """Malformed JSON block degrades to the legacy prefix path."""
+def test_dispatch_json_unknown_requirement_error(monkeypatch):
+    """JSON action for an unknown requirement returns a helpful error."""
     from wecom_server import router
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(
         router.subprocess, "run",
-        _fake_llm_reply("__APPROVE__ ghost"))
+        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"ghost"}'))
 
     fn = dispatch("批准 ghost", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
     reply = fn()
@@ -1551,14 +1514,14 @@ def test_dispatch_json_invalid_falls_back_to_legacy(monkeypatch):
     assert "没有找到需求" in reply
 
 
-def test_dispatch_old_prefix_compat(monkeypatch):
-    """Legacy prefixes still work after the JSON protocol lands."""
+def test_dispatch_json_approve_executes(monkeypatch):
+    """JSON approve action triggers real scheduler.approve + dispatch."""
     from wecom_server import router
     import scheduler
 
     monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("__APPROVE__ req\n好的，开始执行"))
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"approve","requirement":"req"}\n好的，开始执行'))
     calls = {}
     monkeypatch.setattr(scheduler, "approve",
                         lambda name, approved_by=None:
@@ -1785,3 +1748,4 @@ def test_correction_loop_other_sessions_snapshots_ignored(monkeypatch,
     assert state["calls"] == 1
     assert approved == ["req"]
     assert "已批准并开始执行" in reply
+

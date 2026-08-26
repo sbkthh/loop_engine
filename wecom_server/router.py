@@ -43,6 +43,13 @@ _LLM_SYSTEM_PROMPT = (
     "Do NOT add __JSON_ACTION__ when no action is needed — EXCEPT: "
     "editing spec.md in this turn makes spec_result MANDATORY in this "
     "same reply.\n\n"
+    "Gray list rule: when the user asks to view the gray list "
+    "(e.g. '查看灰名单'), you MUST output __JSON_ACTION__ "
+    "{\"action\": \"gray_list\", \"requirement\": \"<name>\"}. "
+    "Do NOT read state.json and answer directly — "
+    "the backend has the correct display logic. "
+    "gray_drafts = the real gray list; "
+    "review_issues = CODE_REVIEW historical findings, not gray list items.\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → ~/.qoder/skills/requirement-register/SKILL.md\n"
     "- Spec editing workflow → ~/.qoder/skills/spec-session/SKILL.md\n"
@@ -426,8 +433,8 @@ def _execute_adjudicate_all(target, decision, registry, data_dir):
 
 
 def _approve_prefix_block(name, registry):
-    """Fast reject __APPROVE__ when no module status in the requirement's
-    state permits APPROVE (per STATUS_TABLE prefixes), avoiding a full
+    """Fast reject approve when no module status in the requirement's
+    state permits APPROVE (per STATUS_TABLE entries), avoiding a full
     scheduler.approve round-trip. Returns None when approval may proceed."""
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from constants import STATUS_TABLE
@@ -505,27 +512,6 @@ def _resolve_module_key(st, key):
             f"模块名 {key} 对应多个模块（{'、'.join(sorted(matches))}），"
             "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
     raise ValueError(f"找不到模块 {key}（可用：{', '.join(modules) or '无'}）")
-
-
-def _execute_spec_result_by_key(module_key, registry, data_dir):
-    """Locate the requirement owning module_key and register the change."""
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from state import StateManager
-    owners = []
-    for req in registry:
-        try:
-            st = StateManager(req.get("root", "")).load()
-        except Exception:
-            continue
-        if module_key in st.get("modules", {}):
-            owners.append(req.get("name", "?"))
-    if len(owners) == 1:
-        return _execute_spec_result(owners[0], module_key, registry, data_dir)
-    if len(owners) > 1:
-        return (f"模块 {module_key} 对应多个需求（{'、'.join(owners)}），"
-                "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
-    return (f"找不到模块 {module_key}：没有需求的状态机包含该模块，"
-            "请在回复末尾追加 __JSON_ACTION__ {\"action\":\"spec_result\",\"requirement\":\"<需求名>\",\"module\":\"<change_id>/<module_name>\"}")
 
 
 def _execute_spec_result(name, module_key, registry, data_dir):
@@ -739,9 +725,6 @@ def _dispatch_json_action(payload, registry, data_dir, user_id):
 
 
 _JSON_ACTION_RE = re.compile(r"__JSON_ACTION__\s*(\{[^{}]*\})", re.DOTALL)
-
-_LEGACY_PREFIXES = ("__APPROVE__", "__HISTORY__", "__GRAY_LIST__",
-                    "__ADJUDICATE__", "__SPEC_RESULT__")
 
 # Per-requirement LLM lock: same requirement shares one session, so its
 # qodercli calls must never overlap. Server-side queues already serialize
@@ -1019,52 +1002,7 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
             return result
         # G 正文（含 spec 变更披露）与动作结果拼接，避免动作执行吞掉正文
         return f"{body}\n\n{result}"
-    if reply.startswith(_LEGACY_PREFIXES):
-        logger.info("[wecom] legacy prefix reply (deprecated, prefer "
-                    "__JSON_ACTION__)")
-    if reply.startswith("__APPROVE__"):
-        name = reply[len("__APPROVE__"):].strip().splitlines()[0].strip()
-        if not _user_intends_approve(message):
-            return (f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
-                    f"如需执行，请本人回复：批准执行 {name}")
-        blocked = _approve_prefix_block(name, registry)
-        if blocked:
-            return blocked
-        return _execute_approve(name, registry, data_dir, user_id)
-    if reply.startswith("__HISTORY__"):
-        name = reply[len("__HISTORY__"):].strip().splitlines()[0].strip() or "ALL"
-        return _execute_history(name, registry, data_dir)
-    if reply.startswith("__GRAY_LIST__"):
-        name = reply[len("__GRAY_LIST__"):].strip().splitlines()[0].strip() or "ALL"
-        return _execute_gray_list_view(name, registry, data_dir)
-    if reply.startswith("__ADJUDICATE__"):
-        rest = reply[len("__ADJUDICATE__"):].strip().splitlines()[0].strip()
-        parts = rest.split()
-        if len(parts) < 2:
-            return ("格式错误：__ADJUDICATE__ <需求名> "
-                    "<编号|all|mixed> <accept|reject>")
-        name = parts[0]
-        if parts[1] == "mixed":
-            if len(parts) < 3:
-                return "格式错误：mixed 需要 id=accept,id=reject 决策对"
-            target, decision = "mixed", " ".join(parts[2:])
-        else:
-            if len(parts) != 3:
-                return ("格式错误：__ADJUDICATE__ <需求名> "
-                        "<编号|all|mixed> <accept|reject>")
-            target, decision = parts[1], parts[2]
-        return _execute_adjudicate(name, target, decision,
-                                   registry, data_dir)
-    if reply.startswith("__SPEC_RESULT__"):
-        rest = reply[len("__SPEC_RESULT__"):].strip().splitlines()[0].strip()
-        parts = rest.split(None, 1)
-        if len(parts) == 1:
-            # single-token full key (assistant merged name+key) — locate owner
-            return _execute_spec_result_by_key(parts[0], registry, data_dir)
-        if len(parts) != 2:
-            return ("格式错误：__SPEC_RESULT__ <需求名> "
-                    "<change_id>/<module_name>")
-        return _execute_spec_result(parts[0], parts[1], registry, data_dir)
+    # All actions now go through __JSON_ACTION__ only
     return reply
 
 

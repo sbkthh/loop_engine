@@ -139,7 +139,7 @@ def cmd_set_project_root(args):
 def _record_module_to_project(root, module_key, path):
     """Auto-record module->project mapping when the bound path matches a
     registered project (worktree at root/<name> or its source path), so
-    future __SPEC_RESULT__ registrations of the same module name can
+    future spec_result registrations of the same module name can
     resolve their project root without manual editing.
     """
     if "/" not in module_key:

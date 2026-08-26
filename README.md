@@ -527,7 +527,7 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 - `查看灰名单` / `接受 1 拒绝 2` — 列出待裁决草稿 / 混合裁决（支持 `全部接受`、`全部拒绝`）
 - 其他自然语言问题 — LLM 自动理解并回答
 
-动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）。旧的 `__APPROVE__` / `__SPEC_RESULT__` 等前缀格式仍兼容。
+动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）。
 
 ### 配置
 
@@ -643,8 +643,6 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 │  F: wecom_server 守护进程（端口 5000，A fork 常驻）                  │
 │     微信回调 → 立即返回 "success" → 后台 LLM 处理 → API 推送结果     │
 │     LLM 回复含 __JSON_ACTION__ 动作块 → 进程内执行对应 handler      │
-│     （兼容旧前缀: __APPROVE__ / __HISTORY__ / __GRAY_LIST__ /       │
-│       __ADJUDICATE__ / __SPEC_RESULT__）                           │
 └──────┬─────────────────────────────────────────────────────────────┘
        │ 每个消息派生一个 G
        ▼

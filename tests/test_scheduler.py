@@ -1626,6 +1626,29 @@ class TestNotify(SchedulerBase):
             self.assertTrue(scheduler.notify_text("hello", user_id="LiChuan"))
         self.assertEqual(mock_send.call_args[0][0], "LiChuan")
 
+    def test_notify_text_routes_to_feishu_by_platform(self):
+        scheduler.notify_text = self._notify_text_orig
+        feishu = os.path.join(self.tmp.name, "feishu.json")
+        with open(feishu, "w") as f:
+            json.dump({"app_id": "cli_a", "app_secret": "s"}, f)
+        with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
+            json.dump({"user": "ou_abc", "platform": "feishu"}, f)
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
+             mock.patch("feishu_server.feishu_api.send_text",
+                        return_value=True) as mock_send:
+            self.assertTrue(scheduler.notify_text("hello"))
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][0], "ou_abc")
+
+    def test_notify_text_feishu_without_config_fails(self):
+        scheduler.notify_text = self._notify_text_orig
+        with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
+            json.dump({"user": "ou_abc", "platform": "feishu"}, f)
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
+             mock.patch("feishu_server.feishu_api.send_text") as mock_send:
+            self.assertFalse(scheduler.notify_text("hello"))
+        mock_send.assert_not_called()
+
     def test_format_gray_draft_extracts_location_flattens_markdown(self):
         text = scheduler._format_gray_draft({
             "id": 4,

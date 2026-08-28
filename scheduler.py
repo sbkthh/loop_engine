@@ -400,31 +400,56 @@ def _clear_approval(name):
 
 
 def _last_user():
-    """Most recently active WeCom user (written by the wecom server)."""
+    """Most recently active bot user (written by the webhook servers).
+
+    Returns {"user": id, "platform": "wecom"|"feishu"}; platform defaults
+    to wecom for records written before multi-platform support.
+    """
     try:
         with open(os.path.join(DATA_DIR, "last_user.json")) as f:
-            return json.load(f).get("user") or None
+            return json.load(f) or {}
     except (OSError, ValueError):
-        return None
+        return {}
 
 
 def notify_text(message, user_id=None):
-    """Push a plain text notification to the WeCom self-built app chat.
+    """Push a plain text notification to the last active bot user.
 
     Recipient is the user who approved the run (or the most recently active
-    WeCom user). Returns True if sent. Silently skips when WeCom is not
-    configured or no recipient is known.
+    bot user); delivery channel follows that user's platform. Returns True
+    if sent. Silently skips when the platform is not configured or no
+    recipient is known.
     """
-    wecom_config_path = os.path.join(DATA_DIR, "wecom.json")
-    if not os.path.exists(wecom_config_path):
-        return False
-    with open(wecom_config_path) as f:
-        config = json.load(f)
+    info = _last_user()
     if not user_id:
-        user_id = _last_user()
+        user_id = info.get("user")
+    platform = info.get("platform", "wecom")
     if not user_id:
         _log("notify: no recipient user, skipped")
         return False
+    if platform == "feishu":
+        config_path = os.path.join(DATA_DIR, "feishu.json")
+        if not os.path.exists(config_path):
+            return False
+        with open(config_path) as f:
+            config = json.load(f)
+        if not config.get("app_id") or not config.get("app_secret"):
+            return False
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from feishu_server.feishu_api import send_text
+            sent = send_text(user_id, message, config)
+            _log(f"notify: sent to {user_id}" if sent
+                 else f"notify: send failed for {user_id}")
+            return sent
+        except Exception as e:
+            _log(f"notify: send failed: {e}")
+            return False
+    config_path = os.path.join(DATA_DIR, "wecom.json")
+    if not os.path.exists(config_path):
+        return False
+    with open(config_path) as f:
+        config = json.load(f)
     if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
         return False
     try:

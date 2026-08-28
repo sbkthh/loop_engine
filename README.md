@@ -599,6 +599,52 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 
 ---
 
+## 十点五、飞书接入
+
+`feishu_server/` 与 `wecom_server/` 平行，复用同一套核心流程（`wecom_server.router.dispatch`：LLM 分类 → `__JSON_ACTION__` 动作块 → 后端执行）。传输层使用官方 SDK 的 **WebSocket 长连接**：无需公网地址、反向隧道、安全组放行，也不需要签名校验/challenge 握手。
+
+### 飞书开放平台配置
+
+1. [飞书开放平台](https://open.feishu.cn) 创建企业自建应用，开启**机器人**能力
+2. 记录 `App ID` / `App Secret`
+3. 「权限管理」开通：`im:message`（收消息）、`im:message:send_as_bot`（发消息）
+4. 「事件与回调」→ 订阅方式选择「**使用长连接接收事件**」
+5. 「事件与回调」→ 添加事件：`接收消息 im.message.receive_v1`
+6. 「版本管理与发布」→ 创建版本并发布（权限发版后生效）
+
+### 本地配置与启动
+
+```bash
+# 配置
+loop_engine feishu config
+
+# 启动 / 状态 / 停止
+nohup loop_engine feishu start >> ~/.qoder/loop_engine/feishu.log 2>&1 &
+loop_engine feishu status
+loop_engine feishu stop
+```
+
+`~/.qoder/loop_engine/feishu.json` 字段：
+
+| 字段 | 说明 |
+|------|------|
+| `app_id` | 应用 App ID（必填） |
+| `app_secret` | 应用 App Secret（必填） |
+| `encrypt_key` | 长连接模式下不使用（webhook 模式遗留，可忽略） |
+| `verification_token` | 长连接模式下不使用（可忽略） |
+
+依赖：`lark-oapi`（官方 SDK，`pip install lark-oapi`）。企业代理网络下默认 OpenSSL 路径不含劫持根证书时，`start()` 会自动把 `SSL_CERT_FILE` 指向 certifi 证书包。
+
+### 与企微的差异
+
+- 长连接纯出站连接，进程停止即收不到事件（SDK 自动重连）
+- 消息处理全程在后台线程，结果通过 IM API 主动推送
+- 事件按 `event_id` 去重（SDK 重连后可能重投）
+- 推送为纯文本消息（企微 markdown 中的 `**` / `<font>` 自动压平）
+- 调度器通知（`scheduler.notify_text`）按 `last_user.json` 中的 `platform` 字段路由到最近活跃用户所在平台（缺省 `wecom`，向后兼容）
+
+---
+
 ## 十一、架构说明
 
 ### 进程调用关系
@@ -689,10 +735,13 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── README.md                   # 使用指南
 ├── wecom_server/               # WeCom 机器人（F/G）
 │   ├── server.py               # Flask 回调服务器（解密/验签/响应）
-│   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理
+│   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理（平台无关，飞书复用）
 │   ├── wecom_api.py            # 企业微信 API（推送/下载）
 │   ├── crypto.py               # 回调消息加解密
 │   └── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子
+├── feishu_server/              # 飞书机器人（与 WeCom 平行，复用 router.dispatch）
+│   ├── server.py               # WebSocket 长连接（官方 SDK）+ 去重 + 串行队列
+│   └── feishu_api.py           # 飞书 API（app_access_token/推送）
 └── tests/
     ├── test_machine.py         ├── test_state.py
     ├── test_parser.py          ├── test_directives.py
@@ -701,6 +750,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
     ├── test_audit_hook.py      ├── test_context.py
     ├── test_registry.py        ├── test_constants.py
     ├── test_router_async.py    ├── test_server.py
+    ├── test_feishu_server.py   ├── test_feishu_api.py
     └── test_wecom_api.py       └── test_wecom_crypto.py
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
@@ -709,6 +759,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 ├── schedule.json               # 调度器配置（max_concurrency）
 ├── runs.json                   # 执行历史（requirement → 起止/轮次/结局）
 ├── wecom.json                  # WeCom 应用配置（密钥）
+├── feishu.json                 # 飞书应用配置（密钥）
 ├── audit.log                   # 敏感命令审计日志
 ├── sessions/                   # 微信用户会话状态
 └── .loop/                      # 本地循环状态

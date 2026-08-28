@@ -637,6 +637,85 @@ def cmd_wecom_config(args):
         print("No values entered, config not saved.")
 
 
+def cmd_feishu_start(args):
+    from feishu_server.server import start
+    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    config_path = os.path.join(data_dir, "feishu.json")
+    if not os.path.exists(config_path):
+        print("Feishu not configured. Run 'loop_engine feishu config' first.")
+        sys.exit(1)
+    print("Starting Feishu bot (long connection)...")
+    start()
+
+
+def cmd_feishu_stop(args):
+    import signal
+    import subprocess
+    r = subprocess.run(["pgrep", "-f", "loop_engine.*feishu start"],
+                       capture_output=True, text=True)
+    pids = [p for p in r.stdout.split() if p.strip()]
+    if not pids:
+        print("Feishu bot is not running.")
+        return
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except OSError:
+            pass
+    print(f"Feishu bot stopped ({len(pids)} process(es)).")
+
+
+def cmd_feishu_status(args):
+    import subprocess
+    r = subprocess.run(["pgrep", "-f", "loop_engine.*feishu start"],
+                       capture_output=True, text=True)
+    pids = [p for p in r.stdout.split() if p.strip()]
+    if pids:
+        print(f"Feishu bot is running (pid {pids[0]}).")
+    else:
+        print("Feishu bot is not running.")
+
+
+def cmd_feishu_config(args):
+    import json
+    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    config_path = os.path.join(data_dir, "feishu.json")
+    if args.show:
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                print(f.read())
+        else:
+            print("Not configured.")
+        return
+    if args.set:
+        parts = args.set.split("=", 1)
+        if len(parts) != 2:
+            print("Usage: --set key=value")
+            sys.exit(1)
+        config = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                config = json.load(f)
+        config[parts[0]] = parts[1]
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"Set {parts[0]} = {parts[1]}")
+        return
+    print("Enter Feishu configuration (press Enter to skip):")
+    config = {}
+    for key in ["app_id", "app_secret", "encrypt_key", "verification_token"]:
+        val = input(f"  {key}: ").strip()
+        if val:
+            config[key] = val
+    if config:
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"Saved to {config_path}")
+    else:
+        print("No values entered, config not saved.")
+
+
 def cmd_scope_audit(args):
     scope_audit.cmd_scope_audit(args)
 
@@ -830,6 +909,23 @@ def main():
     ws.add_argument("--show", action="store_true", help="Show current config")
     ws.add_argument("--set", help="Set a config value (key=value)")
     ws.set_defaults(func=cmd_wecom_config)
+
+    p = sub.add_parser("feishu", help="Feishu integration (long-connection bot)")
+    fsub = p.add_subparsers(dest="feishu_command", required=True)
+
+    fs = fsub.add_parser("start", help="Start bot (WebSocket long connection)")
+    fs.set_defaults(func=cmd_feishu_start)
+
+    fs = fsub.add_parser("stop", help="Stop bot")
+    fs.set_defaults(func=cmd_feishu_stop)
+
+    fs = fsub.add_parser("status", help="Check bot status")
+    fs.set_defaults(func=cmd_feishu_status)
+
+    fs = fsub.add_parser("config", help="Configure Feishu settings")
+    fs.add_argument("--show", action="store_true", help="Show current config")
+    fs.add_argument("--set", help="Set a config value (key=value)")
+    fs.set_defaults(func=cmd_feishu_config)
 
     p = sub.add_parser("self-install", help="Install skill and verify setup")
     p.set_defaults(func=cmd_self_install)

@@ -785,3 +785,61 @@ loop_engine feishu stop
 - **状态真值表**：状态语义收敛在 constants.py 的 STATUS_TABLE 单点定义，调度/路由/微信三处共用，消除语义漂移
 - **状态隔离**：每个需求独立 `.loop/state.json`，切换 `--root` 无损
 - **macOS 兼容**：pip 安装因 externally-managed-environment 被屏蔽，改用 shim 方式
+
+---
+
+## 十二、Agent 后端扩展调研（opencode / pi）
+
+> 调研日期：2026-08-31。当前 LLM 后端是 qodercli 非交互模式（`--print`），本文记录接入
+> opencode / pi 非交互模式的可行性结论，供后续实施参考。
+
+### 现状耦合点
+
+核心流程（分类 → `__JSON_ACTION__` → 执行 → 推送）与 agent 无关，qodercli 专有依赖集中在
+`wecom_server/router.py`：
+
+| 耦合点 | 位置 | 说明 |
+|--------|------|------|
+| 发起调用 | `_run_llm_turn` / `_classify_requirement` | `--print --session-id/--resume --model --dangerously-skip-permissions --settings` |
+| 审计 hook | `_audit_settings` | 通过 `--settings` 注入 PreToolUse hook（qodercli settings.json 契约），每次 Bash/Edit/Write 前回调 `hooks/audit_hook.sh` |
+| spec 编辑检测 | `_recent_spec_snapshots` | 读 audit hook 落下的 `SPEC_SNAPSHOT_<ts>_<session>_<module>` 标记文件（自造协议，非 qodercli 格式） |
+| 模型读取 | `_get_model` | 读 `~/.qoder/settings.json` |
+
+审计与 spec 纠错是**同一条依赖链**：都依赖「agent 在每次敏感工具调用前回调我们注入的脚本」。
+
+### 结论：两家均有等价机制
+
+| 能力 | qodercli（现状） | opencode | pi |
+|------|------------------|----------|-----|
+| 工具调用前回调 | PreToolUse hook（shell） | 插件 `tool.execute.before`（JS/TS，可改 args/抛错拦截） | 扩展 `tool_call` 事件（TS，可返回 `{block: true}`） |
+| 装载方式 | 每次调用注入 `--settings` | `.opencode/plugins/` 自动加载，`run` 模式默认生效（`--pure` 关闭） | `~/.pi/agent/extensions/` / 项目 `.pi/extensions/` 自动发现，非交互也加载（`--no-extensions` 关闭） |
+| 非交互模式 | `--print` | `opencode run` + `--continue`/`--session`、`--format json` | `pi -p` + `-c`/`-r`/`--session <path\|id>` |
+| 会话归属 | `--session-id` | `--session <id>` | `--session <path\|id>` |
+
+关键结论：**SPEC_SNAPSHOT 标记文件协议可以原样保留**——新 agent 的插件/扩展在
+`tool.execute.before` / `tool_call` 里写同样的标记文件，router 端 `_recent_spec_snapshots`
+与 correction 循环一行不改。审计日志同理由插件侧写入 `audit.log`。
+
+### 建议实施路径
+
+1. router 抽薄 backend 接口：`run_turn(session_id, prompt) -> reply` + `detect_spec_edits(session_id)`
+   （qodercli 原逻辑原样包成第一个 backend）
+2. 每个 agent 一个百来行的插件/扩展模块（写 audit.log + SPEC_SNAPSHOT 标记）
+3. 配置项选择 backend；模型改按 backend 配置
+
+### 注意点
+
+- **作用域差异**：qodercli hook 每次调用注入（只影响 bot 拉起的会话）；opencode/pi 插件是
+  目录自动发现，会波及用户自己的交互会话。解法：插件检查环境变量（loop_engine spawn 时
+  注入 `LOOP_ENGINE_BOT=1`，否则 no-op），保住「只有 bot 会话带审计」语义
+- opencode 已知 issue：`tool.execute.before` 对部分场景拦截不生效
+  （github.com/anomalyco/opencode/issues/5894），接入时需实测
+- pi 非交互扩展加载已确认（命令行扩展先于 trust 评估处理）；opencode `run` 默认加载插件，
+  但拦截覆盖面未实测
+
+### 参考
+
+- OpenCode Plugins: https://opencode.ai/docs/plugins/
+- OpenCode CLI: https://opencode.ai/docs/cli/
+- Pi Extensions: https://badlogic-pi-mono.mintlify.app/coding-agent/extensions
+- Pi Usage（-p/--session/-e）: https://pi.dev/docs/latest/usage

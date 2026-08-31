@@ -640,7 +640,7 @@ loop_engine feishu stop
 - 长连接纯出站连接，进程停止即收不到事件（SDK 自动重连）
 - 消息处理全程在后台线程，结果通过 IM API 主动推送
 - 事件按 `event_id` 去重（SDK 重连后可能重投）
-- 推送为纯文本消息（企微 markdown 中的 `**` / `<font>` 自动压平）
+- 推送分通道：含 markdown（`**`/链接/`<font>`）走交互卡片渲染（`<font>` 压平，其余保留），纯文本仍走 text 消息
 - 调度器通知（`scheduler.notify_text`）按 `last_user.json` 中的 `platform` 字段路由到最近活跃用户所在平台（缺省 `wecom`，向后兼容）
 
 ---

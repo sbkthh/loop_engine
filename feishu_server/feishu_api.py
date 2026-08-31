@@ -31,12 +31,31 @@ def get_app_access_token(config):
 
 def sanitize_text(content):
     """Flatten WeCom-flavoured markdown into Feishu plain text."""
+    return _strip_font(content).replace("**", "").strip()
+
+
+def _strip_font(content):
+    """Drop <font> tags (unsupported in card markdown), keep the text."""
     content = re.sub(r'<font color="[^"]*">(.*?)</font>', r"\1", content, flags=re.DOTALL)
-    return content.replace("**", "").strip()
+    return content.strip()
+
+
+_MARKDOWN_HINT_RE = re.compile(r"\*\*|\]\(|<font")
 
 
 def send_text(open_id, content, config):
-    """Push content as a Feishu text message. Returns True if sent."""
+    """Push content to Feishu. Markdown-flavoured content goes out as an
+    interactive card (renders bold/links/lists); plain text stays a text
+    message. Returns True if sent."""
+    if _MARKDOWN_HINT_RE.search(content):
+        return _send(open_id, "interactive", {
+            "config": {"wide_screen_mode": True},
+            "elements": [{"tag": "markdown", "content": _strip_font(content)}],
+        }, config, "card")
+    return _send(open_id, "text", {"text": sanitize_text(content)}, config, "text")
+
+
+def _send(open_id, msg_type, payload, config, label):
     token = get_app_access_token(config)
     r = requests.post(
         "https://open.feishu.cn/open-apis/im/v1/messages",
@@ -44,8 +63,8 @@ def send_text(open_id, content, config):
         headers={"Authorization": f"Bearer {token}"},
         json={
             "receive_id": open_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": sanitize_text(content)}),
+            "msg_type": msg_type,
+            "content": json.dumps(payload),
         },
         timeout=10,
     )
@@ -53,5 +72,5 @@ def send_text(open_id, content, config):
     if data.get("code", -1) != 0:
         logger.error("[feishu] send failed: %s", data.get("msg"))
         return False
-    logger.info("[feishu] pushed text to %s", open_id)
+    logger.info("[feishu] pushed %s to %s", label, open_id)
     return True

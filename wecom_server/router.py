@@ -39,7 +39,8 @@ _LLM_SYSTEM_PROMPT = (
     "System actions: to trigger a backend action, append on its own line:\n"
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
     "Actions: approve | spec_result(requirement+module) | history | "
-    "gray_list | adjudicate(requirement+target+decision)\n"
+    "gray_list | adjudicate(requirement+target+decision, "
+    "decision=accept|reject, target=all or draft ids e.g. \"28 29\")\n"
     "Do NOT add __JSON_ACTION__ when no action is needed — EXCEPT: "
     "editing spec.md in this turn makes spec_result MANDATORY in this "
     "same reply.\n\n"
@@ -296,11 +297,56 @@ def _parse_decision_pairs(text):
     return pairs
 
 
+_ACCEPT_SYNONYMS = {"accept", "接受", "通过", "同意", "批准", "approve",
+                    "agree", "agreed", "yes", "y", "ok"}
+_REJECT_SYNONYMS = {"reject", "拒绝", "驳回", "否决", "不同意", "deny",
+                    "refuse", "no", "n"}
+_ALL_SYNONYMS = {"all", "全部", "全", "所有", "所有草稿"}
+
+
+def _normalize_decision(value):
+    """Canonicalize a single adjudication decision to 'accept'/'reject'.
+
+    Returns None when the value is a mixed-spec string (contains '=',
+    handled by the caller) or an unrecognized keyword, so callers can
+    report the *decision* as the problem instead of the draft number.
+    """
+    if value is None:
+        return None
+    v = str(value).strip().lower()
+    if not v or "=" in v:
+        return None
+    if v in _ACCEPT_SYNONYMS:
+        return "accept"
+    if v in _REJECT_SYNONYMS:
+        return "reject"
+    return None
+
+
+def _parse_target_ids(target):
+    """Split a target into int draft ids, tolerating comma/space/顿号.
+
+    Returns None when any token is non-numeric so the caller can report
+    'unrecognized draft number' accurately.
+    """
+    parts = [p for p in re.split(r"[,，、\s]+", str(target).strip()) if p]
+    if not parts:
+        return None
+    try:
+        return [int(p) for p in parts]
+    except ValueError:
+        return None
+
+
 def _execute_adjudicate(name, target, decision, registry, data_dir):
     """Adjudicate gray-list drafts: target is 'all' or one/more draft ids."""
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from state import StateManager
     from machine import resolve_gray_draft
+
+    canonical = _normalize_decision(decision)
+    if canonical:
+        decision = canonical
 
     if name == "ALL":
         return _execute_adjudicate_all(target, decision, registry, data_dir)
@@ -318,12 +364,11 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
     drafts = st.get("gray_drafts", [])
     pending = [d for d in drafts if d.get("status") == "pending"]
     if decision in ("accept", "reject"):
-        if target == "all":
+        if str(target).strip().lower() in _ALL_SYNONYMS:
             ids = [d["id"] for d in pending]
         else:
-            try:
-                ids = [int(t) for t in str(target).split(",") if t.strip()]
-            except ValueError:
+            ids = _parse_target_ids(target)
+            if ids is None:
                 return f"无法识别的草稿编号：{target}"
         pairs = {i: decision for i in ids}
     elif target == "mixed":
@@ -332,7 +377,8 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
             return (f"无法识别的混合裁决格式：{decision}"
                     f"（应为 1=accept,2=reject 形式）")
     else:
-        return f"无法识别的草稿编号：{target}"
+        return (f"无法识别的裁决指令：{decision}"
+                f"（请用「接受/拒绝 <编号>」或「全部接受/全部拒绝」）")
     if not pairs:
         return "当前没有待裁决的草稿。"
     messages = []
@@ -362,6 +408,9 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
 
 def _execute_adjudicate_all(target, decision, registry, data_dir):
     """Adjudicate drafts across all requirements with pending items."""
+    canonical = _normalize_decision(decision)
+    if canonical:
+        decision = canonical
     if decision not in ("accept", "reject"):
         # Mixed or non-uniform decision — check if all pending drafts
         # belong to a single requirement. If so, delegate to the per-req
@@ -402,10 +451,10 @@ def _execute_adjudicate_all(target, decision, registry, data_dir):
                    if d.get("status") == "pending"]
         if not pending:
             continue
-        if target == "all":
+        if str(target).strip().lower() in _ALL_SYNONYMS:
             ids = [d["id"] for d in pending]
         else:
-            ids = [int(t) for t in str(target).split(",") if t.strip()]
+            ids = _parse_target_ids(target) or []
         messages = []
         for draft_id in ids:
             ok, msg = resolve_gray_draft(sm, draft_id, decision)

@@ -901,6 +901,69 @@ def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
     assert "还有 1 条待裁决" in reply
 
 
+def test_adjudicate_accepts_chinese_decision_synonym(monkeypatch, tmp_path):
+    """LLM emitting decision='接受' must resolve the draft, not error.
+
+    Regression: '接受28 29' failed with '无法识别的草稿编号：28' because
+    the decision was never canonicalized to {accept,reject}.
+    """
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 28, "module": "chg1/m1", "summary": "warn A", "status": "pending"},
+        {"id": 99, "module": "chg1/m1", "summary": "warn B", "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"28","decision":"接受"}', root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    statuses = {d["id"]: d["status"] for d in st["gray_drafts"]}
+    assert statuses[28] == "accepted"
+    assert "已接受草稿 28" in reply
+
+
+def test_adjudicate_space_separated_ids(monkeypatch, tmp_path):
+    """target='28 29' with a single decision adjudicates both drafts."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 28, "module": "chg1/m1", "summary": "warn A", "status": "pending"},
+        {"id": 29, "module": "chg1/m1", "summary": "warn B", "status": "pending"},
+        {"id": 30, "module": "chg1/m1", "summary": "warn C", "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"28 29","decision":"接受"}', root)
+    reply = fn()
+
+    st = StateManager(root).load()
+    statuses = {d["id"]: d["status"] for d in st["gray_drafts"]}
+    assert statuses == {28: "accepted", 29: "accepted", 30: "pending"}
+
+
+def test_adjudicate_unknown_decision_blames_decision_not_number(monkeypatch, tmp_path):
+    """A non-decision value must report the decision as the problem, and
+    must NOT tell the user the (valid) draft number is unrecognized."""
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    _seed_gray_drafts(root, [
+        {"id": 28, "module": "chg1/m1", "summary": "warn A", "status": "pending"},
+    ])
+
+    fn = _gray_test(monkeypatch, tmp_path,
+                    '__JSON_ACTION__ {"action":"adjudicate","requirement":"req","target":"28","decision":"maybe"}', root)
+    reply = fn()
+
+    assert "无法识别的草稿编号：28" not in reply
+    assert "裁决指令" in reply
+    assert StateManager(root).load()["gray_drafts"][0]["status"] == "pending"
+
+
 def test_adjudicate_all_done_auto_dispatches(monkeypatch, tmp_path):
     """Last draft adjudicated → auto-approves and dispatches."""
     import scheduler as sched_mod

@@ -837,6 +837,86 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(len(state["gray_drafts"]), 1)
 
+    def test_checker_demotes_doc_anchor_drift_skips_gray_list(self):
+        """plan.md stale line-anchor / test-count drift is demoted to INFO:
+        no gray draft, module advances to CODE_REVIEW."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 1, "hard_error_count": 0,
+            "soft_warning_count": 1, "info_count": 0,
+            "discrepancies": [
+                {"severity": "SOFT_WARNING", "type": "plan deviation",
+                 "description": ("plans/foo-plan.md:30 记「18 用例」，本轮实测 "
+                                 "SoAfterConsumerTest.java 锚点漂移、用例数已过期")},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 5, "failed": 0, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "CODE_REVIEW")
+
+        from state import StateManager
+        state = StateManager(self.root).load()
+        self.assertEqual(len(state.get("gray_drafts", [])), 0)
+        notes = state["modules"][self.key].get("doc_anchor_notes", [])
+        self.assertEqual(len(notes), 1)
+
+    def test_checker_keeps_spec_semantic_soft_as_gray(self):
+        """A real spec.md<->code semantic mismatch must still gray-list."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 1, "hard_error_count": 0,
+            "soft_warning_count": 1, "info_count": 0,
+            "discrepancies": [
+                {"severity": "SOFT_WARNING", "type": "precision",
+                 "description": ("spec.md:143 soStatus 值域不完整，只枚举了 "
+                                 "DocOrderHeaderStatusEnum.java:5-18 的取值")},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 5, "failed": 0, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
+    def test_checker_keeps_plan_behavior_contradiction_as_gray(self):
+        """A plan.md finding about described behavior contradicting code (no
+        drift vocabulary) must still gray-list, not be over-suppressed."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 1, "hard_error_count": 0,
+            "soft_warning_count": 1, "info_count": 0,
+            "discrepancies": [
+                {"severity": "SOFT_WARNING", "type": "plan deviation",
+                 "description": ("plan.md 描述先落库后校验，但代码 SoAfterConsumer.java "
+                                 "先校验后落库，处理顺序与代码相反")},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 5, "failed": 0, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "_GRAY_LIST_")
+
     def test_checker_fingerprint_suppresses_reworded_findings(self):
         """Rejected fingerprint (file:line) suppresses repeat findings even
         when the LLM rewords the description (exact-match filter misses it)."""

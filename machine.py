@@ -47,6 +47,28 @@ def _draft_fingerprints(drafts):
     return fps
 
 
+# plan.md / design.md cite CODE line numbers, test counts and "current
+# baseline" stats. Every MAKER_FIX / CODE_REVIEW_FIX refactor shifts them, so
+# treating that drift as a gray-list finding never converges — the rejection
+# fingerprint (file:line) itself moves, so suppression misses the next round
+# and the same "锚点/用例数过期" re-surfaces forever. CHECKER is told to report
+# these as INFO; this is the backstop that demotes any it still emits as
+# SOFT_WARNING so they neither block SYNCED nor spawn gray drafts.
+_DOC_REF_DOC = re.compile(r"plans?/|plan\.md|design\.md")
+_DOC_REF_DRIFT = re.compile(
+    r"锚点|行号|漂移|下移|失效|用例数|用例.{0,6}全绿|基线|实测|git diff|"
+    r"增量规模|未同步|已过期|口径已变|数字.{0,4}过期")
+
+
+def _is_doc_anchor_drift(desc, dtype=""):
+    """True when a finding is about a plan/design doc's own stale cross-
+    reference to code, not a real spec<->code semantic mismatch."""
+    desc = desc or ""
+    if not _DOC_REF_DOC.search(desc):
+        return False
+    return bool(_DOC_REF_DRIFT.search(desc)) or "line reference" in (dtype or "")
+
+
 def resolve_gray_draft(sm, draft_id, decision):
     """Adjudicate one gray-list draft. Returns (changed, message)."""
     state = sm.load()
@@ -498,6 +520,18 @@ class StateMachine:
         ]
         suppressed_soft = [d for d in parsed_soft
                            if suppressed(d.get("description", ""))]
+        doc_anchor = [d for d in filtered
+                      if _is_doc_anchor_drift(d.get("description", ""),
+                                              d.get("type", ""))]
+        if doc_anchor:
+            filtered = [d for d in filtered if d not in doc_anchor]
+            notes = module.setdefault("doc_anchor_notes", [])
+            notes.extend({"description": d.get("description", "")}
+                         for d in doc_anchor)
+            notes[:] = notes[-30:]
+            self._trace(state, CHECKER, key,
+                        f"{len(doc_anchor)} 条 plan/design 文档锚点/用例数漂移"
+                        f"降级为 INFO（不阻塞 SYNCED）")
         module["soft_warnings"] = filtered
         if suppressed_hard or suppressed_soft:
             module["suppressed_checker"] = [
@@ -511,7 +545,8 @@ class StateMachine:
         # raw count; suppressed ones only reduce the parseable portion
         hard -= len(suppressed_hard)
         if raw_soft > len(parsed_soft):
-            soft = max(raw_soft - len(suppressed_soft), len(filtered))
+            soft = max(raw_soft - len(suppressed_soft) - len(doc_anchor),
+                       len(filtered))
         else:
             soft = len(filtered)
         if hard > 0 and module.get("maker_attempt", 0) < MAX_MAKER_ATTEMPTS:

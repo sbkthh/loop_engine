@@ -1022,9 +1022,10 @@ class TestRun(SchedulerBase):
         self.assertEqual(
             captured[1]["directives"]["context"]["previous_result"], result_body)
 
-    def test_run_derives_session_id_from_root_action(self):
-        """qodercli calls carry a deterministic session ID: same root+action
-        +attempt reuses it, so audit/session files map back to the step."""
+    def test_run_derives_session_id_from_root_module(self):
+        """qodercli calls carry a deterministic session ID keyed by
+        (root, module_key): every step within a module-run reuses the same
+        session, so spec Read / project exploration carry forward."""
         root = self._register_pending("req")
         captured = []
 
@@ -1054,10 +1055,82 @@ class TestRun(SchedulerBase):
         for cmd in captured:
             i = cmd.index("--session-id")
             sids.append(cmd[i + 1])
-        self.assertEqual(sids[0], sids[1])  # same step, same attempt → same ID
+        self.assertEqual(sids[0], sids[1])  # same module → same sid
         self.assertEqual(
             sids[0],
-            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root}:SCORE:0")))
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{root}:c/m")))
+
+    def test_run_cmd_uses_mcp_whitelist(self):
+        """OPT-1: D-side spawn restricts MCP to minimal_mcp.json so
+        playwright/postgres/redis/etc. don't inflate every cold start."""
+        cmd = self._run_capture_first_qodercli_cmd("")
+        self.assertIn("--strict-mcp-config", cmd)
+        self.assertIn("--mcp-config", cmd)
+        self.assertEqual(cmd[cmd.index("--mcp-config") + 1],
+                         scheduler._MCP_CONFIG)
+
+    def test_run_cmd_persists_session(self):
+        """OPT-3: --no-session-persistence is gone so cross-step --resume
+        can pick up the prior step's context."""
+        cmd = self._run_capture_first_qodercli_cmd("")
+        self.assertNotIn("--no-session-persistence", cmd)
+
+    def test_run_second_step_resumes_session_from_first(self):
+        """When the session file already exists (first step persisted it),
+        the next spawn for the same module uses --resume, not --session-id."""
+        root = self._register_pending("req")
+        captured = []
+        next_actions = ["SCORE", "MAKER_STEP0", "IDLE"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(cmd)
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        results = iter([False, True])  # first spawn creates, second resumes
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(scheduler, "_session_file_exists",
+                                  side_effect=lambda *a: next(results)):
+            scheduler.run_requirement("req")
+
+        self.assertEqual(len(captured), 2)
+        self.assertIn("--session-id", captured[0])
+        self.assertIn("--resume", captured[1])
+        s1 = captured[0][captured[0].index("--session-id") + 1]
+        s2 = captured[1][captured[1].index("--resume") + 1]
+        self.assertEqual(s1, s2)  # same module → same sid across steps
+
+    def test_repair_uses_resume_when_session_persisted(self):
+        """OPT-2/OPT-3: _repair_result now really resumes the failed step's
+        session (previously --no-session-persistence defeated it)."""
+        with mock.patch.object(scheduler, "_session_file_exists",
+                               return_value=True), \
+                mock.patch.object(scheduler.subprocess, "run",
+                                  return_value=types.SimpleNamespace(
+                                      stdout="", stderr="",
+                                      returncode=0)) as m:
+            ok = scheduler._repair_result("/tmp/x", "sid-abc", "some error")
+        self.assertTrue(ok)
+        cmd = m.call_args.args[0]
+        self.assertIn("--resume", cmd)
+        self.assertNotIn("--session-id", cmd)
+        self.assertIn("--strict-mcp-config", cmd)
+        self.assertNotIn("--no-session-persistence", cmd)
 
     def _run_capture_first_qodercli_cmd(self, model_value):
         root = self._register_pending("req")
@@ -1103,8 +1176,8 @@ class TestRun(SchedulerBase):
         self.assertNotIn("--model", cmd)
 
     def test_run_retry_gets_new_session_id(self):
-        """A retried step (same action, retries incremented) gets a fresh ID,
-        keeping the replay session clean of the failed attempt's context."""
+        """A retried step gets a fresh session ID (attempt-scoped), keeping
+        the replay clean of the failed attempt's context."""
         root = self._register_pending("req")
         captured = []
         fail = [1]
@@ -1138,9 +1211,9 @@ class TestRun(SchedulerBase):
         sids = [cmd[cmd.index("--session-id") + 1] for cmd in captured]
         self.assertNotEqual(sids[0], sids[1])
         self.assertEqual(sids[0], str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                 f"{root}:SCORE:0")))
+                                                 f"{root}:c/m")))
         self.assertEqual(sids[1], str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                 f"{root}:SCORE:1")))
+                                                 f"{root}:c/m:retry1")))
 
     def test_run_retries_qodercli_failure_once(self):
         root = self._register_pending("req")

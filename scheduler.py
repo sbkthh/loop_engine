@@ -86,6 +86,11 @@ QUICK_TIMEOUT_SECONDS = 30       # local next CLI calls (pure Python, <1s)
 COMMIT_TIMEOUT_SECONDS = 900
 
 _QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
+_MCP_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "minimal_mcp.json")
+# Loop-agent steps don't touch playwright/postgres/redis/mysql/etc. Starting
+# only codegraph shaves several minutes off every qodercli cold start.
+_MCP_FLAGS = ["--strict-mcp-config", "--mcp-config", _MCP_CONFIG]
 
 
 def _qodercli_model():
@@ -97,6 +102,22 @@ def _qodercli_model():
             return json.load(f).get("model", {}).get("name") or ""
     except (OSError, ValueError):
         return ""
+
+
+def _session_file_exists(sid, cwd):
+    """True when a persisted qodercli session jsonl is already on disk for
+    (sid, cwd). qodercli stores sessions under
+    ~/.qoder/projects/<cwd-with-slashes-and-dots-as-dashes>/<sid>.jsonl."""
+    processed = cwd.replace("/", "-").replace(".", "-")
+    path = os.path.expanduser(f"~/.qoder/projects/{processed}/{sid}.jsonl")
+    return os.path.isfile(path)
+
+
+def _session_flag(root, sid):
+    """--resume when the session is already persisted, --session-id otherwise.
+    Lets the first step of a module-run create the session and every later
+    step continue it — spec Read / project exploration carry forward."""
+    return "--resume" if _session_file_exists(sid, root) else "--session-id"
 
 
 # ---------- file helpers ----------
@@ -964,8 +985,8 @@ def _repair_result(root, sid, detail):
     output envelope was malformed. Returns False when the repair call fails.
     """
     try:
-        cmd = [_QODERCLI, "--print", "--session-id", sid,
-               "--no-session-persistence",
+        cmd = [_QODERCLI, "--print", _session_flag(root, sid), sid,
+               *_MCP_FLAGS,
                "--dangerously-skip-permissions",
                "--cwd", root, "--append-system-prompt",
                _REPAIR_PROMPT.format(detail=detail)]
@@ -1053,14 +1074,21 @@ def run_requirement(name):
                     **inner.get("context", {}),
                     "previous_result": prev_result}}
                 payload["directives"] = inner
-            # deterministic session id: same root+action+attempt maps to the
-            # same qodercli session (audit/trace back to the step); a retry
-            # increments retries and gets a fresh id, keeping replay clean
-            sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                 f"{root}:{action}:{retries}"))
+            # session id stable per (root, module_key): all steps within one
+            # module-run share a session, so spec Read / project exploration
+            # carry forward across CLASSIFY → SCORE → MAKER → CHECKER. A
+            # retry gets a fresh id (attempt-scoped) so the failed attempt's
+            # context cannot bias the replay.
+            module_key = directives.get("module") or "global"
+            if retries > 0:
+                sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                     f"{root}:{module_key}:retry{retries}"))
+            else:
+                sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                     f"{root}:{module_key}"))
             try:
-                cmd = [_QODERCLI, "--print", "--session-id", sid,
-                       "--no-session-persistence",
+                cmd = [_QODERCLI, "--print", _session_flag(root, sid), sid,
+                       *_MCP_FLAGS,
                        "--dangerously-skip-permissions",
                        "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT]
                 model = _qodercli_model()
@@ -1171,6 +1199,7 @@ def run_requirement(name):
                 end = "commit_error"
                 break
             steps += 1
+            retries = 0  # per-step retry counter, sid formula depends on it
             if not commit.get("next_action"):
                 _log(f"run {name}: no state advance, stopping")
                 end = "no_advance"

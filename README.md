@@ -679,11 +679,14 @@ loop_engine feishu stop
        ▼                                       │
 ┌──────────────────────────────────────────────┐
 │  C: next 子进程    读 state.json → 输出 directives
-│  D: qodercli 子进程  --print --session-id <uuid5(root:action:retries)>
-│                     --no-session-persistence --cwd <root>
-│                     --append-system-prompt LOOP_AGENT_PROMPT
+│  D: qodercli 子进程  --print (--resume|--session-id)
+│                     <uuid5(root:module_key) 或 :retryN 后缀>
+│                     --strict-mcp-config --mcp-config minimal_mcp.json
+│                     --cwd <root> --append-system-prompt LOOP_AGENT_PROMPT
 │                     输入 = directives + context.previous_result
-│                     输出 → .loop/result.md（无会话记忆，外部记忆）
+│                     输出 → .loop/result.md
+│                     同模块 run 内跨步复用 session 历史（spec Read 等
+│                     一次性成本 amortize）；重试换新 sid 保持隔离
 │  E: commit 子进程  解析 result.md → 状态机推进 → 清空 result.md
 └──────────────────────────────────────────────
 
@@ -845,3 +848,83 @@ loop_engine feishu stop
 - OpenCode CLI: https://opencode.ai/docs/cli/
 - Pi Extensions: https://badlogic-pi-mono.mintlify.app/coding-agent/extensions
 - Pi Usage（-p/--session/-e）: https://pi.dev/docs/latest/usage
+
+## 十三、Loop 执行优化路线图
+
+### 主要矛盾
+
+单次 run 时长剖析（示例：某 72 分钟 run，7 步流水线，模块 SCORE 95）：
+
+| 步骤 | 耗时 |
+|------|------|
+| SCAN → CLASSIFY_CHANGE | 10.7 min |
+| SCORE | 3.1 min |
+| MAKER_STEP0 | 14.4 min |
+| MAKER_STEP1_RED | 15.5 min |
+| MAKER_STEP2_GREEN | 7.9 min |
+| CHECKER（首次 exit 1，浪费） | 7.3 min |
+| CHECKER（重试成功） | 7.0 min |
+| CODE_REVIEW | 5.9 min |
+
+**主要矛盾：LLM 冷启动固定开销 × 步骤数**。每步 spawn 新 qodercli 进程要付：Node init + hooks/skills 注册 + 全部 MCP server 拉起 + spec 从磁盘 Read + 项目结构探索，累计 ≈9 min/step 与变更大小无关。这**不是模型能力问题**（GLM/Qwen 都一样），是进程架构问题。次要矛盾：步骤串行、模型一刀切、exit 码不分类。
+
+### 分层策略
+
+按「改动成本 vs 收益」分四阶段。**内核（state.json 真相源 + spec_norm_hash 检测 + 强制验证闭环）不动**，只优化形态。流程有必要，但**当前形态（严格 6 步串行、每步独立 LLM 调用）不是**——它是「CLI 冷启动 ≈9 min + 模型能力不稳」这一工具成本结构下的产物。工具一变（SDK 常驻 / 快模型 / 并发），步骤切分就要重新解构：保留 spec↔code 一致性验证这个内核，否定「每 phase 一次冷启动」这个形式。
+
+### 阶段 0 · 基线观察（进行中）
+
+- **OBS-1** Qwen3.8-Flash 跑一周真实 run，记录：单次 run 总耗时 / 各 step 分布 / CLASSIFY magnitude 判定与实际变更规模对齐率 / exit 1 频次
+
+### 阶段 1 · 零/微改动（对应任务 #9~#12）
+
+不改变进程模型，不动状态机。降低主要矛盾表象烈度。
+
+- **OPT-1 · #9 ✅ 已实现** D 侧 qodercli 加 MCP 白名单：`--strict-mcp-config --mcp-config minimal_mcp.json`。minimal 版只保留 codegraph；playwright/postgres/redis/mysql 等不再拖慢冷启动
+- **OPT-2 · #10 ✅ 已实现** `_repair_result` 现真 `--resume` 上次会话（配合 OPT-3 落地），docstring 语义与实现一致
+- **OPT-3 · #11 ✅ 已实现** 移除 `--no-session-persistence`，sid 派生改成 `uuid5(root:module_key)`（重试 `+ :retryN`），首步 `--session-id`、后续步 `--resume`。同模块 run 内 spec Read / 项目结构探索 只付一次。步骤成功后 `retries` 归零
+- **OPT-4 · #12 待做** 模型分级：`STATUS_TABLE` 加 `model` 字段，CLASSIFY/SCORE 走 flash 档（预估 10.7 min → 2~3 min），MAKER/CHECKER 保留深度模型。风险：CLASSIFY 判错**静默走错分支**，需 2-of-3 self-consistency 或非对称复核
+
+### 阶段 2 · SDK 迁移（未开任务，基线稳后启动）
+
+把主要矛盾从「冷启动 × 步骤数」**降级**为「推理时间 × 步骤数」——消灭进程本身的重启动。
+
+- **OPT-5** 接 `qoder-agent-sdk`（方案 β：单 client 串行）。每需求一 client，run 内 session 常驻多轮 `client.query()`，run 结束 close。scheduler.py:1062 `subprocess.run(cmd)` → `async with QoderSDKClient(...)`
+- **OPT-6** Python bump 3.9 → 3.10+（SDK 前置要求，见「前置条件」段）
+- **OPT-7** Auth 换 `access_token_from_env()` + PAT / Service Account。SDK 文档「Production checklist」推荐；不再依赖工作站登录态
+- **OPT-8** audit 从 `--settings` 注入迁到 `can_use_tool` 回调 + `allowed_tools`。告别 `--dangerously-skip-permissions`；审批决策回编排侧，与 `spec_change_requires_loop` 门禁结合更实
+- **OPT-9** spec 静默预注入：`query(spec_text, should_query=False)` 一次塞进 session 上下文，省每步 Read 工具调用
+
+**关键架构事实**（docs.qoder.com/cli/sdk/how-it-works）：一个 `QoderSDKClient` = 一个 qodercli 进程 = 一个活跃 session，严格 **1:1 绑定**。运行中不能切 session；多并行 session = 多进程。`session_id`/`resume`/`fork_session` 都在 client 构造期决定。
+
+**三条方案对比**：
+- **α 多 client 并行**：每需求一 client，冷启动只付一次/需求。适合 `max_concurrency>1`
+- **β 单 client 串行**：进程数受控 1，每需求 close+open 是新进程但仍付 1 次冷启动；需求内所有 step 免费。**起步最优选这个**
+- **γ 单 client 单 session 服务所有需求**：不推荐，跨需求 spec 上下文会串味
+
+### 阶段 3 · 规模/形态扩展（未开任务）
+
+主要矛盾降级后，扩大外延、精细化斗争方式。
+
+- **OPT-10** 并发化（方案 α + scheduler `max_concurrency > 1`）。N 需求并跑 = N 个常驻 client。前提：LLM 配额扛得住；session 目录不冲突
+- **OPT-11** 会话合并（多 phase 一 turn）：**SDK 后自动吸收**——phase 保持独立但共享 session，「多 phase 一 turn」不再是必需。原任务 #8 因此已删除
+- **OPT-12** STATIC_DIFF 前移：加非 LLM 步骤做纯静态一致性检查（字段名 grep / API 签名 AST 比对 / import 引用），挡在 CHECKER 前。**把矛盾暴露在成本最低处**——能用确定性发现的，别交给概率模型
+- **OPT-13** exit 码分级重试：`_run_llm_turn`（`wecom_server/router.py:880`）/ machine.py commit_error 分支加错误特征。网络/429 → 短 backoff；格式错 → 单步重发 prompt；代码/环境错 → 走 fix 路径。避免 CHECKER 一次 exit 1 白烧 7 min
+
+### 独立线（与主线无关，随时可插入）
+
+- **OPT-14** `_detect_requirement` 关键词别名：registry 加 `keywords` 字段，「越库二期」之类中文名能命中 `cross-dock-v2-backend`。落点 `wecom_server/router.py:200`
+- **OPT-15** 飞书进程 watchdog：`crontab` poll 里检查 feishu 进程存活，挂了自动重启。避免凌晨 DNS 断链那类事件的静默窗口
+
+### 推荐节奏
+
+1. 本周 OBS-1 建基线
+2. 基线稳后 → **OPT-1 + OPT-2** 并行（零/低风险）
+3. 一周效果确认 → **OPT-3**（会话持久化）
+4. 再观察 → **OPT-4**（分级模型）
+5. 阶段 1 全部落地跑 2 周 → 启动**阶段 2**（SDK 迁移）
+6. 阶段 2 稳后按需做**阶段 3**
+
+### 反例（曾提出但被撤回）
+
+- **「SCORE ≥95 的轻量变更跳过 CLASSIFY_CHANGE」错误**：SCORE 衡量的是 spec 完成度，与单次变更幅度**正交**。一个 98 分 spec 完全可能加一个新 API（重量级），跳过 CLASSIFY 会直接路由错误。撤回该提议，改为 OPT-4 分级模型来压缩 CLASSIFY 的耗时

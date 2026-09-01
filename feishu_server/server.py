@@ -11,7 +11,7 @@ import queue
 import threading
 import time
 
-from .feishu_api import send_text
+from .feishu_api import download_file, send_text
 
 logger = logging.getLogger("feishu")
 
@@ -56,11 +56,35 @@ def _handle_event(payload):
         return
     event = payload.get("event", {})
     message = event.get("message", {})
-    if message.get("message_type") != "text":
-        logger.info("[feishu] ignored non-text message: %s",
-                    message.get("message_type"))
-        return
     open_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
+    mtype = message.get("message_type")
+    if mtype == "file":
+        try:
+            fc = json.loads(message.get("content", "{}"))
+        except ValueError:
+            fc = {}
+        logger.info("[feishu] file from %s: %s", open_id, fc.get("file_name", ""))
+        threading.Thread(
+            target=_process_post, daemon=True,
+            args=(message.get("message_id", ""), "",
+                  [(fc.get("file_key", ""), fc.get("file_name", ""))],
+                  open_id)).start()
+        return
+    if mtype == "post":
+        try:
+            pc = json.loads(message.get("content", "{}"))
+        except ValueError:
+            pc = {}
+        text, files = _parse_post(pc)
+        logger.info("[feishu] post from %s: %s (%d file(s))",
+                    open_id, text[:100], len(files))
+        threading.Thread(target=_process_post, daemon=True,
+                         args=(message.get("message_id", ""), text,
+                               files, open_id)).start()
+        return
+    if mtype != "text":
+        logger.info("[feishu] ignored non-text message: %s", mtype)
+        return
     try:
         content = json.loads(message.get("content", "{}")).get("text", "")
     except ValueError:
@@ -88,8 +112,21 @@ def _push(user_id, reply):
         logger.error("[feishu] push failed: %s", e)
 
 
+def _receipt(open_id):
+    """Lightweight ack so silence can't be confused with a dead service.
+    Long connections have no inline reply channel (unlike WeCom callbacks);
+    feishu.json receipt_enabled=false turns this off."""
+    if not CONFIG.get("receipt_enabled", True):
+        return
+    try:
+        send_text(open_id, "已收到，正在处理…", CONFIG)
+    except Exception as e:
+        logger.error("[feishu] receipt failed: %s", e)
+
+
 def _process(content, open_id):
     """Background: dispatch through the shared router, push the reply."""
+    _receipt(open_id)
     _remember_user(open_id)
     try:
         from wecom_server.router import dispatch
@@ -107,6 +144,51 @@ def _process(content, open_id):
         logger.error("[feishu] dispatch error: %s", e)
         traceback.print_exc()
         _push(open_id, "暂时无法处理，请稍后再试。")
+
+
+def _parse_post(content_json):
+    """Extract (text, [(file_key, file_name)]) from a post message payload.
+    Paragraphs live under a locale key (zh_cn/en_us/...); take the first."""
+    post = content_json.get("post") or {}
+    body = next((v for v in post.values() if isinstance(v, dict)), None)
+    texts, files = [], []
+    for para in (body or {}).get("content") or []:
+        for node in para or []:
+            tag = node.get("tag")
+            if tag == "text" and node.get("text"):
+                texts.append(node["text"])
+            elif tag == "a" and node.get("text"):
+                texts.append(f'{node["text"]}({node.get("href", "")})')
+            elif tag == "file":
+                files.append((node.get("file_key", ""),
+                              node.get("file_name", "")))
+    return " ".join(texts).strip(), files
+
+
+def _process_post(message_id, text, files, open_id):
+    """Download attached files, then dispatch a prompt with text + paths."""
+    saved = []
+    for file_key, file_name in files:
+        try:
+            path = download_file(message_id, file_key, CONFIG)
+        except Exception as e:
+            logger.error("[feishu] file download error: %s", e)
+            path = None
+        if path:
+            saved.append((file_name, path))
+    if files and not saved:
+        _push(open_id, "文件下载失败，请稍后再试。")
+        return
+    parts = []
+    if text:
+        parts.append(f"用户说：{text}")
+    parts += [f"附件「{n}」已保存到 {p}" for n, p in saved]
+    if not parts:
+        return
+    if saved:
+        parts.append("请读取文件内容并按其中的诉求处理"
+                     "（如为 PRD 文档，按需求注册流程引导）。")
+    _process("\n".join(parts), open_id)
 
 
 def _queue_for(requirement):
@@ -157,6 +239,8 @@ def _on_message(data):
                     if data.event and data.event.sender else ""}},
                 "message": {
                     "message_type": data.event.message.message_type
+                    if data.event and data.event.message else "",
+                    "message_id": data.event.message.message_id
                     if data.event and data.event.message else "",
                     "content": data.event.message.content
                     if data.event and data.event.message else "{}",

@@ -91,6 +91,60 @@ def test_send_text_plain_stays_text(monkeypatch):
     assert json.loads(bodies[0]["content"]) == {"text": "纯文本内容"}
 
 
+def test_download_file_saves_content(monkeypatch, tmp_path):
+    monkeypatch.setattr(feishu_api, "_token_cache",
+                        {"token": "tk", "expires_at": time.time() + 3600})
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/octet-stream",
+                   "Content-Disposition": 'attachment; filename="prd.pdf"'}
+        content = b"data"
+        text = ""
+    monkeypatch.setattr(feishu_api.requests, "get", lambda url, **kw: _R())
+    path = feishu_api.download_file("om_1", "fk",
+                                    {"app_id": "a", "app_secret": "s"},
+                                    str(tmp_path))
+    assert path == str(tmp_path / "prd.pdf")
+    with open(path, "rb") as f:
+        assert f.read() == b"data"
+
+
+def test_download_file_decodes_utf8_filename(monkeypatch, tmp_path):
+    monkeypatch.setattr(feishu_api, "_token_cache",
+                        {"token": "tk", "expires_at": time.time() + 3600})
+    # urllib3 latin-1 header decoding is lossless: round-trip the real name
+    mojibake = "执行结果1.txt".encode("utf-8").decode("latin-1")
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/octet-stream",
+                   "Content-Disposition":
+                       f'attachment; filename="{mojibake}"'}
+        content = b"data"
+        text = ""
+    monkeypatch.setattr(feishu_api.requests, "get", lambda url, **kw: _R())
+    path = feishu_api.download_file("om_1", "fk",
+                                    {"app_id": "a", "app_secret": "s"},
+                                    str(tmp_path))
+    assert path == str(tmp_path / "执行结果1.txt")
+
+
+def test_download_file_json_error_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(feishu_api, "_token_cache",
+                        {"token": "tk", "expires_at": time.time() + 3600})
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        content = b""
+        text = '{"code": 99991663, "msg": "invalid"}'
+    monkeypatch.setattr(feishu_api.requests, "get", lambda url, **kw: _R())
+    assert feishu_api.download_file("om_1", "fk",
+                                    {"app_id": "a", "app_secret": "s"},
+                                    str(tmp_path)) is None
+
+
 def test_send_text_failure_returns_false(monkeypatch):
     monkeypatch.setattr(feishu_api, "_token_cache",
                         {"token": "tk", "expires_at": time.time() + 3600})

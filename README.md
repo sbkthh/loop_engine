@@ -632,6 +632,7 @@ loop_engine feishu stop
 | `app_secret` | 应用 App Secret（必填） |
 | `encrypt_key` | 长连接模式下不使用（webhook 模式遗留，可忽略） |
 | `verification_token` | 长连接模式下不使用（可忽略） |
+| `receipt_enabled` | 收到消息即推「已收到，正在处理…」回执（缺省开；置 `false` 关闭） |
 
 依赖：`lark-oapi`（官方 SDK，`pip install lark-oapi`）。企业代理网络下默认 OpenSSL 路径不含劫持根证书时，`start()` 会自动把 `SSL_CERT_FILE` 指向 certifi 证书包。
 
@@ -641,6 +642,7 @@ loop_engine feishu stop
 - 消息处理全程在后台线程，结果通过 IM API 主动推送
 - 事件按 `event_id` 去重（SDK 重连后可能重投）
 - 推送分通道：含 markdown（`**`/链接/`<font>`）走交互卡片渲染（`<font>` 压平，其余保留），纯文本仍走 text 消息
+- 支持接收**文件消息**与**富文本（post）消息**：文件下载到 `~/.qoder/loop_engine/files/`（文件名按 UTF-8 还原），post 中的文字说明与附件路径合并注入 prompt——发文件时附一句说明即可告知用途（企微的 media/get 链路无法稳定收文件）
 - 调度器通知（`scheduler.notify_text`）按 `last_user.json` 中的 `platform` 字段路由到最近活跃用户所在平台（缺省 `wecom`，向后兼容）
 
 ---

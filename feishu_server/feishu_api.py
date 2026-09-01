@@ -1,8 +1,10 @@
 """Feishu (Lark) REST API: app_access_token caching + message push."""
 import json
 import logging
+import os
 import re
 import time
+from urllib.parse import unquote
 
 import requests
 
@@ -74,3 +76,39 @@ def _send(open_id, msg_type, payload, config, label):
         return False
     logger.info("[feishu] pushed %s to %s", label, open_id)
     return True
+
+
+_FILES_DIR = os.path.expanduser("~/.qoder/loop_engine/files")
+
+
+def download_file(message_id, file_key, config, save_dir=_FILES_DIR):
+    """Download a file attached to a received message. Returns the saved
+    path, or None on failure. Resource follows the message itself — no
+    separate media library (unlike WeCom's media/get)."""
+    token = get_app_access_token(config)
+    r = requests.get(
+        "https://open.feishu.cn/open-apis/im/v1/messages/"
+        f"{message_id}/resources/{file_key}",
+        params={"type": "file"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=60,
+    )
+    if r.status_code != 200 or "application/json" in r.headers.get("Content-Type", ""):
+        logger.error("[feishu] download failed: %s %s",
+                     r.status_code, r.text[:200])
+        return None
+    m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)",
+                  r.headers.get("Content-Disposition", ""))
+    name = unquote(m.group(1)) if m else f"feishu-{file_key[:12]}"
+    # urllib3 decodes headers as latin-1; non-ASCII filenames arrive as
+    # mojibake (执行结果 → æ§è¡ç»æ) unless re-decoded as UTF-8.
+    try:
+        name = name.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, name)
+    with open(path, "wb") as f:
+        f.write(r.content)
+    logger.info("[feishu] downloaded %s (%d bytes)", path, len(r.content))
+    return path

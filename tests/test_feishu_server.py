@@ -15,9 +15,12 @@ from feishu_server import server
 @pytest.fixture(autouse=True)
 def _server_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(server, "CONFIG", {"app_id": "cli_a", "app_secret": "s"})
+    monkeypatch.setattr(server, "CONFIG",
+                        {"app_id": "cli_a", "app_secret": "s",
+                         "receipt_enabled": False})
     monkeypatch.setattr(server, "_seen_events", {})
     monkeypatch.setattr(server, "_pending", {})
+    monkeypatch.setattr(server, "_last_user_write", {})
     yield
 
 
@@ -45,6 +48,34 @@ def _wire_dispatch_and_push(monkeypatch, dispatch):
         return True
     monkeypatch.setattr(server, "send_text", send_text)
     return pushed, pushes
+
+
+def test_receipt_pushed_before_reply_by_default(monkeypatch):
+    """Missing receipt_enabled key defaults to on; receipt precedes reply."""
+    monkeypatch.setattr(server, "CONFIG", {"app_id": "a", "app_secret": "s"})
+    pushed, pushes = _wire_dispatch_and_push(
+        monkeypatch, lambda *a, **k: "reply")
+
+    server._handle_event(_msg_event("hi"))
+    assert pushed.wait(timeout=2)
+    for _ in range(20):
+        if len(pushes) >= 2:
+            break
+        time.sleep(0.1)
+    assert pushes[0] == ("ou_abc", "已收到，正在处理…")
+    assert pushes[1] == ("ou_abc", "reply")
+
+
+def test_receipt_disabled_by_config(monkeypatch):
+    monkeypatch.setattr(server, "CONFIG",
+                        {"app_id": "a", "app_secret": "s",
+                         "receipt_enabled": False})
+    pushed, pushes = _wire_dispatch_and_push(
+        monkeypatch, lambda *a, **k: "reply")
+
+    server._handle_event(_msg_event("hi"))
+    assert pushed.wait(timeout=2)
+    assert pushes == [("ou_abc", "reply")]
 
 
 def test_text_event_dispatch_and_push(monkeypatch, tmp_path):
@@ -102,6 +133,124 @@ def test_non_text_message_ignored(monkeypatch):
     server._handle_event(payload)
 
 
+def test_file_message_downloaded_and_dispatched(monkeypatch, tmp_path):
+    saved = str(tmp_path / "prd.pdf")
+    monkeypatch.setattr(server, "download_file",
+                        lambda mid, fk, cfg: saved)
+    seen = {}
+
+    def dispatch(content, reg, data_dir, user):
+        seen["content"] = content
+        return "file reply"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    payload = {
+        "header": {"event_id": "evt-file",
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_abc"}},
+            "message": {"message_type": "file", "message_id": "om_1",
+                        "content": json.dumps({"file_key": "fk",
+                                               "file_name": "prd.pdf"})},
+        },
+    }
+    server._handle_event(payload)
+    assert pushed.wait(timeout=2)
+    assert saved in seen["content"] and "prd.pdf" in seen["content"]
+    assert pushes == [("ou_abc", "file reply")]
+
+
+def test_post_message_text_plus_file(monkeypatch, tmp_path):
+    saved = str(tmp_path / "prd.md")
+    monkeypatch.setattr(server, "download_file",
+                        lambda mid, fk, cfg: saved)
+    seen = {}
+
+    def dispatch(content, reg, data_dir, user):
+        seen["content"] = content
+        return "post reply"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    payload = {
+        "header": {"event_id": "evt-post",
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_abc"}},
+            "message": {"message_type": "post", "message_id": "om_9",
+                        "content": json.dumps({"post": {"zh_cn": {
+                            "content": [[
+                                {"tag": "text", "text": "这是PRD，注册新需求"},
+                                {"tag": "file", "file_key": "fk",
+                                 "file_name": "prd.md"},
+                            ]]}}})},
+        },
+    }
+    server._handle_event(payload)
+    assert pushed.wait(timeout=2)
+    assert "用户说：这是PRD，注册新需求" in seen["content"]
+    assert saved in seen["content"] and "prd.md" in seen["content"]
+    assert pushes == [("ou_abc", "post reply")]
+
+
+def test_post_message_text_only(monkeypatch):
+    seen = {}
+
+    def dispatch(content, reg, data_dir, user):
+        seen["content"] = content
+        return "ok"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    payload = {
+        "header": {"event_id": "evt-post2",
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_abc"}},
+            "message": {"message_type": "post", "message_id": "om_9",
+                        "content": json.dumps({"post": {"zh_cn": {
+                            "content": [[
+                                {"tag": "text", "text": "纯富文本"},
+                                {"tag": "a", "text": "链接",
+                                 "href": "https://x"},
+                            ]]}}})},
+        },
+    }
+    server._handle_event(payload)
+    assert pushed.wait(timeout=2)
+    assert seen["content"] == "用户说：纯富文本 链接(https://x)"
+
+
+def test_parse_post_extracts_text_and_files():
+    text, files = server._parse_post({"post": {"zh_cn": {"content": [
+        [{"tag": "text", "text": "a"}, {"tag": "at", "user_id": "u"}],
+        [{"tag": "file", "file_key": "k1", "file_name": "f1"},
+         {"tag": "file", "file_key": "k2", "file_name": "f2"}],
+    ]}}})
+    assert text == "a"
+    assert files == [("k1", "f1"), ("k2", "f2")]
+
+
+def test_file_download_failure_pushes_error(monkeypatch):
+    monkeypatch.setattr(server, "download_file", lambda *a: None)
+    pushed, pushes = _wire_dispatch_and_push(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("should not dispatch")))
+
+    payload = {
+        "header": {"event_id": "evt-file2",
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_abc"}},
+            "message": {"message_type": "file", "message_id": "om_1",
+                        "content": json.dumps({"file_key": "fk",
+                                               "file_name": "x.pdf"})},
+        },
+    }
+    server._handle_event(payload)
+    assert pushed.wait(timeout=2)
+    assert "下载失败" in pushes[0][1]
+
+
 def test_on_message_translates_sdk_event(monkeypatch):
     """SDK typed object → dict payload → handler gets text + open_id."""
     class _NS:
@@ -112,7 +261,7 @@ def test_on_message_translates_sdk_event(monkeypatch):
         header=_NS(event_id="evt-sdk", event_type="im.message.receive_v1"),
         event=_NS(
             sender=_NS(sender_id=_NS(open_id="ou_sdk")),
-            message=_NS(message_type="text",
+            message=_NS(message_type="text", message_id="om_sdk",
                         content=json.dumps({"text": "via sdk"})),
         ),
     )

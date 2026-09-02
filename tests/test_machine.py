@@ -417,6 +417,77 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertEqual(len(issues), 3)
         self.assertEqual(issues[0]["severity"], "important")
 
+    def test_bedrock_code_review_fix_exhausted_blocks_not_synced(self):
+        """CODE_REVIEW_FIX edits code; when the fix budget is exhausted it
+        must go BLOCKED, never _SYNCED (that would merge the last edit with no
+        CHECKER re-verify)."""
+        from constants import BLOCKED, MAX_REVIEW_FIX_CYCLES
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        sm = StateManager(self.root)
+        state = sm.load()
+        module = state["modules"][self.key]
+        module["review_fix_attempt"] = MAX_REVIEW_FIX_CYCLES + 1
+        r = machine._commit_code_review_fix(
+            state, self.key, module,
+            f"---MAKER_OUTPUT---\n{_maker_fix_json()}\n---END_MAKER_OUTPUT---")
+        self.assertIsNone(r)
+        self.assertEqual(module["status"], BLOCKED)
+
+    def test_bedrock_code_review_open_issues_exhausted_blocks(self):
+        """CODE_REVIEW still reporting critical issues after the fix budget
+        must BLOCK, not silently merge unresolved issues to SYNCED."""
+        from constants import BLOCKED, MAX_REVIEW_FIX_CYCLES
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        sm = StateManager(self.root)
+        state = sm.load()
+        module = state["modules"][self.key]
+        module["review_fix_attempt"] = MAX_REVIEW_FIX_CYCLES
+        r = machine._commit_code_review(
+            state, self.key, module,
+            json.dumps({"issues": [{"severity": "critical",
+                                    "text": "Foo.java:9 — NPE on null"}]}))
+        self.assertIsNone(r)
+        self.assertEqual(module["status"], BLOCKED)
+
+    def test_bedrock_clean_code_review_still_syncs(self):
+        """Guard against over-blocking: a code review with no issues still
+        reaches SYNCED (CODE_REVIEW is read-only and inherits a passed
+        CHECKER, so this does not bypass the bedrock)."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        sm = StateManager(self.root)
+        state = sm.load()
+        module = state["modules"][self.key]
+        r = machine._commit_code_review(
+            state, self.key, module, json.dumps({"issues": []}))
+        self.assertEqual(r, "_SYNCED_")
+
+    def test_bedrock_tripwire_refuses_synced_from_code_edit(self):
+        """Structural guard: even if a code-editing handler regressed to
+        returning _SYNCED, commit() refuses the merge and blocks instead of
+        shipping an unverified edit. Proves the bedrock is enforced at the
+        dispatch layer, not just per-handler."""
+        from constants import BLOCKED, MAKER_FIX, PARTIAL
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = PARTIAL
+        StateManager.set_current(state, self.key, MAKER_FIX)
+        sm.save(state)
+        # a result file must exist for commit() to read
+        self._write_maker_step2_green(["/m/Foo.java"], plan_path="/p.md")
+        # simulate a buggy handler that wrongly declares done -> SYNCED
+        machine._handlers[MAKER_FIX] = lambda s, k, m, t: "_SYNCED_"
+        r = machine.commit()
+        self.assertNotEqual(r["next_action"], "_SYNCED_")
+        state = sm.load()
+        self.assertEqual(state["modules"][self.key]["status"], BLOCKED)
+        self.assertTrue(any(
+            "基石守卫" in (t.get("output") or "") for t in state["trace"]))
+
     def test_score_clears_stale_review_fix_attempt(self):
         """review_fix_attempt left over from a run that died mid-fix must
         reset on the next cycle's SCORE commit, else the

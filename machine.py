@@ -31,6 +31,16 @@ import report
 _SYNCED = "_SYNCED_"
 _GRAY_LIST = "_GRAY_LIST_"
 
+# Bedrock: "no inconsistency merges". SYNCED may only be reached through a
+# handler that re-verified the CURRENT code (CHECKER, or CODE_REVIEW which is
+# read-only and inherits the code a passing CHECKER just approved). Handlers
+# in this set mutate src/test code, so emitting _SYNCED from one would ship
+# the last edit without a spec↔code↔plan re-check. commit() refuses such a
+# transition (tripwire -> BLOCKED) so no handler can bypass CHECKER now or in
+# the future.
+CODE_EDIT_ACTIONS = {MAKER_STEP1_RED, MAKER_STEP2_GREEN, MAKER_FIX,
+                     CODE_REVIEW_FIX}
+
 # filename:lineno (or lineno range) inside a warning description, e.g.
 # "StockStrategyMaterialExclusionRule.java:236". Used to suppress repeat
 # checker findings for deviations the user already adjudicated as rejected.
@@ -333,6 +343,16 @@ class StateMachine:
             self.sm.save(state)
             return {"error": str(e)}
 
+        if next_action == _SYNCED and action in CODE_EDIT_ACTIONS:
+            # Tripwire: a code edit landed on SYNCED with no CHECKER re-verify
+            # in between. Refuse the merge; a non-converging loop goes to a
+            # human, never silently ships (bedrock: no inconsistency merges).
+            self._trace(state, action, module_key,
+                        "基石守卫:代码变更后未经 CHECKER 复验,拒绝 SYNCED -> BLOCKED",
+                        "❌")
+            module["status"] = BLOCKED
+            next_action = None
+
         if next_action == _SYNCED:
             self._execute_synced(state, module_key, module)
             StateManager.clear_current(state)
@@ -601,6 +621,16 @@ class StateMachine:
         self._refresh_spec_hashes(module)
         return CHECKER
 
+    def _block(self, state, action, key, module, reason):
+        """Terminal transition: the loop could not reach a verified-clean
+        state within budget. Never auto-merge an unresolved/unverified state
+        to SYNCED — stop and surface to a human (bedrock: no inconsistency
+        merges). Returns None so commit() clears current; BLOCKED has no auto
+        next-action until the user edits the spec."""
+        module["status"] = BLOCKED
+        self._trace(state, action, key, f"{reason} -> BLOCKED", "❌")
+        return None
+
     def _commit_code_review(self, state, key, module, text):
         parsed = parse_code_review(text)
         if not parsed:
@@ -609,11 +639,16 @@ class StateMachine:
         important = parsed.get("important", 0)
         if critical > 0 or important > 0:
             module["review_issues"] = parsed.get("issues", [])
-        if (critical > 0 or important > 0) and \
-                module.get("review_fix_attempt", 0) < MAX_REVIEW_FIX_CYCLES:
-            module["review_fix_attempt"] = \
-                module.get("review_fix_attempt", 0) + 1
-            return CODE_REVIEW_FIX
+            if module.get("review_fix_attempt", 0) < MAX_REVIEW_FIX_CYCLES:
+                module["review_fix_attempt"] = \
+                    module.get("review_fix_attempt", 0) + 1
+                return CODE_REVIEW_FIX
+            # budget exhausted with open review issues: bedrock forbids a
+            # silent merge — hand to a human rather than ship unresolved
+            return self._block(state, CODE_REVIEW, key, module,
+                               f"code review 仍有 {critical} critical/"
+                               f"{important} important，"
+                               f"{MAX_REVIEW_FIX_CYCLES} 轮修复未清零")
         return _SYNCED
 
     def _commit_code_review_fix(self, state, key, module, text):
@@ -623,7 +658,12 @@ class StateMachine:
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Review fix failed: {parsed.get('status')}")
         if module.get("review_fix_attempt", 0) > MAX_REVIEW_FIX_CYCLES:
-            return _SYNCED
+            # CODE_REVIEW_FIX just edited code; a silent SYNCED here would
+            # merge that edit with no CHECKER re-verify. Bedrock forbids it —
+            # stop for a human instead of shipping.
+            return self._block(state, CODE_REVIEW_FIX, key, module,
+                               f"code review 修复超过 {MAX_REVIEW_FIX_CYCLES} "
+                               f"轮仍未收敛")
         return CHECKER
 
     def _refresh_spec_hashes(self, module):

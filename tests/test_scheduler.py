@@ -1175,6 +1175,43 @@ class TestRun(SchedulerBase):
         cmd = self._run_capture_first_qodercli_cmd("")
         self.assertNotIn("--model", cmd)
 
+    def test_run_qodercli_spawns_under_root(self):
+        """Every qodercli subprocess must run with OS cwd = the requirement
+        root. The codegraph MCP child inherits the process cwd (not qodercli's
+        --cwd), so an unset/loop_engine cwd makes it index the wrong repo.
+        Engine next/commit calls are excluded — they take an explicit --root
+        and read state via root-anchored paths, so their cwd is irrelevant."""
+        root = self._register_pending("req")
+        captured = []
+        next_actions = ["SCORE", "IDLE"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    action = next_actions.pop(0) if next_actions else "IDLE"
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": "SCORE",
+                                           "next_action": "MAKER_STEP0"}),
+                        stderr="", returncode=0)
+            if any("qodercli" in part for part in cmd):
+                captured.append(kwargs.get("cwd"))
+                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                    f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=fake_run):
+            scheduler.run_requirement("req")
+
+        self.assertTrue(captured, "no qodercli spawn captured")
+        self.assertTrue(all(c == root for c in captured),
+                        f"qodercli cwd must equal root; got {captured}")
+
     def test_run_retry_gets_new_session_id(self):
         """A retried step gets a fresh session ID (attempt-scoped), keeping
         the replay clean of the failed attempt's context."""

@@ -995,7 +995,7 @@ def _repair_result(root, sid, detail):
             cmd += ["--model", model]
         cmd.append("Rewrite .loop/result.md with the required JSON object")
         q = subprocess.run(
-            cmd,
+            cmd, cwd=root,
             capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _log("repair: qodercli timed out")
@@ -1095,8 +1095,12 @@ def run_requirement(name):
                 if model:
                     cmd += ["--model", model]
                 cmd.append(json.dumps(payload))
+                # cwd=root: the codegraph MCP child inherits this process's OS
+                # cwd (not qodercli's --cwd), so leaving it unset makes the MCP
+                # server boot in the daemon's loop_engine dir and index the
+                # wrong repo. Pin the OS cwd to the target project root.
                 q = subprocess.run(
-                    cmd,
+                    cmd, cwd=root,
                     capture_output=True, text=True,
                     timeout=STEP_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:

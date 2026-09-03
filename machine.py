@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import re
+import logging
 import datetime
 import subprocess
 
@@ -19,6 +20,7 @@ from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash,
                         compute_spec_norm_hash, compute_plan_hash,
                         derive_spec_path, derive_plan_path, resolve_project_root,
+                        coerce_roots,
                         count_plan_existing_claims)
 from parser import (
     parse_maker_output, parse_checker_output,
@@ -27,6 +29,8 @@ from parser import (
 )
 import directives
 import report
+
+logger = logging.getLogger("loop")
 
 _SYNCED = "_SYNCED_"
 _GRAY_LIST = "_GRAY_LIST_"
@@ -130,6 +134,21 @@ class StateMachine:
                     plan_hash=plan_hash
                 )
                 dirty = True
+
+        # Bug β self-heal: legacy modules frozen at "." never re-enter the
+        # discovery branch above (it's gated on "key not in state"). Retry once.
+        for key, module in state["modules"].items():
+            if coerce_roots(module.get(
+                    "project_roots", module.get("project_root"))) != ["."]:
+                continue
+            resolved = resolve_project_root(
+                self.root_dir, module.get("module_name", ""))
+            if not resolved:
+                continue
+            module["project_root"] = resolved
+            module["project_roots"] = [resolved]
+            dirty = True
+            logger.info("self-heal project_root: %s -> %s", key, resolved)
 
         mid = StateManager.find_mid_progress(state)
         if mid:

@@ -1355,6 +1355,73 @@ class TestDiscoveryProjectRoot(unittest.TestCase):
         self.assertEqual(module["project_root"], ".")
 
 
+class TestProjectRootSelfHeal(unittest.TestCase):
+    """Bug β regression: modules that already sit in state with the '.'
+    sentinel (e.g. created before Commit 2's setup.py fix, or by a legacy
+    add_module call) never re-enter the discovery branch — the self-heal
+    loop must catch them and resolve to the real worktree once."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self._orig_registry = registry.REGISTRY_PATH
+        registry.REGISTRY_PATH = os.path.join(self.tmp.name, "requirements.json")
+        spec_dir = os.path.join(
+            self.root, "openspec/changes/test-change/specs/test-module")
+        os.makedirs(spec_dir, exist_ok=True)
+        with open(os.path.join(spec_dir, "spec.md"), "w") as f:
+            f.write("# Spec\n\n## Scenarios\n\n1. Do it\n")
+        self.key = StateManager.module_key("test-change", "test-module")
+
+    def tearDown(self):
+        registry.REGISTRY_PATH = self._orig_registry
+        self.tmp.cleanup()
+
+    def _seed_unbound_module(self):
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.add_module(state, self.key, "test-change", "test-module",
+                                project_root=".")
+        sm.save(state)
+
+    def _run_and_load(self):
+        StateMachine(self.root).next()
+        return StateManager(self.root).load()["modules"][self.key]
+
+    def test_self_heals_stuck_dot_to_worktree(self):
+        src = os.path.join(self.tmp.name, "src-repo")
+        os.makedirs(src)
+        worktree = os.path.join(self.root, "test-module")
+        os.makedirs(worktree)
+        registry.add_requirement("test-change", self.root, projects=[
+            {"name": "test-module", "source": src, "branch": "feature/x"}])
+        self._seed_unbound_module()
+        module = self._run_and_load()
+        self.assertEqual(module["project_root"], worktree)
+        self.assertEqual(module["project_roots"], [worktree])
+
+    def test_already_bound_module_untouched(self):
+        src = os.path.join(self.tmp.name, "src-repo")
+        os.makedirs(src)
+        other = os.path.join(self.tmp.name, "manual-target")
+        os.makedirs(other)
+        registry.add_requirement("test-change", self.root, projects=[
+            {"name": "test-module", "source": src}])
+        sm = StateManager(self.root)
+        state = sm.load()
+        StateManager.add_module(state, self.key, "test-change", "test-module",
+                                project_root=other)
+        sm.save(state)
+        module = self._run_and_load()
+        # self-heal must not override a real (non-'.'") binding the user set
+        self.assertEqual(module["project_root"], other)
+
+    def test_no_registry_match_stays_dot(self):
+        self._seed_unbound_module()
+        module = self._run_and_load()
+        self.assertEqual(module["project_root"], ".")
+
+
 class TestCliSetStatus(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

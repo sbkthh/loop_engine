@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from setup import (create_worktree, init_requirement, setup_requirement,
-                   add_project_to_requirement)
+                   add_project_to_requirement, init_from_prd)
 from state import StateManager
 import registry
 
@@ -175,6 +175,61 @@ class TestSetupRequirement(unittest.TestCase):
         os.makedirs(os.path.join(root, "occupied"))
         result = add_project_to_requirement("add-req4", "occupied", self.src_b)
         self.assertIn("error", result)
+
+
+class TestInitFromPrdProjectRoot(unittest.TestCase):
+    """Bug β regression: PRD-registered modules must not stay at "." —
+    resolve_project_root in discovery is gated on `key not in state`, so
+    an unbound default sticks forever."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_registry = registry.REGISTRY_PATH
+        registry.REGISTRY_PATH = os.path.join(self.tmp.name, "requirements.json")
+        self.src_a = os.path.join(self.tmp.name, "proj-a")
+        self.src_b = os.path.join(self.tmp.name, "proj-b")
+        for src in (self.src_a, self.src_b):
+            os.makedirs(src)
+            subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=src)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=src)
+            with open(os.path.join(src, "README.md"), "w") as f:
+                f.write("# Test\n")
+            subprocess.run(["git", "add", "."], cwd=src)
+            subprocess.run(["git", "commit", "-q", "-m", "init"],
+                           cwd=src, capture_output=True)
+        self.prd = os.path.join(self.tmp.name, "prd.md")
+        with open(self.prd, "w") as f:
+            f.write("# PRD\n\n## Inventory\n\ncreate item\n\n## Pricing\n\ncalc\n")
+
+    def tearDown(self):
+        registry.REGISTRY_PATH = self._orig_registry
+        self.tmp.cleanup()
+
+    def _state(self, root):
+        return StateManager(root).load()
+
+    def test_binds_first_worktree_path(self):
+        root = os.path.join(self.tmp.name, "req-root")
+        result = init_from_prd("req-1", root, "chg-a",
+                               [("proj-a", self.src_a),
+                                ("proj-b", self.src_b)], self.prd)
+        self.assertNotIn("error", result)
+        state = self._state(root)
+        for key, mod in state["modules"].items():
+            self.assertEqual(mod["project_root"], os.path.join(root, "proj-a"),
+                             f"module {key} stuck at default '.'")
+            self.assertNotEqual(mod["project_root"], ".")
+
+    def test_no_projects_keeps_dot_sentinel(self):
+        root = os.path.join(self.tmp.name, "req-root-nop")
+        # empty projects list → worktree loop skipped, modules default to "."
+        result = init_from_prd("req-nop", root, "chg-nop", [], self.prd)
+        self.assertNotIn("error", result)
+        state = self._state(root)
+        self.assertTrue(state["modules"], "expected modules to be registered")
+        for mod in state["modules"].values():
+            self.assertEqual(mod["project_root"], ".")
 
 
 if __name__ == '__main__':

@@ -210,22 +210,21 @@ def _with_module_scope(cmd, modules):
     return cmd
 
 
-def read_checker_test_command(cmd, root, files=()):
-    """CHECKER-only incremental test command.
+def read_checker_test_command(cmd, repo_root, files=()):
+    """CHECKER-only incremental test command scoped to the modules of `files`.
 
-    CHECKER never modifies code and the previous step (GREEN) just ran a
-    full 'mvn clean test', so target/ artifacts are fresh — a clean rebuild
-    is pure waste (20-30 min on zkh projects). The clean-first rule exists
-    because incremental builds after code edits are unreliable; no code
-    changes happen between GREEN and CHECKER, so incremental is safe here.
+    CHECKER never modifies code and GREEN already ran 'mvn clean test', so
+    target/ is fresh — drop clean to save 20-30 min on zkh projects.
+    `repo_root` must be the OWNING REPO path (not the requirement root), else
+    the stripped first segment is the repo name and `-pl` is wrong.
     """
     cmd = re.sub(r"\bclean\s+", "", cmd)
-    root = os.path.abspath(root).replace(os.sep, "/") + "/"
+    repo_root = os.path.abspath(repo_root).replace(os.sep, "/") + "/"
     modules = set()
     for path in files:
         path = path.replace(os.sep, "/")
-        if path.startswith(root):
-            first = path[len(root):].split("/", 1)[0]
+        if path.startswith(repo_root):
+            first = path[len(repo_root):].split("/", 1)[0]
             if first:
                 modules.add(first)
     return _with_module_scope(cmd, modules)

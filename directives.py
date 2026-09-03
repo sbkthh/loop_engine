@@ -225,7 +225,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["plan_path"] = module.get("plan_path") or plan_path
         changed_files = (module.get("files_created", [])
                          + module.get("files_modified", []))
-        checker_cmd = read_checker_test_command(test_cmd, root_dir, changed_files)
+        checker_cmd = read_checker_test_command(test_cmd, project_root, changed_files)
         d["instructions"] = (
             "Verify spec-plan-code three-way consistency.\n"
             "Read the spec file, plan file, and the changed files listed in "

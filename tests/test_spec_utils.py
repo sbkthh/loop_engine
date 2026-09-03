@@ -12,6 +12,7 @@ from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         normalize_spec,
                         count_plan_existing_claims,
                         read_maker_test_command,
+                        read_checker_test_command,
                         coerce_roots, resolve_project_root)
 import spec_utils
 
@@ -215,3 +216,45 @@ class TestResolveProjectRootMappingShape(unittest.TestCase):
         # pre-multi-repo behavior.
         self._stub([])
         self.assertIsNone(resolve_project_root(self.root, "inventory"))
+
+
+class TestCheckerTestCommandRepoRoot(unittest.TestCase):
+    """Bug α regression: -pl scoping must be computed against the OWNING
+    REPO root, not the requirement root. Requirement-root callers used to
+    strip <req_root>/ and get the repo name as the first segment."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.req_root = self.tmp.name
+        self.repo = os.path.join(self.req_root, "kunhe-wms")
+        os.makedirs(os.path.join(self.repo, "inventory-service", "src/main/java"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_repo_root_produces_module_name(self):
+        files = [os.path.join(
+            self.repo, "inventory-service/src/main/java/Foo.java")]
+        cmd = read_checker_test_command("mvn clean test", self.repo, files)
+        self.assertEqual(cmd, "mvn test -pl inventory-service -am")
+
+    def test_requirement_root_would_yield_repo_name(self):
+        # Documents the bug shape: same call but with req_root instead of
+        # repo_root produces -pl kunhe-wms (wrong). The fix is on the caller
+        # side (directives passes module.project_root, not root_dir).
+        files = [os.path.join(
+            self.repo, "inventory-service/src/main/java/Foo.java")]
+        cmd = read_checker_test_command("mvn clean test", self.req_root, files)
+        self.assertEqual(cmd, "mvn test -pl kunhe-wms -am")
+
+    def test_cross_repo_files_are_ignored_when_outside_repo(self):
+        # Files belonging to a different repo shouldn't leak into -pl.
+        other = os.path.join(self.req_root, "opc-sna/whatever/src/main/java/Bar.java")
+        mine = os.path.join(
+            self.repo, "inventory-service/src/main/java/Foo.java")
+        cmd = read_checker_test_command("mvn clean test", self.repo, [mine, other])
+        self.assertEqual(cmd, "mvn test -pl inventory-service -am")
+
+    def test_no_matching_files_omits_pl(self):
+        cmd = read_checker_test_command("mvn clean test", self.repo, [])
+        self.assertEqual(cmd, "mvn test")

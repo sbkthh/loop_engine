@@ -8,6 +8,7 @@ import tempfile
 import time
 
 from constants import STATE_FILE, PRIORITY_ORDER, DRAFT
+from spec_utils import coerce_roots
 
 logger = logging.getLogger("loop")
 
@@ -37,15 +38,30 @@ class StateManager:
         if not os.path.exists(self.state_path):
             restored = self._restore_from_backup("state.json 丢失")
             if restored is not None:
-                return restored
+                return self._migrate(restored)
             logger.warning("state.json 不存在且无备份，重建空状态（root=%s）",
                            self.root_dir)
-            return self.init_state()
+            return self._migrate(self.init_state())
         try:
             with open(self.state_path) as f:
-                return json.load(f)
+                return self._migrate(json.load(f))
         except ValueError:
-            return self._recover_corrupt()
+            return self._migrate(self._recover_corrupt())
+
+    @staticmethod
+    def _migrate(state):
+        """Promote legacy scalar `project_root` to canonical `project_roots`.
+
+        Memory-only; disk files are not rewritten by this pass. The derived
+        scalar is kept in sync (= project_roots[0]) so un-migrated readers
+        keep working for one release. Idempotent.
+        """
+        for mod in state.get("modules", {}).values():
+            roots = coerce_roots(mod.get("project_roots",
+                                          mod.get("project_root")))
+            mod["project_roots"] = roots
+            mod["project_root"] = roots[0]
+        return state
 
     def _recover_corrupt(self):
         """Unparseable state.json: quarantine it, restore last good backup."""

@@ -82,6 +82,26 @@ def derive_report_path(change_id, root="."):
     return os.path.join(root, REPORT_PATH_TEMPLATE.format(change_id=change_id))
 
 
+def coerce_roots(value):
+    """Normalize a project_root(s) value to an ordered, deduped, non-empty list.
+
+    Accepts None, a scalar string (legacy shape), or a list/tuple of strings.
+    Blank / None / non-string entries collapse to '.'. Empty result becomes
+    ['.'] so unbound state stays comparable via sentinel.
+    """
+    if value is None:
+        return ["."]
+    items = value if isinstance(value, (list, tuple)) else [value]
+    out = []
+    seen = set()
+    for v in items:
+        v = v.strip() if isinstance(v, str) and v.strip() else "."
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out or ["."]
+
+
 def compute_spec_hash(spec_path):
     if not os.path.exists(spec_path):
         return None
@@ -141,15 +161,21 @@ def resolve_project_root(root_dir, module_name):
     """Map a discovered module to its working copy via the registry.
 
     projects[].name is the real project/repo name; module_to_project maps
-    spec module names to those project names. Prefers the worktree
-    (root/<project name>) when it exists, else the source repo path.
-    Returns None when no registry project matches the module name.
+    spec module names to those project names. Values may be a scalar string
+    (legacy) or a list of project names (multi-repo); this resolver returns
+    the FIRST match — see resolve_project_roots (plural) for multi-repo
+    callers. Prefers the worktree (root/<project name>) when it exists,
+    else the source repo path. Returns None when no registry project matches.
     """
     root_dir = os.path.abspath(root_dir)
     for r in registry.list_requirements():
         if os.path.abspath(r.get("root", "")) != root_dir:
             continue
-        project_name = r.get("module_to_project", {}).get(module_name) or module_name
+        raw = r.get("module_to_project", {}).get(module_name)
+        if isinstance(raw, (list, tuple)):
+            project_name = raw[0] if raw else module_name
+        else:
+            project_name = raw or module_name
         for p in r.get("projects", []):
             if p.get("name") != project_name:
                 continue

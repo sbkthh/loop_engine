@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         normalize_spec,
                         count_plan_existing_claims,
-                        read_maker_test_command)
+                        read_maker_test_command,
+                        coerce_roots, resolve_project_root)
+import spec_utils
 
 
 class TestNormalizeSpec(unittest.TestCase):
@@ -151,3 +153,65 @@ class TestMakerTestCommand(unittest.TestCase):
             read_maker_test_command(
                 "mvn clean test -pl mod-a -am", self.root, self.plan),
             "mvn clean test -pl mod-a -am")
+
+
+class TestCoerceRoots(unittest.TestCase):
+    """Commit 1 helper: canonical project_root(s) normalizer."""
+
+    def test_none_becomes_unbound_sentinel(self):
+        self.assertEqual(coerce_roots(None), ["."])
+
+    def test_scalar_promoted_to_list(self):
+        self.assertEqual(coerce_roots("./kunhe-wms"), ["./kunhe-wms"])
+
+    def test_list_dedup_preserves_order(self):
+        self.assertEqual(coerce_roots(["./b", "./a", "./b"]), ["./b", "./a"])
+
+    def test_blank_and_non_string_entries_collapse(self):
+        self.assertEqual(coerce_roots(["", "  ", None]), ["."])
+
+    def test_empty_list_becomes_sentinel(self):
+        self.assertEqual(coerce_roots([]), ["."])
+
+
+class TestResolveProjectRootMappingShape(unittest.TestCase):
+    """resolve_project_root tolerates scalar- and list-valued
+    module_to_project entries; list resolves to first project (M1 shim,
+    plural resolver comes in Commit 4)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        os.makedirs(os.path.join(self.root, "kunhe-wms"))
+        os.makedirs(os.path.join(self.root, "opc-sna"))
+        self._orig = spec_utils.registry.list_requirements
+
+    def tearDown(self):
+        spec_utils.registry.list_requirements = self._orig
+        self.tmp.cleanup()
+
+    def _stub(self, mapping_value):
+        spec_utils.registry.list_requirements = lambda: [{
+            "root": self.root,
+            "projects": [{"name": "kunhe-wms"}, {"name": "opc-sna"}],
+            "module_to_project": {"inventory": mapping_value},
+        }]
+
+    def test_scalar_mapping_still_resolves(self):
+        self._stub("kunhe-wms")
+        self.assertEqual(
+            resolve_project_root(self.root, "inventory"),
+            os.path.join(self.root, "kunhe-wms"))
+
+    def test_list_mapping_resolves_to_first(self):
+        self._stub(["opc-sna", "kunhe-wms"])
+        self.assertEqual(
+            resolve_project_root(self.root, "inventory"),
+            os.path.join(self.root, "opc-sna"))
+
+    def test_empty_list_falls_back_to_module_name(self):
+        # empty list means "no explicit project mapping"; the resolver
+        # then treats the module name itself as the project name, matching
+        # pre-multi-repo behavior.
+        self._stub([])
+        self.assertIsNone(resolve_project_root(self.root, "inventory"))

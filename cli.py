@@ -128,8 +128,13 @@ def cmd_set_project_root(args):
     if not os.path.isdir(path):
         print(f"Directory does not exist: {path}")
         sys.exit(1)
-    old = state["modules"][key].get("project_root", ".")
-    state["modules"][key]["project_root"] = path
+    mod = state["modules"][key]
+    old = mod.get("project_root", ".")
+    mod["project_root"] = path
+    # Keep canonical list in sync so the loader shim's list-first rule
+    # doesn't shadow this write on the next load (Commit 3 removes the
+    # dual-write by promoting the whole writer to project_roots).
+    mod["project_roots"] = [path]
     sm.save(state)
     _record_module_to_project(args.root, key, path)
     report.write(state, args.root)

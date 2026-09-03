@@ -163,5 +163,61 @@ class TestStateManager(unittest.TestCase):
         self.assertEqual(module["files_created"], [])
 
 
+class TestProjectRootsMigration(unittest.TestCase):
+    """Commit 1 loader shim: promote legacy scalar project_root to canonical
+    project_roots list in memory; disk files are rewritten only on save()."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sm = StateManager(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_raw(self, mod_fields):
+        raw = {
+            "version": 1,
+            "root_dir": self.sm.root_dir,
+            "current": {"module": None, "action": None, "attempt": 0},
+            "modules": {"chg/mod": dict(mod_fields)},
+            "gray_drafts": [], "trace": [], "audit_trail": [],
+        }
+        os.makedirs(os.path.dirname(self.sm.state_path), exist_ok=True)
+        with open(self.sm.state_path, "w") as f:
+            json.dump(raw, f)
+
+    def test_scalar_root_promoted_to_list(self):
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod",
+            "project_root": "./kunhe-wms", "status": DRAFT,
+        })
+        mod = self.sm.load()["modules"]["chg/mod"]
+        self.assertEqual(mod["project_roots"], ["./kunhe-wms"])
+        # derived scalar view kept in sync for un-migrated readers
+        self.assertEqual(mod["project_root"], "./kunhe-wms")
+
+    def test_missing_both_fields_defaults_to_unbound(self):
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": DRAFT,
+        })
+        mod = self.sm.load()["modules"]["chg/mod"]
+        self.assertEqual(mod["project_roots"], ["."])
+        self.assertEqual(mod["project_root"], ".")
+
+    def test_migration_prefers_existing_list_and_is_idempotent(self):
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod",
+            "project_root": "./stale", "project_roots": ["./a", "./b"],
+            "status": DRAFT,
+        })
+        first = self.sm.load()["modules"]["chg/mod"]
+        self.assertEqual(first["project_roots"], ["./a", "./b"])
+        # derived field refreshed from list, not from the stale scalar
+        self.assertEqual(first["project_root"], "./a")
+        second = self.sm.load()["modules"]["chg/mod"]
+        self.assertEqual(second["project_roots"], ["./a", "./b"])
+        self.assertEqual(second["project_root"], "./a")
+
+
 if __name__ == '__main__':
     unittest.main()

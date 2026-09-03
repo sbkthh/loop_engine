@@ -33,9 +33,9 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
     state = sm.load()
 
     created = []
-    # Bug β: bind PRD-registered modules to the first worktree so discovery's
-    # "key not in state" gate can't leave them at "." (Commit 3 broadens to all).
-    default_root = os.path.join(root, projects[0][0]) if projects else "."
+    # Bug β: PRD-registered modules bind to every worktree up front (M1
+    # semantics: one agent session spans N repos). Narrow via set-project-root.
+    default_roots = [os.path.join(root, name) for name, _ in projects] or ["."]
     for heading, content in sections:
         module_name = heading.lower().replace(" ", "-").replace("/", "-")
         spec_dir = os.path.join(root, "openspec", "changes", change_id, "specs", module_name)
@@ -43,7 +43,7 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
         key = StateManager.module_key(change_id, module_name)
         if key not in state["modules"]:
             StateManager.add_module(state, key, change_id, module_name,
-                                    project_root=default_root)
+                                    project_roots=default_roots)
         created.append(module_name)
 
     write_prd_summary(root, change_id, name, sections, prd_path,

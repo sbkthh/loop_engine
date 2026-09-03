@@ -1469,17 +1469,38 @@ class TestCliSetStatus(unittest.TestCase):
         os.makedirs(proj_dir)
         from cli import cmd_set_project_root
         import argparse
-        args = argparse.Namespace(root=self.root, module=self.key, path=proj_dir)
+        args = argparse.Namespace(root=self.root, module=self.key,
+                                  paths=[proj_dir])
         cmd_set_project_root(args)
 
-        self.assertEqual(sm.load()["modules"][self.key]["project_root"],
-                         os.path.abspath(proj_dir))
+        loaded = sm.load()["modules"][self.key]
+        self.assertEqual(loaded["project_root"], os.path.abspath(proj_dir))
+        self.assertEqual(loaded["project_roots"], [os.path.abspath(proj_dir)])
+
+    def test_set_project_root_multiple_paths(self):
+        machine = StateMachine(self.root)
+        machine.next()
+        sm = StateManager(self.root)
+        dir_a = os.path.join(self.root, "work-a")
+        dir_b = os.path.join(self.root, "work-b")
+        os.makedirs(dir_a)
+        os.makedirs(dir_b)
+        from cli import cmd_set_project_root
+        import argparse
+        args = argparse.Namespace(root=self.root, module=self.key,
+                                  paths=[dir_a, dir_b])
+        cmd_set_project_root(args)
+        loaded = sm.load()["modules"][self.key]
+        self.assertEqual(loaded["project_roots"],
+                         [os.path.abspath(dir_a), os.path.abspath(dir_b)])
+        # derived scalar keeps first for un-migrated readers
+        self.assertEqual(loaded["project_root"], os.path.abspath(dir_a))
 
     def test_set_project_root_missing_dir(self):
         from cli import cmd_set_project_root
         import argparse
         args = argparse.Namespace(root=self.root, module=self.key,
-                                  path=os.path.join(self.root, "ghost"))
+                                  paths=[os.path.join(self.root, "ghost")])
         with self.assertRaises(SystemExit):
             cmd_set_project_root(args)
 
@@ -1487,7 +1508,7 @@ class TestCliSetStatus(unittest.TestCase):
         from cli import cmd_set_project_root
         import argparse
         args = argparse.Namespace(root=self.root, module="change/ghost",
-                                  path=self.root)
+                                  paths=[self.root])
         with self.assertRaises(SystemExit):
             cmd_set_project_root(args)
 
@@ -1516,11 +1537,14 @@ class TestSetProjectRootRecordsMapping(unittest.TestCase):
         registry.REGISTRY_PATH = self._orig_registry
         self.tmp.cleanup()
 
-    def _bind(self, path):
+    def _bind(self, paths):
         from cli import cmd_set_project_root
         import argparse
-        os.makedirs(path, exist_ok=True)
-        args = argparse.Namespace(root=self.root, module=self.key, path=path)
+        if isinstance(paths, str):
+            paths = [paths]
+        for p in paths:
+            os.makedirs(p, exist_ok=True)
+        args = argparse.Namespace(root=self.root, module=self.key, paths=paths)
         cmd_set_project_root(args)
 
     def _mapping(self):
@@ -1530,23 +1554,36 @@ class TestSetProjectRootRecordsMapping(unittest.TestCase):
     def test_worktree_bind_records_mapping(self):
         wt = os.path.join(self.root, "kunhe-wms")
         self._bind(wt)
-        self.assertEqual(self._mapping(), {"test-module": "kunhe-wms"})
+        self.assertEqual(self._mapping(), {"test-module": ["kunhe-wms"]})
 
     def test_source_bind_records_mapping(self):
         self._bind(self.src)
-        self.assertEqual(self._mapping(), {"test-module": "kunhe-wms"})
+        self.assertEqual(self._mapping(), {"test-module": ["kunhe-wms"]})
 
     def test_unmatched_path_records_nothing(self):
         self._bind(os.path.join(self.root, "unrelated-dir"))
         self.assertEqual(self._mapping(), {})
 
-    def test_rebind_overwrites_mapping(self):
+    def test_multi_bind_records_both_projects(self):
+        other_src = os.path.join(self.root, "src-other")
+        os.makedirs(other_src)
+        registry.add_project("test-change", "other-proj", other_src)
+        self._bind([os.path.join(self.root, "kunhe-wms"), other_src])
+        self.assertEqual(self._mapping(),
+                         {"test-module": ["kunhe-wms", "other-proj"]})
+
+    def test_rebind_appends_new_project(self):
+        # Registry mapping is a persistent hint that accumulates; the
+        # module's own project_roots stays whatever the last set-project-root
+        # bound it to (see cmd_set_project_root). This lets the resolver
+        # find every repo a module has ever lived in.
         self._bind(os.path.join(self.root, "kunhe-wms"))
         other_src = os.path.join(self.root, "src-other")
         os.makedirs(other_src)
         registry.add_project("test-change", "other-proj", other_src)
         self._bind(other_src)
-        self.assertEqual(self._mapping(), {"test-module": "other-proj"})
+        self.assertEqual(self._mapping(),
+                         {"test-module": ["kunhe-wms", "other-proj"]})
 
     def test_set_status_clears_mid_progress(self):
         machine = StateMachine(self.root)

@@ -216,9 +216,13 @@ class TestInitFromPrdProjectRoot(unittest.TestCase):
                                 ("proj-b", self.src_b)], self.prd)
         self.assertNotIn("error", result)
         state = self._state(root)
+        expected = [os.path.join(root, "proj-a"), os.path.join(root, "proj-b")]
         for key, mod in state["modules"].items():
-            self.assertEqual(mod["project_root"], os.path.join(root, "proj-a"),
-                             f"module {key} stuck at default '.'")
+            # Commit 3: bind-all semantics — every PRD module sees every worktree
+            self.assertEqual(mod["project_roots"], expected,
+                             f"module {key} not bound to all worktrees")
+            # Derived scalar stays first for un-migrated readers
+            self.assertEqual(mod["project_root"], expected[0])
             self.assertNotEqual(mod["project_root"], ".")
 
     def test_no_projects_keeps_dot_sentinel(self):
@@ -229,6 +233,7 @@ class TestInitFromPrdProjectRoot(unittest.TestCase):
         state = self._state(root)
         self.assertTrue(state["modules"], "expected modules to be registered")
         for mod in state["modules"].values():
+            self.assertEqual(mod["project_roots"], ["."])
             self.assertEqual(mod["project_root"], ".")
 
 

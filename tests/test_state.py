@@ -94,7 +94,8 @@ class TestStateManager(unittest.TestCase):
     def test_save_load_roundtrip(self):
         state = self.sm.init_state()
         key = StateManager.module_key("chg", "mod")
-        StateManager.add_module(state, key, "chg", "mod", "./proj", "abc123")
+        StateManager.add_module(state, key, "chg", "mod",
+                                project_root="./proj", spec_hash="abc123")
         state["modules"][key]["status"] = READY
         self.sm.save(state)
 
@@ -217,6 +218,45 @@ class TestProjectRootsMigration(unittest.TestCase):
         second = self.sm.load()["modules"]["chg/mod"]
         self.assertEqual(second["project_roots"], ["./a", "./b"])
         self.assertEqual(second["project_root"], "./a")
+
+
+class TestAddModuleProjectRoots(unittest.TestCase):
+    """Commit 3 writer: add_module accepts both kwargs; project_roots wins,
+    scalar is derived from the first list element."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sm = StateManager(self.tmp.name)
+        self.state = self.sm.init_state()
+        self.key = StateManager.module_key("chg", "mod")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_plural_kw_wins_over_singular(self):
+        module = StateManager.add_module(
+            self.state, self.key, "chg", "mod",
+            project_root="./ignored", project_roots=["./a", "./b"])
+        self.assertEqual(module["project_roots"], ["./a", "./b"])
+        self.assertEqual(module["project_root"], "./a")
+
+    def test_singular_kw_still_accepted_and_promoted(self):
+        module = StateManager.add_module(
+            self.state, self.key, "chg", "mod", project_root="./legacy")
+        self.assertEqual(module["project_roots"], ["./legacy"])
+        self.assertEqual(module["project_root"], "./legacy")
+
+    def test_defaults_write_both_fields_as_dot(self):
+        module = StateManager.add_module(self.state, self.key, "chg", "mod")
+        self.assertEqual(module["project_roots"], ["."])
+        self.assertEqual(module["project_root"], ".")
+
+    def test_list_is_deduped_and_order_preserved(self):
+        module = StateManager.add_module(
+            self.state, self.key, "chg", "mod",
+            project_roots=["./b", "./a", "./b"])
+        self.assertEqual(module["project_roots"], ["./b", "./a"])
+        self.assertEqual(module["project_root"], "./b")
 
 
 if __name__ == '__main__':

@@ -123,11 +123,15 @@ class StateManager:
 
     @staticmethod
     def add_module(state, key, change_id, module_name, project_root=".",
+                   project_roots=None,
                    spec_hash=None, plan_hash=None, spec_norm_hash=None):
+        roots = coerce_roots(project_roots if project_roots is not None
+                             else project_root)
         state["modules"][key] = {
             "change_id": change_id,
             "module_name": module_name,
-            "project_root": project_root,
+            "project_roots": roots,
+            "project_root": roots[0],
             "status": DRAFT,
             "spec_hash": spec_hash,
             "spec_norm_hash": spec_norm_hash,

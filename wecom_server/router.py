@@ -616,7 +616,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         project_root = spec_utils.resolve_project_root(root, module_name)
         StateManager.add_module(
             st, module_key, change_id, module_name,
-            project_root=project_root or ".",
+            project_roots=[project_root] if project_root else ["."],
             spec_hash=new_hash, spec_norm_hash=new_norm_hash)
         old_hash = None
     else:
@@ -680,8 +680,13 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     import scheduler as _sched
     _sched.poll()
     bind_hint = ""
-    if module_key in st["modules"] and st["modules"][module_key].get("project_root") == ".":
-        bind_hint = "新模块尚未绑定项目，请先确认所属项目（set-project-root）\n"
+    if module_key in st["modules"]:
+        _roots = spec_utils.coerce_roots(
+            st["modules"][module_key].get("project_roots",
+                                          st["modules"][module_key].get("project_root")))
+        if _roots == ["."]:
+            bind_hint = ("新模块尚未绑定项目，请先确认所属项目"
+                         "（set-project-root 支持一次绑定多个仓库）\n")
     return (f"spec 变更已登记：{module_key}\n"
             f"{summary}"
             f"旧 hash: {(old_hash or 'new')[:8]}  新 hash: {new_hash[:8]}\n"

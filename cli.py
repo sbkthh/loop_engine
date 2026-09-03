@@ -12,6 +12,7 @@ from state import StateManager
 from machine import StateMachine
 from constants import DRAFT, ALL_STATUSES
 from setup import setup_requirement, init_from_prd, add_project_to_requirement
+from spec_utils import coerce_roots
 import report
 import registry
 import scheduler
@@ -124,48 +125,56 @@ def cmd_set_project_root(args):
     if key not in state["modules"]:
         print(f"Module not found: {key}")
         sys.exit(1)
-    path = os.path.abspath(args.path)
-    if not os.path.isdir(path):
-        print(f"Directory does not exist: {path}")
-        sys.exit(1)
+    paths = [os.path.abspath(p) for p in args.paths]
+    for p in paths:
+        if not os.path.isdir(p):
+            print(f"Directory does not exist: {p}")
+            sys.exit(1)
+    roots = coerce_roots(paths)
     mod = state["modules"][key]
-    old = mod.get("project_root", ".")
-    mod["project_root"] = path
-    # Keep canonical list in sync so the loader shim's list-first rule
-    # doesn't shadow this write on the next load (Commit 3 removes the
-    # dual-write by promoting the whole writer to project_roots).
-    mod["project_roots"] = [path]
+    old = mod.get("project_roots") or [mod.get("project_root", ".")]
+    mod["project_roots"] = roots
+    mod["project_root"] = roots[0]
     sm.save(state)
-    _record_module_to_project(args.root, key, path)
+    _record_module_to_project(args.root, key, roots)
     report.write(state, args.root)
-    print(f"{key}: project_root {old} -> {path}")
+    print(f"{key}: project_roots {old} -> {roots}")
 
 
-def _record_module_to_project(root, module_key, path):
-    """Auto-record module->project mapping when the bound path matches a
-    registered project (worktree at root/<name> or its source path), so
-    future spec_result registrations of the same module name can
-    resolve their project root without manual editing.
+def _record_module_to_project(root, module_key, paths):
+    """Append every bound path's project name to module_to_project[<module>]
+    (list-valued in multi-repo mode; scalar values are promoted on read).
+    Paths that don't match any registered project are silently skipped.
     """
     if "/" not in module_key:
         return
     module_name = module_key.split("/", 1)[1]
     root = os.path.abspath(root)
-    path = os.path.abspath(path)
+    paths = [os.path.abspath(p) for p in (
+        paths if isinstance(paths, (list, tuple)) else [paths])]
     data = registry.load()
     for r in data.get("requirements", []):
         if os.path.abspath(r.get("root", "")) != root:
             continue
-        for p in r.get("projects", []):
-            worktree = os.path.join(root, p.get("name", ""))
-            if path == os.path.abspath(worktree) or \
-               path == os.path.abspath(p.get("source", "")):
-                mapping = r.setdefault("module_to_project", {})
-                mapping[module_name] = p["name"]
-                registry.save(data)
-                print(f"module_to_project: {module_name} -> {p['name']} "
-                      f"(auto-recorded)")
-                return
+        mapping = r.setdefault("module_to_project", {})
+        existing = coerce_roots(mapping.get(module_name))
+        # Reuse coerce_roots for scalar→list promotion; project names live
+        # in the same 1-D slot as paths here (both are strings, dedup order).
+        appended = list(existing) if existing != ["."] else []
+        for path in paths:
+            for p in r.get("projects", []):
+                worktree = os.path.abspath(os.path.join(root, p.get("name", "")))
+                source = os.path.abspath(p.get("source", "")) if p.get("source") else None
+                if path == worktree or (source and path == source):
+                    if p["name"] not in appended:
+                        appended.append(p["name"])
+                    break
+        if not appended:
+            return
+        mapping[module_name] = appended
+        registry.save(data)
+        print(f"module_to_project: {module_name} -> {appended} (auto-recorded)")
+        return
 
 
 def cmd_resolve_draft(args):
@@ -758,9 +767,10 @@ def main():
     p.set_defaults(func=cmd_set_status)
 
     p = sub.add_parser("set-project-root", parents=[common],
-                       help="Set module project_root (working copy path)")
+                       help="Bind module to one or more project worktrees")
     p.add_argument("module", help="Module key (change_id/module_name)")
-    p.add_argument("path", help="Absolute path of the project working copy")
+    p.add_argument("paths", nargs="+",
+                   help="Absolute path(s) of the project working copies")
     p.set_defaults(func=cmd_set_project_root)
 
     p = sub.add_parser("add-blocker", parents=[common])

@@ -17,10 +17,14 @@ def _server_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CONFIG",
                         {"app_id": "cli_a", "app_secret": "s",
-                         "receipt_enabled": False})
+                         "receipt_enabled": False, "file_wait_seconds": 0.3})
     monkeypatch.setattr(server, "_seen_events", {})
     monkeypatch.setattr(server, "_pending", {})
     monkeypatch.setattr(server, "_last_user_write", {})
+    for entry in getattr(server, "_file_buffer", {}).values():
+        if entry.get("timer"):
+            entry["timer"].cancel()
+    monkeypatch.setattr(server, "_file_buffer", {})
     yield
 
 
@@ -32,6 +36,19 @@ def _msg_event(text, open_id="ou_abc", event_id="evt-1"):
             "sender": {"sender_id": {"open_id": open_id}},
             "message": {"message_type": "text",
                         "content": json.dumps({"text": text})},
+        },
+    }
+
+
+def _file_event(file_name="prd.pdf", open_id="ou_abc", event_id="evt-file"):
+    return {
+        "header": {"event_id": event_id,
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": open_id}},
+            "message": {"message_type": "file", "message_id": "om_1",
+                        "content": json.dumps({"file_key": "fk",
+                                               "file_name": file_name})},
         },
     }
 
@@ -301,3 +318,72 @@ def test_submit_async_full_queue_pushes_busy_note(monkeypatch):
     assert server._submit_async(fn, "ou_1", {}) is None
     server._submit_async(fn, "ou_1", {})
     assert "上一条还在处理中" in pushes[0]
+
+
+def test_file_then_text_merges_into_one_prompt(monkeypatch, tmp_path):
+    """Long window: text arriving in-window merges with the buffered file
+    into a single dispatch; the file is never processed on its own."""
+    monkeypatch.setattr(server, "CONFIG",
+                        {"app_id": "a", "app_secret": "s",
+                         "receipt_enabled": False, "file_wait_seconds": 5})
+    saved = str(tmp_path / "prd.pdf")
+    monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
+    seen = []
+
+    def dispatch(content, reg, data_dir, user):
+        seen.append(content)
+        return "reply"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    server._handle_event(_file_event(file_name="prd.pdf"))
+    time.sleep(0.3)  # let the download+buffer thread populate
+    server._handle_event(_msg_event("注册成需求", event_id="evt-txt"))
+
+    assert pushed.wait(timeout=3)
+    assert len(seen) == 1
+    assert "用户说：注册成需求" in seen[0]
+    assert saved in seen[0] and "prd.pdf" in seen[0]
+    assert pushes == [("ou_abc", "reply")]
+
+
+def test_file_without_text_flushes_alone_after_window(monkeypatch, tmp_path):
+    """No text in-window: the buffered file dispatches alone with the
+    fallback instruction and no '用户说' line."""
+    saved = str(tmp_path / "prd.pdf")
+    monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
+    seen = []
+
+    def dispatch(content, reg, data_dir, user):
+        seen.append(content)
+        return "reply"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    server._handle_event(_file_event(file_name="prd.pdf"))
+    assert pushed.wait(timeout=3)
+    assert len(seen) == 1
+    assert "用户说" not in seen[0]
+    assert saved in seen[0] and "prd.pdf" in seen[0]
+    assert "请读取文件内容" in seen[0]
+    assert pushes == [("ou_abc", "reply")]
+
+
+def test_file_wait_zero_processes_immediately(monkeypatch, tmp_path):
+    """file_wait_seconds<=0 disables buffering: the file is processed alone
+    right away instead of waiting out a (here absurd) 30s window."""
+    monkeypatch.setattr(server, "CONFIG",
+                        {"app_id": "a", "app_secret": "s",
+                         "receipt_enabled": False, "file_wait_seconds": 0})
+    saved = str(tmp_path / "prd.pdf")
+    monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
+    seen = []
+
+    def dispatch(content, reg, data_dir, user):
+        seen.append(content)
+        return "reply"
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+
+    server._handle_event(_file_event(file_name="prd.pdf"))
+    assert pushed.wait(timeout=3)
+    assert len(seen) == 1
+    assert saved in seen[0] and "请读取文件内容" in seen[0]
+    assert pushes == [("ou_abc", "reply")]

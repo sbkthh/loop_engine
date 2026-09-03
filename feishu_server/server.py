@@ -36,6 +36,15 @@ _seen_guard = threading.Lock()
 _LAST_USER_TTL = 5  # seconds; skip rewriting last_user.json within this window
 _last_user_write = {}  # user -> last write timestamp
 
+# Feishu can't put a file and free text in one message, so a bare file is
+# buffered (not dispatched) for `file_wait_seconds` (feishu.json, default 60)
+# hoping the user's next text is the instruction for it. open_id ->
+# {"files": [(name, path)], "timer": Timer}. The timer flushes the file alone
+# (fallback prompt) if no text arrives in time.
+_DEFAULT_FILE_WAIT = 60  # seconds
+_file_buffer = {}
+_file_buffer_guard = threading.Lock()
+
 
 def _handle_event(payload):
     """payload: dict shape of im.message.receive_v1. Spawns processing."""
@@ -65,8 +74,8 @@ def _handle_event(payload):
             fc = {}
         logger.info("[feishu] file from %s: %s", open_id, fc.get("file_name", ""))
         threading.Thread(
-            target=_process_post, daemon=True,
-            args=(message.get("message_id", ""), "",
+            target=_buffer_file, daemon=True,
+            args=(message.get("message_id", ""),
                   [(fc.get("file_key", ""), fc.get("file_name", ""))],
                   open_id)).start()
         return
@@ -90,6 +99,15 @@ def _handle_event(payload):
     except ValueError:
         content = ""
     logger.info("[feishu] msg from %s: %s", open_id, content)
+    pending = _take_file_buffer(open_id)
+    if pending:
+        # Text following a buffered file: merge into one prompt. The
+        # file-arrival receipt already fired, so skip the duplicate.
+        threading.Thread(target=_process, daemon=True,
+                         kwargs={"content": _build_file_prompt(content, pending),
+                                 "open_id": open_id,
+                                 "send_receipt": False}).start()
+        return
     threading.Thread(target=_process, args=(content, open_id), daemon=True).start()
 
 
@@ -124,9 +142,10 @@ def _receipt(open_id):
         logger.error("[feishu] receipt failed: %s", e)
 
 
-def _process(content, open_id):
+def _process(content, open_id, send_receipt=True):
     """Background: dispatch through the shared router, push the reply."""
-    _receipt(open_id)
+    if send_receipt:
+        _receipt(open_id)
     _remember_user(open_id)
     try:
         from wecom_server.router import dispatch
@@ -165,8 +184,8 @@ def _parse_post(content_json):
     return " ".join(texts).strip(), files
 
 
-def _process_post(message_id, text, files, open_id):
-    """Download attached files, then dispatch a prompt with text + paths."""
+def _download_files(message_id, files):
+    """Download each (file_key, file_name); return [(name, path)] that saved."""
     saved = []
     for file_key, file_name in files:
         try:
@@ -176,19 +195,83 @@ def _process_post(message_id, text, files, open_id):
             path = None
         if path:
             saved.append((file_name, path))
-    if files and not saved:
-        _push(open_id, "文件下载失败，请稍后再试。")
-        return
+    return saved
+
+
+def _build_file_prompt(text, saved):
+    """Merged prompt: optional user note + one line per attachment + the
+    read-and-act fallback when files are present. Empty string if nothing."""
     parts = []
     if text:
         parts.append(f"用户说：{text}")
     parts += [f"附件「{n}」已保存到 {p}" for n, p in saved]
-    if not parts:
-        return
     if saved:
         parts.append("请读取文件内容并按其中的诉求处理"
                      "（如为 PRD 文档，按需求注册流程引导）。")
-    _process("\n".join(parts), open_id)
+    return "\n".join(parts)
+
+
+def _process_post(message_id, text, files, open_id):
+    """Download attached files, then dispatch a prompt with text + paths."""
+    saved = _download_files(message_id, files)
+    if files and not saved:
+        _push(open_id, "文件下载失败，请稍后再试。")
+        return
+    prompt = _build_file_prompt(text, saved)
+    if not prompt:
+        return
+    _process(prompt, open_id)
+
+
+def _buffer_file(message_id, files, open_id):
+    """Worker for a bare file message: ack, download, then hold for text."""
+    _receipt(open_id)
+    saved = _download_files(message_id, files)
+    if not saved:
+        _push(open_id, "文件下载失败，请稍后再试。")
+        return
+    _add_to_file_buffer(open_id, saved)
+
+
+def _add_to_file_buffer(open_id, saved):
+    wait = CONFIG.get("file_wait_seconds", _DEFAULT_FILE_WAIT)
+    try:
+        wait = float(wait)
+    except (TypeError, ValueError):
+        wait = _DEFAULT_FILE_WAIT
+    if wait <= 0:
+        # Buffering disabled: process the file alone now (receipt already sent).
+        _process(_build_file_prompt("", saved), open_id, send_receipt=False)
+        return
+    with _file_buffer_guard:
+        entry = _file_buffer.get(open_id)
+        if entry and entry["timer"]:
+            entry["timer"].cancel()
+        files = (entry["files"] if entry else []) + saved
+        timer = threading.Timer(wait, _flush_file_buffer, args=(open_id,))
+        timer.daemon = True
+        _file_buffer[open_id] = {"files": files, "timer": timer}
+    timer.start()
+
+
+def _take_file_buffer(open_id):
+    """Atomically claim a user's pending buffer; None if empty. Single owner of
+    the text-merge vs timer-flush race, so a file dispatches exactly once."""
+    with _file_buffer_guard:
+        entry = _file_buffer.pop(open_id, None)
+    if not entry:
+        return None
+    if entry["timer"]:
+        entry["timer"].cancel()
+    return entry["files"]
+
+
+def _flush_file_buffer(open_id):
+    """Timer fired with no text: dispatch the buffered file alone."""
+    files = _take_file_buffer(open_id)
+    if not files:
+        return
+    _process(_build_file_prompt("", files), open_id, send_receipt=False)
 
 
 def _queue_for(requirement):

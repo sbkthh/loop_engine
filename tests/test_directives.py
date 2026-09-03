@@ -180,3 +180,61 @@ class TestMakerScopedCommand(unittest.TestCase):
         out = build(MAKER_STEP2_GREEN, "chg1/m1", m, self.root)
         self.assertIn("Run 'mvn clean test'. All tests must pass.",
                       out["directives"]["instructions"])
+
+
+class TestMultiRepoDirectiveWire(unittest.TestCase):
+    """Commit 4: directives.build emits project_roots (canonical) +
+    project_root (derived), and per-repo test_commands_by_repo on the
+    CHECKER/MAKER context."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        self.repo_a = os.path.join(self.root, "kunhe-wms")
+        self.repo_b = os.path.join(self.root, "opc-sna")
+        for repo, mod in ((self.repo_a, "inventory"), (self.repo_b, "consumer")):
+            os.makedirs(os.path.join(repo, mod, "src/main/java"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _module(self):
+        return {
+            "change_id": "chg", "module_name": "m",
+            "project_roots": [self.repo_a, self.repo_b],
+            "project_root": self.repo_a,
+            "spec_hash": "abc", "maker_attempt": 1,
+            "files_created": [
+                os.path.join(self.repo_a, "inventory/src/main/java/Foo.java"),
+                os.path.join(self.repo_b, "consumer/src/main/java/Bar.java"),
+            ],
+            "files_modified": [],
+        }
+
+    def test_plural_roots_wired_on_base_and_context(self):
+        out = build(CHECKER, "chg/m", self._module(), self.root)
+        self.assertEqual(out["project_roots"], [self.repo_a, self.repo_b])
+        self.assertEqual(out["project_root"], self.repo_a)
+        self.assertEqual(out["directives"]["context"]["project_roots"],
+                         [self.repo_a, self.repo_b])
+        self.assertEqual(out["directives"]["context"]["project_root"],
+                         self.repo_a)
+
+    def test_checker_per_repo_scoped_command(self):
+        out = build(CHECKER, "chg/m", self._module(), self.root)
+        by_repo = out["directives"]["context"]["test_commands_by_repo"]
+        self.assertEqual(by_repo[self.repo_a], "mvn test -pl inventory -am")
+        self.assertEqual(by_repo[self.repo_b], "mvn test -pl consumer -am")
+        # legacy singular still points at first repo's scoped command
+        self.assertEqual(out["directives"]["context"]["test_command"],
+                         by_repo[self.repo_a])
+        # Bug α guard: -pl values are maven modules, never repo names
+        self.assertNotIn("kunhe-wms", by_repo[self.repo_a])
+        self.assertNotIn("opc-sna", by_repo[self.repo_b])
+
+    def test_instructions_list_each_repo_when_multi(self):
+        out = build(CHECKER, "chg/m", self._module(), self.root)
+        ins = out["directives"]["instructions"]
+        self.assertIn(self.repo_a, ins)
+        self.assertIn(self.repo_b, ins)
+        self.assertIn("Per-repo scoped commands:", ins)

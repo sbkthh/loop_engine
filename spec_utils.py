@@ -157,35 +157,46 @@ def discover_modules(root="."):
     return results
 
 
-def resolve_project_root(root_dir, module_name):
-    """Map a discovered module to its working copy via the registry.
+def resolve_project_roots(root_dir, module_name):
+    """Map a discovered module to every bound working copy (multi-repo M1).
 
-    projects[].name is the real project/repo name; module_to_project maps
-    spec module names to those project names. Values may be a scalar string
-    (legacy) or a list of project names (multi-repo); this resolver returns
-    the FIRST match — see resolve_project_roots (plural) for multi-repo
-    callers. Prefers the worktree (root/<project name>) when it exists,
-    else the source repo path. Returns None when no registry project matches.
+    Reads registry module_to_project[<module>] which may be scalar (legacy)
+    or list (multi-repo). Falls back to the module name itself when unmapped.
+    Returns an ordered, deduped list of existing worktree/source paths; empty
+    when no registry match.
     """
     root_dir = os.path.abspath(root_dir)
     for r in registry.list_requirements():
         if os.path.abspath(r.get("root", "")) != root_dir:
             continue
         raw = r.get("module_to_project", {}).get(module_name)
-        if isinstance(raw, (list, tuple)):
-            project_name = raw[0] if raw else module_name
-        else:
-            project_name = raw or module_name
-        for p in r.get("projects", []):
-            if p.get("name") != project_name:
+        names = coerce_roots(raw) if raw is not None else [module_name]
+        if names == ["."]:
+            names = [module_name]
+        by_name = {p.get("name"): p for p in r.get("projects", [])}
+        out, seen = [], set()
+        for project_name in names:
+            p = by_name.get(project_name)
+            if p is None:
                 continue
             worktree = os.path.join(root_dir, project_name)
-            if os.path.isdir(worktree):
-                return worktree
-            source = p.get("source")
-            if source and os.path.isdir(source):
-                return os.path.abspath(source)
-    return None
+            candidate = worktree if os.path.isdir(worktree) else (
+                os.path.abspath(p["source"])
+                if p.get("source") and os.path.isdir(p["source"]) else None)
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                out.append(candidate)
+        return out
+    return []
+
+
+def resolve_project_root(root_dir, module_name):
+    """Thin scalar wrapper around resolve_project_roots (returns first path
+    or None). Kept for callers not yet migrated to multi-repo; Commit 4
+    runtime paths use the plural resolver directly.
+    """
+    roots = resolve_project_roots(root_dir, module_name)
+    return roots[0] if roots else None
 
 
 def read_test_command(project_root):
@@ -251,6 +262,59 @@ def read_maker_test_command(cmd, root, plan_path):
     modules = {m.group(1) for m in _PLAN_SRC_RE.finditer(text)}
     modules = {m for m in modules if os.path.isdir(os.path.join(root, m))}
     return _with_module_scope(cmd, modules)
+
+
+def read_test_commands(project_roots):
+    """Per-repo base test command (mvn clean test / read from .qoder/AGENTS.md).
+
+    Returns {abs_repo_path: base_cmd}. Requirement root stays out — each
+    worktree runs its own reactor; single-repo callers get a 1-element dict.
+    """
+    out = {}
+    for repo in project_roots:
+        abs_repo = os.path.abspath(repo)
+        if abs_repo in out:
+            continue
+        out[abs_repo] = read_test_command(repo)
+    return out
+
+
+def _files_by_repo(repo_roots, files):
+    """Bucket files under the longest-matching repo prefix. Files that don't
+    match any repo are dropped (they can't be tested by any reactor)."""
+    abs_roots = [os.path.abspath(r).replace(os.sep, "/").rstrip("/")
+                 for r in repo_roots]
+    buckets = {r: [] for r in abs_roots}
+    for path in files:
+        norm = os.path.abspath(path).replace(os.sep, "/")
+        best = None
+        for r in abs_roots:
+            if norm.startswith(r + "/") and (best is None or len(r) > len(best)):
+                best = r
+        if best is not None:
+            buckets[best].append(norm)
+    return buckets
+
+
+def read_checker_test_commands(cmd_by_repo, repo_roots, files):
+    """Per-repo CHECKER scoped command. Bug α-aware: each repo strips paths
+    relative to ITSELF so `-pl` yields maven module names, not repo names."""
+    buckets = _files_by_repo(repo_roots, files)
+    return {repo: read_checker_test_command(
+        cmd_by_repo.get(repo, "mvn test"), repo, buckets[repo])
+        for repo in buckets}
+
+
+def read_maker_test_commands(cmd_by_repo, repo_roots, plan_path):
+    """Per-repo MAKER scoped command. Plan paths are prefixed with the repo
+    name (e.g. `kunhe-wms/inventory/src/...`); we scope to a repo's own
+    sub-paths and skip modules the plan never cites for that repo."""
+    out = {}
+    for repo in repo_roots:
+        abs_repo = os.path.abspath(repo)
+        cmd = cmd_by_repo.get(abs_repo) or cmd_by_repo.get(repo, "mvn clean test")
+        out[abs_repo] = read_maker_test_command(cmd, abs_repo, plan_path)
+    return out
 
 
 PLAN_EXISTING_MARKERS = ("已有", "无需变更")

@@ -11,7 +11,34 @@ from constants import (
 from spec_utils import (
     derive_spec_path, derive_plan_path, read_test_command,
     read_checker_test_command, read_maker_test_command,
+    coerce_roots, read_test_commands,
+    read_checker_test_commands, read_maker_test_commands,
 )
+
+
+def _format_run_hint(cmds_by_repo, project_roots, verb="Run"):
+    """Compose a single-repo or multi-repo 'run these commands' sentence for
+    directive instructions. Single-repo keeps the legacy phrasing."""
+    if len(project_roots) == 1:
+        repo = project_roots[0]
+        cmd = cmds_by_repo.get(repo, "mvn test")
+        return f"{verb} '{cmd}' to get baseline test results."
+    lines = [f"{verb} the scoped command in EACH repository:"]
+    for repo in project_roots:
+        lines.append(f"  - {repo}: '{cmds_by_repo.get(repo, 'mvn test')}'")
+    lines.append("All repositories must be green before proceeding.")
+    return "\n".join(lines)
+
+
+def _append_per_repo_block(cmds_by_repo, project_roots):
+    """Suffix block appended to instructions text when the module is bound
+    to more than one repo. Empty string for single-repo (zero regression)."""
+    if len(project_roots) <= 1:
+        return ""
+    lines = ["\nPer-repo scoped commands:"]
+    for repo in project_roots:
+        lines.append(f"  - {repo}: '{cmds_by_repo.get(repo, 'mvn test')}'")
+    return "\n".join(lines)
 
 
 def build(action, module_key, module, root_dir=".", rejected_drafts=None,
@@ -20,10 +47,16 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
     module_name = module["module_name"]
     spec_path = derive_spec_path(change_id, module_name, root_dir)
     plan_path = derive_plan_path(change_id, module_name, root_dir)
-    project_root = module.get("project_root") or root_dir
-    if not os.path.isabs(project_root):
-        project_root = os.path.normpath(os.path.join(root_dir, project_root))
-    test_cmd = read_test_command(project_root)
+    raw_roots = module.get("project_roots")
+    if raw_roots is None:
+        raw_roots = module.get("project_root") or root_dir
+    project_roots = [
+        r if os.path.isabs(r) else os.path.normpath(os.path.join(root_dir, r))
+        for r in coerce_roots(raw_roots)
+    ]
+    project_root = project_roots[0]
+    cmd_by_repo = read_test_commands(project_roots)
+    test_cmd = cmd_by_repo[project_root]
     spec_hash = module.get("spec_hash", "")
     attempt = module.get("maker_attempt", 0)
 
@@ -32,9 +65,14 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         "module": module_key,
         "attempt": attempt,
         "project_root": project_root,
+        "project_roots": project_roots,
         "directives": {
             "spec_path": spec_path,
-            "context": {"spec_hash": spec_hash, "project_root": project_root},
+            "context": {
+                "spec_hash": spec_hash,
+                "project_root": project_root,
+                "project_roots": project_roots,
+            },
         },
     }
     d = base["directives"]
@@ -144,12 +182,18 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
     elif action == MAKER_STEP1_RED:
         plan_ref = module.get("plan_path") or plan_path
         d["plan_path"] = plan_ref
-        maker_cmd = read_maker_test_command(
-            test_cmd, project_root,
-            plan_ref if os.path.isabs(plan_ref)
-            else os.path.join(root_dir, plan_ref))
+        plan_ref_abs = (plan_ref if os.path.isabs(plan_ref)
+                        else os.path.join(root_dir, plan_ref))
+        cmds_by_repo = read_maker_test_commands(
+            cmd_by_repo, project_roots, plan_ref_abs)
+        maker_cmd = cmds_by_repo.get(project_root, test_cmd)
+        d.setdefault("context", {})["test_command"] = maker_cmd
+        d["context"]["test_commands_by_repo"] = cmds_by_repo
+        multi_prefix = "" if len(project_roots) == 1 else (
+            "RED phase covers EVERY bound repo; iterate the run-per-repo "
+            "commands below and gather all failures into one report.\n")
         d["instructions"] = (
-            "TDD RED Mode. Read the spec file and the plan file.\n"
+            "TDD RED Mode. Read the spec file and the plan file.\n" + multi_prefix +
             "AUDIT STEP — before writing tests, find every '已有/无需变更' "
             "claim in the plan, read the cited file:line evidence if "
             "present, and verify the code actually implements the claimed "
@@ -168,6 +212,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "'skip' because tests already exist), do NOT write new tests: run the full '"
             + maker_cmd + "' WITHOUT the -Dtest filter, confirm those tests pass, and "
             "declare 'tdd_skip: true' in TDD_RED_EVIDENCE."
+            + _append_per_repo_block(cmds_by_repo, project_roots)
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -190,10 +235,13 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
     elif action == MAKER_STEP2_GREEN:
         plan_ref = module.get("plan_path") or plan_path
         d["plan_path"] = plan_ref
-        maker_cmd = read_maker_test_command(
-            test_cmd, project_root,
-            plan_ref if os.path.isabs(plan_ref)
-            else os.path.join(root_dir, plan_ref))
+        plan_ref_abs = (plan_ref if os.path.isabs(plan_ref)
+                        else os.path.join(root_dir, plan_ref))
+        cmds_by_repo = read_maker_test_commands(
+            cmd_by_repo, project_roots, plan_ref_abs)
+        maker_cmd = cmds_by_repo.get(project_root, test_cmd)
+        d.setdefault("context", {})["test_command"] = maker_cmd
+        d["context"]["test_commands_by_repo"] = cmds_by_repo
         d["instructions"] = (
             "TDD GREEN Mode. Read the spec, plan, and test files from Step 1.\n"
             "Write implementation code. Do NOT modify test assertions.\n"
@@ -206,6 +254,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "the final test_results evidence MUST come from the full '" + maker_cmd + "' run.\n"
             "Never run 'mvn compile' or 'mvn test' without clean first.\n"
             "Max 3 retries on failure (fix impl, not tests)."
+            + _append_per_repo_block(cmds_by_repo, project_roots)
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
@@ -225,12 +274,19 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["plan_path"] = module.get("plan_path") or plan_path
         changed_files = (module.get("files_created", [])
                          + module.get("files_modified", []))
-        checker_cmd = read_checker_test_command(test_cmd, project_root, changed_files)
+        cmds_by_repo = read_checker_test_commands(
+            cmd_by_repo, project_roots, changed_files)
+        # Back-compat singular view: first repo's scoped command (or unscoped
+        # base if no files match — read_checker_test_command handles that).
+        checker_cmd = cmds_by_repo.get(project_root, test_cmd)
+        d.setdefault("context", {})["test_command"] = checker_cmd
+        d["context"]["test_commands_by_repo"] = cmds_by_repo
+        run_hint = _format_run_hint(cmds_by_repo, project_roots)
         d["instructions"] = (
             "Verify spec-plan-code three-way consistency.\n"
             "Read the spec file, plan file, and the changed files listed in "
             "context (files_created / files_modified).\n"
-            f"Run '{checker_cmd}' to get baseline test results.\n"
+            f"{run_hint}\n"
             "Check: field existence, method signatures, line references, module dependencies,\n"
             "type consistency, import completeness, task status, cross-plan dependencies.\n"
             "CRITICAL — volatile doc references are INFO, never gray-list:\n"
@@ -262,6 +318,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "SOFT_WARNING (logic error/description inaccurate), or INFO (precision suggestion).\n"
             "Do NOT modify any files.\n"
             "IMPORTANT: All descriptions MUST be written in Chinese."
+            + _append_per_repo_block(cmds_by_repo, project_roots)
         )
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "

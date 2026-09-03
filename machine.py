@@ -20,7 +20,7 @@ from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash,
                         compute_spec_norm_hash, compute_plan_hash,
                         derive_spec_path, derive_plan_path, resolve_project_root,
-                        coerce_roots,
+                        coerce_roots, read_test_commands,
                         count_plan_existing_claims)
 from parser import (
     parse_maker_output, parse_checker_output,
@@ -706,24 +706,40 @@ class StateMachine:
             module["plan_hash"] = new_plan_hash
         prev_status = module["status"]
         if prev_status != SYNCED:
-            project_root = module.get("project_root", self.root_dir)
-            try:
-                result = subprocess.run(
-                    ["mvn", "clean", "test"],
-                    cwd=project_root,
-                    capture_output=True, text=True, timeout=600
-                )
-                if result.returncode != 0:
-                    # stderr: commit stdout is the scheduler's JSON channel
-                    print(f"[WARN] Final test run failed for {key}: "
-                          f"{result.stdout[-500:]}\n{result.stderr[-500:]}",
+            roots = [r if os.path.isabs(r) else
+                     os.path.normpath(os.path.join(self.root_dir, r))
+                     for r in coerce_roots(module.get(
+                         "project_roots", module.get("project_root")))]
+            cmd_by_repo = read_test_commands(roots)
+            failures = {}
+            for repo in roots:
+                cmd = cmd_by_repo[repo]
+                try:
+                    result = subprocess.run(
+                        cmd.split(), cwd=repo,
+                        capture_output=True, text=True, timeout=600)
+                    if result.returncode != 0:
+                        failures[repo] = {
+                            "ok": False, "rc": result.returncode,
+                            "tail": (result.stdout or "")[-500:]
+                                    + "\n" + (result.stderr or "")[-500:],
+                        }
+                        print(f"[FAIL] Final test run failed for {key} @ {repo}: "
+                              f"{failures[repo]['tail']}", file=sys.stderr)
+                    else:
+                        print(f"[OK] Final test run passed for {key} @ {repo}",
+                              file=sys.stderr)
+                except Exception as e:
+                    failures[repo] = {"ok": False, "rc": None, "tail": str(e)}
+                    print(f"[FAIL] Final test run error for {key} @ {repo}: {e}",
                           file=sys.stderr)
-                else:
-                    print(f"[OK] Final test run passed for {key}",
-                          file=sys.stderr)
-            except Exception as e:
-                print(f"[WARN] Final test run error for {key}: {e}",
-                      file=sys.stderr)
+            if failures:
+                module["sync_test_report"] = failures
+                return self._block(state, CHECKER, key, module,
+                                   f"final mvn test failed in {len(failures)}/"
+                                   f"{len(roots)} repo(s): "
+                                   + ", ".join(sorted(failures)))
+            module.pop("sync_test_report", None)
         module["status"] = SYNCED
         module["last_synced"] = datetime.datetime.now().isoformat()
         self._audit(state, key, f"{prev_status}->{SYNCED}")

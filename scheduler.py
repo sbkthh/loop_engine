@@ -24,7 +24,7 @@ import requests  # noqa: E402 — used by notify_pending()
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
-                        discover_modules)
+                        discover_modules, coerce_roots)
 from wecom_server.wecom_api import md_bold, md_color
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -229,8 +229,9 @@ def _poll_requirement(root, name):
             "status": status,
             "spec_hash_changed": hash_changed,
             "plan_hash_changed": plan_changed,
-            "cross_project": bool(module.get("project_root"))
-            and module.get("project_root") != ".",
+            "cross_project": coerce_roots(
+                module.get("project_roots", module.get("project_root"))
+                ) != ["."],
         })
     for change_id, module_name, _spec_path in discover_modules(root):
         key = f"{change_id}/{module_name}"

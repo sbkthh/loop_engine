@@ -13,7 +13,11 @@ from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         count_plan_existing_claims,
                         read_maker_test_command,
                         read_checker_test_command,
-                        coerce_roots, resolve_project_root)
+                        coerce_roots, resolve_project_root,
+                        resolve_project_roots,
+                        read_test_commands,
+                        read_checker_test_commands,
+                        read_maker_test_commands)
 import spec_utils
 
 
@@ -258,3 +262,115 @@ class TestCheckerTestCommandRepoRoot(unittest.TestCase):
     def test_no_matching_files_omits_pl(self):
         cmd = read_checker_test_command("mvn clean test", self.repo, [])
         self.assertEqual(cmd, "mvn test")
+
+
+class TestResolveProjectRootsPlural(unittest.TestCase):
+    """Commit 4 canonical resolver: returns every bound repo path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        os.makedirs(os.path.join(self.root, "kunhe-wms"))
+        os.makedirs(os.path.join(self.root, "opc-sna"))
+        self._orig = spec_utils.registry.list_requirements
+
+    def tearDown(self):
+        spec_utils.registry.list_requirements = self._orig
+        self.tmp.cleanup()
+
+    def _stub(self, mapping_value, projects=None):
+        spec_utils.registry.list_requirements = lambda: [{
+            "root": self.root,
+            "projects": projects if projects is not None
+                        else [{"name": "kunhe-wms"}, {"name": "opc-sna"}],
+            "module_to_project": {"inventory": mapping_value},
+        }]
+
+    def test_list_mapping_returns_all_repos_in_order(self):
+        self._stub(["opc-sna", "kunhe-wms"])
+        self.assertEqual(
+            resolve_project_roots(self.root, "inventory"),
+            [os.path.join(self.root, "opc-sna"),
+             os.path.join(self.root, "kunhe-wms")])
+
+    def test_scalar_mapping_returns_single_element_list(self):
+        self._stub("kunhe-wms")
+        self.assertEqual(
+            resolve_project_roots(self.root, "inventory"),
+            [os.path.join(self.root, "kunhe-wms")])
+
+    def test_unmapped_module_falls_back_to_module_name(self):
+        # no explicit mapping; project named "inventory" doesn't exist
+        spec_utils.registry.list_requirements = lambda: [{
+            "root": self.root,
+            "projects": [{"name": "kunhe-wms"}],
+            "module_to_project": {},
+        }]
+        self.assertEqual(resolve_project_roots(self.root, "inventory"), [])
+
+    def test_source_repo_used_when_worktree_missing(self):
+        src = os.path.join(self.tmp.name, "src-kunhe-wms")
+        os.makedirs(src)
+        spec_utils.registry.list_requirements = lambda: [{
+            "root": self.root,
+            "projects": [{"name": "ghost-wms", "source": src}],
+            "module_to_project": {"inventory": ["ghost-wms"]},
+        }]
+        self.assertEqual(resolve_project_roots(self.root, "inventory"),
+                         [os.path.abspath(src)])
+
+    def test_duplicate_entries_deduped(self):
+        self._stub(["kunhe-wms", "kunhe-wms", "opc-sna"])
+        self.assertEqual(
+            resolve_project_roots(self.root, "inventory"),
+            [os.path.join(self.root, "kunhe-wms"),
+             os.path.join(self.root, "opc-sna")])
+
+
+class TestPerRepoCommandHelpers(unittest.TestCase):
+    """Commit 4 helpers that fan a single-command API out to per-repo dicts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.repo_a = os.path.join(self.root, "kunhe-wms")
+        self.repo_b = os.path.join(self.root, "opc-sna")
+        os.makedirs(os.path.join(self.repo_a, "inventory/src/main/java"))
+        os.makedirs(os.path.join(self.repo_b, "consumer/src/main/java"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_read_test_commands_maps_abs_repo_to_cmd(self):
+        cmds = read_test_commands([self.repo_a, self.repo_b])
+        self.assertEqual(cmds[os.path.abspath(self.repo_a)], "mvn clean test")
+        self.assertEqual(cmds[os.path.abspath(self.repo_b)], "mvn clean test")
+
+    def test_checker_per_repo_buckets_files_by_prefix(self):
+        cmd_by_repo = {os.path.abspath(self.repo_a): "mvn clean test",
+                       os.path.abspath(self.repo_b): "mvn clean test"}
+        files = [
+            os.path.join(self.repo_a, "inventory/src/main/java/Foo.java"),
+            os.path.join(self.repo_b, "consumer/src/main/java/Bar.java"),
+        ]
+        out = read_checker_test_commands(cmd_by_repo,
+                                         [self.repo_a, self.repo_b], files)
+        self.assertEqual(out[os.path.abspath(self.repo_a)],
+                         "mvn test -pl inventory -am")
+        self.assertEqual(out[os.path.abspath(self.repo_b)],
+                         "mvn test -pl consumer -am")
+
+    def test_maker_per_repo_uses_plan_modules(self):
+        plan = os.path.join(self.root, "plan.md")
+        with open(plan, "w", encoding="utf-8") as f:
+            f.write("- 改 inventory/src/main/java/Foo.java\n"
+                    "- 改 consumer/src/main/java/Bar.java\n")
+        cmd_by_repo = {os.path.abspath(self.repo_a): "mvn clean test",
+                       os.path.abspath(self.repo_b): "mvn clean test"}
+        out = read_maker_test_commands(cmd_by_repo,
+                                       [self.repo_a, self.repo_b], plan)
+        # Each repo scopes to the maven modules that exist under it.
+        self.assertEqual(out[os.path.abspath(self.repo_a)],
+                         "mvn clean test -pl inventory -am")
+        self.assertEqual(out[os.path.abspath(self.repo_b)],
+                         "mvn clean test -pl consumer -am")

@@ -71,31 +71,45 @@ def _should_filter(path):
     return any(p in _FILTER_DIRS for p in parts)
 
 
-def audit_module(module, project_root):
-    """Compare one module's declared changes against git status.
+def audit_module(module, project_roots, root_dir=None):
+    """Compare declared file changes against git status of every bound repo.
 
-    Returns a dict with keys: declared, actual, unexplained, phantom, error.
+    `project_roots` may be a scalar (legacy) or list. Paths in the result
+    are relative to `root_dir` so multi-repo output disambiguates by repo
+    prefix; when `root_dir` is omitted it falls back to the single repo
+    path (matching legacy single-repo behavior). Declared-but-not-changed
+    becomes 'phantom'; changed-but-not-declared becomes 'unexplained'.
     """
+    if isinstance(project_roots, str):
+        project_roots = [project_roots]
+    abs_roots = [os.path.abspath(r) for r in (project_roots or [])
+                 if r and os.path.isdir(r)]
+    if not abs_roots:
+        return {"error": "no bound project_roots exist"}
+    if root_dir is None:
+        root_dir = abs_roots[0]
+    root_dir = os.path.abspath(root_dir)
     declared = set()
-    for f in module.get("files_created", []):
-        declared.add(os.path.normpath(os.path.relpath(f, project_root)))
-    for f in module.get("files_modified", []):
-        declared.add(os.path.normpath(os.path.relpath(f, project_root)))
+    for f in (list(module.get("files_created", []))
+              + list(module.get("files_modified", []))):
+        declared.add(os.path.relpath(os.path.abspath(f), root_dir))
 
-    actual, err = get_git_status(project_root)
-    if err:
-        return {"error": err}
-
-    actual_filtered = {p for p in actual if not _should_filter(p)}
-    unexplained = sorted(actual_filtered - declared)
-    phantom = sorted(declared - actual_filtered)
+    actual = set()
+    for repo in abs_roots:
+        raw, err = get_git_status(repo)
+        if err:
+            return {"error": f"{repo}: {err}"}
+        for p in raw:
+            if _should_filter(p):
+                continue
+            actual.add(os.path.relpath(os.path.join(repo, p), root_dir))
 
     return {
         "declared": sorted(declared),
-        "actual": sorted(actual_filtered),
-        "unexplained": unexplained,
-        "phantom": phantom,
-        "clean": not unexplained and not phantom,
+        "actual": sorted(actual),
+        "unexplained": sorted(actual - declared),
+        "phantom": sorted(declared - actual),
+        "clean": not (actual - declared) and not (declared - actual),
     }
 
 
@@ -103,11 +117,15 @@ def audit(state, root_dir):
     """Run scope audit for every module in state. Returns {module_key: result}."""
     results = {}
     for key, module in state.get("modules", {}).items():
-        project_root = module.get("project_root") or root_dir
-        if not project_root or not os.path.isdir(project_root):
-            results[key] = {"error": f"project_root not found or not a directory: {project_root}"}
+        roots = module.get("project_roots") or module.get("project_root") or root_dir
+        roots = roots if isinstance(roots, list) else [roots]
+        roots = [r if os.path.isabs(r) else
+                 os.path.normpath(os.path.join(root_dir, r)) for r in roots]
+        existing = [r for r in roots if r and os.path.isdir(r)]
+        if not existing:
+            results[key] = {"error": f"project_roots not found or not a directory: {roots}"}
             continue
-        result = audit_module(module, project_root)
+        result = audit_module(module, existing, root_dir)
         result["status"] = module.get("status", "?")
         results[key] = result
     return results

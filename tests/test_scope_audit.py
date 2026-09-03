@@ -169,6 +169,81 @@ def test_audit_missing_project_root(monkeypatch, tmp_path):
     assert "error" not in result.get("m/m", {})
 
 
+# ---------- audit_module (multi-repo, Commit 4) ----------
+
+def test_audit_module_multi_repo_prefixes_paths(monkeypatch, tmp_path):
+    """Declared in repo A, actually changed in repo B: A shows phantom,
+    B shows unexplained; both paths carry the repo prefix (relpath to root)."""
+    repo_a = tmp_path / "kunhe-wms"
+    repo_b = tmp_path / "opc-sna"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    declared = str(repo_a / "inventory/src/main/java/Foo.java")
+
+    def fake_git_status(root):
+        if str(root).endswith("kunhe-wms"):
+            return (set(), None)                # A: nothing changed
+        return ({"consumer/src/main/java/Bar.java"}, None)  # B: unrelated change
+
+    monkeypatch.setattr("scope_audit.get_git_status", fake_git_status)
+    mod = _make_module(files_modified=[declared])
+    result = audit_module(mod, [str(repo_a), str(repo_b)], str(tmp_path))
+    assert os.path.join("kunhe-wms",
+                        "inventory/src/main/java/Foo.java") in result["phantom"]
+    assert os.path.join("opc-sna",
+                        "consumer/src/main/java/Bar.java") in result["unexplained"]
+    assert result["clean"] is False
+
+
+def test_audit_module_multi_repo_all_green_when_each_side_matches(monkeypatch, tmp_path):
+    """Both repos report the corresponding declared file => clean."""
+    repo_a = tmp_path / "kunhe-wms"
+    repo_b = tmp_path / "opc-sna"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    declared_a = str(repo_a / "inventory/src/main/java/Foo.java")
+    declared_b = str(repo_b / "consumer/src/main/java/Bar.java")
+
+    def fake_git_status(root):
+        if str(root).endswith("kunhe-wms"):
+            return ({"inventory/src/main/java/Foo.java"}, None)
+        return ({"consumer/src/main/java/Bar.java"}, None)
+
+    monkeypatch.setattr("scope_audit.get_git_status", fake_git_status)
+    mod = _make_module(files_modified=[declared_a, declared_b])
+    result = audit_module(mod, [str(repo_a), str(repo_b)], str(tmp_path))
+    assert result["clean"] is True
+    assert result["phantom"] == []
+    assert result["unexplained"] == []
+
+
+def test_audit_module_scalar_root_still_works(monkeypatch, tmp_path):
+    """Legacy scalar project_root argument remains accepted."""
+    monkeypatch.setattr("scope_audit.get_git_status",
+                        lambda _: ({"Foo.java"}, None))
+    mod = _make_module(files_modified=[str(tmp_path / "Foo.java")])
+    result = audit_module(mod, str(tmp_path))  # str, not list
+    assert result["clean"] is True
+
+
+def test_audit_module_error_from_any_repo_bubbles_up(monkeypatch, tmp_path):
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    def fake_git_status(root):
+        if str(root).endswith("/b"):
+            return (set(), "boom")
+        return (set(), None)
+
+    monkeypatch.setattr("scope_audit.get_git_status", fake_git_status)
+    mod = _make_module()
+    result = audit_module(mod, [str(repo_a), str(repo_b)], str(tmp_path))
+    assert "error" in result
+    assert "boom" in result["error"]
+
+
 # ---------- format_report ----------
 
 def test_format_report_clean():

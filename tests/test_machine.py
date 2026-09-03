@@ -6,6 +6,7 @@ import json
 import types
 import tempfile
 import unittest
+from unittest import mock as _mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -329,6 +330,13 @@ class TestMachineFullRoundTrip(unittest.TestCase):
     def test_full_round_trip(self):
         self._init_module_ready()
         machine = StateMachine(self.root)
+        # Commit 4 tightens _execute_synced: any repo rc!=0 -> BLOCKED.
+        # The tmp dir has no pom.xml, so stub the final mvn invocation.
+        _stub = _mock.patch("machine.subprocess.run",
+                            return_value=types.SimpleNamespace(
+                                returncode=0, stdout="", stderr=""))
+        _stub.start()
+        self.addCleanup(_stub.stop)
 
         r = machine.next()
         self.assertEqual(r["action"], "SCORE")
@@ -1636,6 +1644,80 @@ class TestExecuteSyncedOutput(unittest.TestCase):
             machine._execute_synced(state, self.key, module)
         self.assertEqual(out.getvalue(), "")
         self.assertIn("[OK] Final test run passed", err.getvalue())
+
+
+class TestExecuteSyncedMultiRepo(unittest.TestCase):
+    """Commit 4 D5: all repos green -> SYNCED; any repo red -> BLOCKED with
+    per-repo sync_test_report. Also verifies the legacy single-repo channel
+    now follows the same rule (previous behavior: warn-but-SYNCED)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        self.repo_a = os.path.join(self.root, "kunhe-wms")
+        self.repo_b = os.path.join(self.root, "opc-sna")
+        os.makedirs(self.repo_a)
+        os.makedirs(self.repo_b)
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        self.key = StateManager.module_key("chg", "m")
+        StateManager.add_module(state, self.key, "chg", "m",
+                                project_roots=[self.repo_a, self.repo_b],
+                                spec_hash="abc")
+        state["modules"][self.key]["status"] = READY
+        sm.save(state)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, rc_by_repo):
+        from unittest import mock
+        machine = StateMachine(self.root)
+        state = machine.sm.load()
+        module = state["modules"][self.key]
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            rc = rc_by_repo.get(cwd, 0)
+            return types.SimpleNamespace(returncode=rc,
+                                         stdout=f"out:{cwd}",
+                                         stderr=f"err:{cwd}" if rc else "")
+
+        with mock.patch("machine.subprocess.run", side_effect=fake_run):
+            machine._execute_synced(state, self.key, module)
+        return module
+
+    def test_all_repos_green_reaches_synced(self):
+        module = self._run({self.repo_a: 0, self.repo_b: 0})
+        self.assertEqual(module["status"], "SYNCED")
+        self.assertNotIn("sync_test_report", module)
+
+    def test_one_repo_red_blocks_with_report(self):
+        module = self._run({self.repo_a: 0, self.repo_b: 1})
+        self.assertEqual(module["status"], "BLOCKED")
+        report = module.get("sync_test_report", {})
+        self.assertEqual(sorted(report), [self.repo_b])
+        self.assertEqual(report[self.repo_b]["rc"], 1)
+        self.assertIn("opc-sna", report[self.repo_b]["tail"])
+        self.assertNotIn(self.repo_a, report)
+
+    def test_both_repos_red_lists_both_in_report(self):
+        module = self._run({self.repo_a: 1, self.repo_b: 2})
+        self.assertEqual(module["status"], "BLOCKED")
+        report = module.get("sync_test_report", {})
+        self.assertEqual(sorted(report), sorted([self.repo_a, self.repo_b]))
+
+    def test_single_repo_failure_now_blocks(self):
+        # D5 tightens the legacy "warn but SYNCED" path.
+        import shutil
+        shutil.rmtree(self.repo_b)
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["project_roots"] = [self.repo_a]
+        state["modules"][self.key]["project_root"] = self.repo_a
+        sm.save(state)
+        module = self._run({self.repo_a: 1})
+        self.assertEqual(module["status"], "BLOCKED")
+        self.assertIn(self.repo_a, module.get("sync_test_report", {}))
 
 
 class TestCommitMakerFixBuildResult(unittest.TestCase):

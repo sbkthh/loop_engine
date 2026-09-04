@@ -698,7 +698,7 @@ loop_engine feishu stop
        │ 每个消息派生一个 G
        ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  G: qodercli 子进程（每个微信消息一次，超时 15 分钟兜底）             │
+│  G: qodercli 子进程（每个微信消息一次，超时 30 分钟兜底）             │
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
 │     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │

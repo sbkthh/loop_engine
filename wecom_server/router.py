@@ -938,7 +938,7 @@ def _run_llm_turn(qodercli_path, session_flag, session_id, model, settings,
     r = subprocess.run(
         [qodercli_path, "--print", session_flag, session_id, "--model", model,
          "--dangerously-skip-permissions", "--settings", settings],
-        input=prompt, capture_output=True, text=True, timeout=900)
+        input=prompt, capture_output=True, text=True, timeout=1800)
     lines = (r.stdout or "").splitlines()
     while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
         lines.pop(0)

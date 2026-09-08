@@ -1918,6 +1918,43 @@ class TestNotify(SchedulerBase):
         self.assertIn("缺支付失败场景", msg)
         self.assertNotIn("api_contract", msg)
 
+    def test_end_message_no_advance_scoped_to_pinned_module(self):
+        """--module 钉选时，暂停原因只看被钉的模块，不搭别的模块的车。"""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        pinned = _module("c", "carton", "NEEDS_REFINEMENT")
+        pinned["last_score"] = 85
+        other = _module("c", "evm-exempt-weighing", "NEEDS_REFINEMENT")
+        other["last_score"] = 82
+        _make_state(root, {"c/carton": pinned,
+                           "c/evm-exempt-weighing": other})
+        msg = scheduler._end_message(
+            "req", "no_advance", 1, 3, None, root, "c/carton")
+        self.assertIn("c/carton", msg)
+        self.assertIn("85/100", msg)
+        self.assertNotIn("evm-exempt-weighing", msg)
+        self.assertNotIn("82", msg)
+
+    def test_no_advance_reason_accepts_bare_module_name(self):
+        reason = self._reason_with_two_modules(module="carton")
+        self.assertIn("c/carton", reason)
+        self.assertNotIn("evm-exempt-weighing", reason)
+
+    def test_no_advance_reason_unknown_pin_falls_back_to_full_scan(self):
+        """钉住的 key 匹配不到时不能退化成空集——空集会被读成「所有模块已同步」。"""
+        reason = self._reason_with_two_modules(module="c/not-there")
+        self.assertIn("evm-exempt-weighing", reason)
+        self.assertNotIn("所有模块已同步", reason)
+
+    def _reason_with_two_modules(self, module):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        pinned = _module("c", "carton", "NEEDS_REFINEMENT")
+        pinned["last_score"] = 85
+        other = _module("c", "evm-exempt-weighing", "NEEDS_REFINEMENT")
+        other["last_score"] = 82
+        _make_state(root, {"c/carton": pinned,
+                           "c/evm-exempt-weighing": other})
+        return scheduler._no_advance_reason(root, module)
+
     def test_run_notifies_approved_user(self):
         root = self._register_pending("req")
         pend = scheduler.load_pending()

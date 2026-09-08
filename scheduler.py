@@ -892,21 +892,29 @@ def _score_gap_text(module):
     return f"SCORE 评分不足（{', '.join(parts)}）" if parts else "SCORE 评分不足（<90）"
 
 
-def _no_advance_reason(root):
-    """Human-readable reason for a no_advance stop."""
+def _no_advance_reason(root, module=None):
+    """Human-readable reason for a no_advance stop. `module` is the --module pin:
+    a pinned run must not report other modules' status as if it had been asked
+    about them. A pin matching nothing falls back to the whole requirement —
+    an empty set would read as "所有模块已同步"."""
     try:
         with open(os.path.join(root, STATE_FILE)) as f:
             state = json.load(f)
     except (OSError, ValueError):
         return "状态机未推进"
-    statuses = [m.get("status") for m in state.get("modules", {}).values()]
-    for key, m in state.get("modules", {}).items():
+    modules = state.get("modules", {})
+    if module:
+        picked = {k: v for k, v in modules.items()
+                  if k == module or k.endswith(f"/{module}")}
+        modules = picked or modules
+    statuses = [m.get("status") for m in modules.values()]
+    for key, m in modules.items():
         if m.get("hard_errors") and m.get("maker_attempt", 0) >= MAX_MAKER_ATTEMPTS:
             return (f"Checker 硬性偏差未解决且 MAKER_FIX 已用尽 "
                     f"（{MAX_MAKER_ATTEMPTS}/{MAX_MAKER_ATTEMPTS}），"
                     f"需人工处理：修改代码对齐 spec，或调整 spec 后重新登记")
     if NEEDS_REFINEMENT in statuses:
-        refined = [(k, m) for k, m in state.get("modules", {}).items()
+        refined = [(k, m) for k, m in modules.items()
                    if m.get("status") == NEEDS_REFINEMENT]
         detail = "；".join(f"{k}: {_score_gap_text(m)}" for k, m in refined)
         return f"需要完善 spec：{detail}"
@@ -914,12 +922,12 @@ def _no_advance_reason(root):
         return "存在阻塞模块，需要人工处理"
     if DRAFT in statuses:
         return "存在未完成 spec 的新模块"
-    if all(s == SYNCED for s in statuses):
+    if statuses and all(s == SYNCED for s in statuses):
         return "所有模块已同步"
     return "状态机未推进（无下一步可执行）"
 
 
-def _end_message(name, end, steps, elapsed_min, failure_detail, root):
+def _end_message(name, end, steps, elapsed_min, failure_detail, root, module=None):
     """User-facing run-end notification: outcome + what to do next."""
     base = f"[调度] {md_bold(name)} "
     if end == "idle":
@@ -929,7 +937,7 @@ def _end_message(name, end, steps, elapsed_min, failure_detail, root):
         return (f"{base}{md_color('执行暂停', 'comment')}：Checker 发现待人工裁决的问题（灰名单）。"
                 f"微信回复「查看灰名单」了解详情")
     if end == "no_advance":
-        reason = _no_advance_reason(root)
+        reason = _no_advance_reason(root, module)
         next_hint = ("处理完成后回复「批准执行 {name}」继续"
                      if reason != "所有模块已同步"
                      else "无需进一步操作")
@@ -1205,7 +1213,8 @@ def run_requirement(name, module=None):
         elapsed_min = int((finished_at - start) // 60)
         _record_run(name, end, steps, start, finished_at)
         notify_text(
-            _end_message(name, end, steps, elapsed_min, failure_detail, root),
+            _end_message(name, end, steps, elapsed_min, failure_detail, root,
+                         module),
             user_id)
 
 

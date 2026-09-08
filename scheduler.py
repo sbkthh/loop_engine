@@ -10,7 +10,6 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -21,6 +20,7 @@ import uuid
 
 import requests  # noqa: E402 — used by notify_pending()
 
+import agent_cli
 from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
@@ -89,40 +89,6 @@ QUICK_TIMEOUT_SECONDS = 30       # local next CLI calls (pure Python, <1s)
 # commit may run the final full test suite (_execute_synced, mvn bounded
 # at 600s internally), so it gets a wider backstop than next()
 COMMIT_TIMEOUT_SECONDS = 900
-
-_QODERCLI = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
-_MCP_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "minimal_mcp.json")
-# Loop-agent steps don't touch playwright/postgres/redis/mysql/etc. Starting
-# only codegraph shaves several minutes off every qodercli cold start.
-_MCP_FLAGS = ["--strict-mcp-config", "--mcp-config", _MCP_CONFIG]
-
-
-def _qodercli_model():
-    """Model for loop-agent qodercli subprocesses, from the same settings
-    the WeCom G path uses (~/.qoder/settings.json model.name). Empty string
-    means pass no --model and keep qodercli's own default."""
-    try:
-        with open(os.path.expanduser("~/.qoder/settings.json")) as f:
-            return json.load(f).get("model", {}).get("name") or ""
-    except (OSError, ValueError):
-        return ""
-
-
-def _session_file_exists(sid, cwd):
-    """True when a persisted qodercli session jsonl is already on disk for
-    (sid, cwd). qodercli stores sessions under
-    ~/.qoder/projects/<cwd-with-slashes-and-dots-as-dashes>/<sid>.jsonl."""
-    processed = cwd.replace("/", "-").replace(".", "-")
-    path = os.path.expanduser(f"~/.qoder/projects/{processed}/{sid}.jsonl")
-    return os.path.isfile(path)
-
-
-def _session_flag(root, sid):
-    """--resume when the session is already persisted, --session-id otherwise.
-    Lets the first step of a module-run create the session and every later
-    step continue it — spec Read / project exploration carry forward."""
-    return "--resume" if _session_file_exists(sid, root) else "--session-id"
 
 
 # ---------- file helpers ----------
@@ -1006,15 +972,9 @@ def _repair_result(root, sid, detail):
     output envelope was malformed. Returns False when the repair call fails.
     """
     try:
-        cmd = [_QODERCLI, "--print", _session_flag(root, sid), sid,
-               *_MCP_FLAGS,
-               "--dangerously-skip-permissions",
-               "--cwd", root, "--append-system-prompt",
-               _REPAIR_PROMPT.format(detail=detail)]
-        model = _qodercli_model()
-        if model:
-            cmd += ["--model", model]
-        cmd.append("Rewrite .loop/result.md with the required JSON object")
+        cmd = agent_cli.build_cmd(
+            root, sid, _REPAIR_PROMPT.format(detail=detail),
+            "Rewrite .loop/result.md with the required JSON object")
         q = subprocess.run(
             cmd, cwd=root,
             capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS)
@@ -1111,16 +1071,10 @@ def run_requirement(name, module=None):
                 sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                      f"{root}:{module_key}"))
             try:
-                cmd = [_QODERCLI, "--print", _session_flag(root, sid), sid,
-                       *_MCP_FLAGS,
-                       "--dangerously-skip-permissions",
-                       "--cwd", root, "--append-system-prompt", LOOP_AGENT_PROMPT]
-                model = _qodercli_model()
-                if model:
-                    cmd += ["--model", model]
-                cmd.append(json.dumps(payload))
+                cmd = agent_cli.build_cmd(root, sid, LOOP_AGENT_PROMPT,
+                                          json.dumps(payload))
                 # cwd=root: the codegraph MCP child inherits this process's OS
-                # cwd (not qodercli's --cwd), so leaving it unset makes the MCP
+                # cwd (not the CLI's --cwd), so leaving it unset makes the MCP
                 # server boot in the daemon's loop_engine dir and index the
                 # wrong repo. Pin the OS cwd to the target project root.
                 q = subprocess.run(

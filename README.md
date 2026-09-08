@@ -731,6 +731,7 @@ loop_engine feishu stop
 ├── report.py                   # 报告生成
 ├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
 ├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
+├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 模型来源）
 ├── scope_audit.py              # 未申报改动审计（声明 vs git 实际，可推微信）
 ├── setup.py                    # Phase 0 初始化
 ├── registry.py                 # 需求注册表
@@ -756,7 +757,8 @@ loop_engine feishu stop
     ├── test_registry.py        ├── test_constants.py
     ├── test_router_async.py    ├── test_server.py
     ├── test_feishu_server.py   ├── test_feishu_api.py
-    └── test_wecom_api.py       └── test_wecom_crypto.py
+    ├── test_wecom_api.py       ├── test_wecom_crypto.py
+    └── test_agent_cli.py
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
 ├── requirements.json           # 需求注册表
@@ -781,7 +783,8 @@ loop_engine feishu stop
 
 ### 关键设计决策
 
-- **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信
+- **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信（`agent_cli.py` 是纯 argv 拼装的无状态叶子，不构成核心耦合）
+- **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式——全部收敛在 `agent_cli.build_cmd()`。后端由环境变量 `LOOP_ENGINE_AGENT_CLI` 选择，默认 `qodercli`；填未知值（如尚未实现的 `pi`）直接报错，**不静默回落**，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用。新增后端 = 加一个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
 - **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s 双超时、锁心跳 60s、hard_errors 用尽 3 次转 BLOCKED

@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import agent_cli
 import scheduler
 
 
@@ -1110,7 +1111,7 @@ class TestRun(SchedulerBase):
         self.assertIn("--strict-mcp-config", cmd)
         self.assertIn("--mcp-config", cmd)
         self.assertEqual(cmd[cmd.index("--mcp-config") + 1],
-                         scheduler._MCP_CONFIG)
+                         agent_cli._MCP_CONFIG)
 
     def test_run_cmd_persists_session(self):
         """OPT-3: --no-session-persistence is gone so cross-step --resume
@@ -1147,7 +1148,7 @@ class TestRun(SchedulerBase):
         results = iter([False, True])  # first spawn creates, second resumes
 
         with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
-                mock.patch.object(scheduler, "_session_file_exists",
+                mock.patch.object(agent_cli, "_session_file_exists",
                                   side_effect=lambda *a: next(results)):
             scheduler.run_requirement("req")
 
@@ -1161,7 +1162,7 @@ class TestRun(SchedulerBase):
     def test_repair_uses_resume_when_session_persisted(self):
         """OPT-2/OPT-3: _repair_result now really resumes the failed step's
         session (previously --no-session-persistence defeated it)."""
-        with mock.patch.object(scheduler, "_session_file_exists",
+        with mock.patch.object(agent_cli, "_session_file_exists",
                                return_value=True), \
                 mock.patch.object(scheduler.subprocess, "run",
                                   return_value=types.SimpleNamespace(
@@ -1201,7 +1202,7 @@ class TestRun(SchedulerBase):
 
         with mock.patch.object(scheduler.subprocess, "run",
                                side_effect=fake_run), \
-                mock.patch.object(scheduler, "_qodercli_model",
+                mock.patch.object(agent_cli, "_qodercli_model",
                                   return_value=model_value):
             scheduler.run_requirement("req")
         return captured[0]

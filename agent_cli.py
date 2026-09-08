@@ -81,7 +81,11 @@ def _qodercli_cmd(root, sid, system_prompt, user_text):
 # of the user's general skill set. Subagent profiles are a pi-subagents concept
 # (pi's core has none) and it reads ~/.pi/agent/agents/**/*.md recursively.
 #
-# For whoever writes _pi_cmd: pi has no --strict-mcp-config. The whitelist is
+# For whoever writes _pi_cmd: pi has no per-tool permission prompt at all — bash
+# and edit execute immediately in -p, so there is no --dangerously-skip-permissions
+# analogue to find (and no confirmation stall to worry about). That also means the
+# only throttle is --tools, so a step should get a narrowed tool set rather than
+# pi's default "everything". MCP whitelist: pi has no --strict-mcp-config; use
 # pi-mcp-adapter's --mcp-config <path> plus env PI_MCP_CONFIG_MODE=exclusive,
 # which stops the six ambient MCP config layers from merging in.
 _BACKENDS = {

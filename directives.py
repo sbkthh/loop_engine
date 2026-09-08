@@ -6,7 +6,7 @@ import os
 from constants import (
     SCORE, CLASSIFY_CHANGE, MAKER_STEP0, MAKER_STEP1_RED,
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
-    ALIGN_DOCS,
+    ALIGN_DOCS, CONTEXT_FILE,
 )
 from spec_utils import (
     derive_spec_path, derive_plan_path, read_test_command,
@@ -14,6 +14,13 @@ from spec_utils import (
     coerce_roots, read_test_commands,
     read_checker_test_commands, read_maker_test_commands,
 )
+
+# 只有会真正连库/跑验证的步骤才注入 context.json：MAKER 写码要连库取配置、
+# CHECKER 校验要对真实数据。SCORE/CLASSIFY/CODE_REVIEW/ALIGN_DOCS 这些不碰
+# 数据库的步骤注入它只会白烧 token、并误导 agent（这些步骤根本无需环境信息）。
+_ENV_ACTIONS = frozenset({
+    MAKER_STEP0, MAKER_STEP1_RED, MAKER_STEP2_GREEN, MAKER_FIX, CHECKER,
+})
 
 
 def _format_run_hint(cmds_by_repo, project_roots, verb="Run"):
@@ -516,13 +523,15 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["context"]["files_modified"] = module.get("files_modified", [])
         d["context"]["rejected_drafts"] = rejected
 
-    # Machine-local environment context (databases, nacos, gateways), gitignored.
-    ctx_path = os.path.join(root_dir, ".loop", "context.json")
-    if os.path.exists(ctx_path):
-        try:
-            with open(ctx_path) as f:
-                d["context"]["environment"] = json.load(f)
-        except (OSError, ValueError) as e:
-            d["context"]["environment_error"] = f"invalid context.json: {e}"
+    # 环境上下文（数据库/Nacos/网关）只对会真正连库/跑验证的 MAKER/CHECKER
+    # 步骤注入；gitignored，setup 时可选写入。agent 侧由 LOOP_AGENT_PROMPT 告知用法。
+    if action in _ENV_ACTIONS:
+        ctx_path = os.path.join(root_dir, CONTEXT_FILE)
+        if os.path.exists(ctx_path):
+            try:
+                with open(ctx_path) as f:
+                    d["context"]["environment"] = json.load(f)
+            except (OSError, ValueError) as e:
+                d["context"]["environment_error"] = f"invalid context.json: {e}"
 
     return base

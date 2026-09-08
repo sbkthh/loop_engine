@@ -70,7 +70,12 @@ LOOP_AGENT_PROMPT = (
     "Read the spec/plan files it references, follow the instructions, "
     "and write your output to .loop/result.md in the specified output format. "
     "The directives may carry 'context.previous_result' — the previous step's "
-    "output; use it as context for continuity."
+    "output; use it as context for continuity. "
+    "If 'context.environment' is present, it lists this requirement's runtime "
+    "endpoints (UAT databases, Nacos namespace/data_ids, API gateways); secret "
+    "values are given as *_env variable NAMES, not plaintext — resolve them from "
+    "the environment. Use these endpoints to connect and verify against real data "
+    "when the instructions call for it."
 )
 
 MAX_SAME_ACTION = 3

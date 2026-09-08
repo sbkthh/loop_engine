@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from setup import init_requirement, setup_requirement
 from directives import build
 from state import StateManager
-from constants import SCORE
+from constants import SCORE, CHECKER
 import registry
 
 CONTEXT = {
@@ -84,19 +84,27 @@ class TestDirectivesMerge(unittest.TestCase):
     def test_build_merges_context_json(self):
         with open(os.path.join(self.root, ".loop", "context.json"), "w") as f:
             json.dump(CONTEXT, f)
-        result = build(SCORE, "chg/mod", self.module, self.root)
+        result = build(CHECKER, "chg/mod", self.module, self.root)
         self.assertEqual(result["directives"]["context"]["environment"],
                          CONTEXT)
 
-    def test_build_without_context_has_no_environment_key(self):
+    def test_build_non_env_action_skips_environment(self):
+        """门控：SCORE 等不碰库的步骤，即便 context.json 存在也不注入
+        environment——省 token 且避免误导 agent。"""
+        with open(os.path.join(self.root, ".loop", "context.json"), "w") as f:
+            json.dump(CONTEXT, f)
         result = build(SCORE, "chg/mod", self.module, self.root)
+        self.assertNotIn("environment", result["directives"]["context"])
+
+    def test_build_without_context_has_no_environment_key(self):
+        result = build(CHECKER, "chg/mod", self.module, self.root)
         self.assertNotIn("environment",
                          result["directives"]["context"])
 
     def test_build_invalid_context_json_reports_error_not_crash(self):
         with open(os.path.join(self.root, ".loop", "context.json"), "w") as f:
             f.write("{not json")
-        result = build(SCORE, "chg/mod", self.module, self.root)
+        result = build(CHECKER, "chg/mod", self.module, self.root)
         ctx = result["directives"]["context"]
         self.assertNotIn("environment", ctx)
         self.assertIn("environment_error", ctx)

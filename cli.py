@@ -312,7 +312,7 @@ def cmd_context_set(args):
     context = _load_context_file(args.file)
     sm = StateManager(args.root)
     os.makedirs(sm.loop_dir, exist_ok=True)
-    ctx_path = os.path.join(sm.loop_dir, "context.json")
+    ctx_path = sm.context_path
     with open(ctx_path, "w") as f:
         json.dump(context, f, indent=2, ensure_ascii=False)
     print(f"Context written: {ctx_path}")
@@ -320,7 +320,7 @@ def cmd_context_set(args):
 
 def cmd_context_show(args):
     sm = StateManager(args.root)
-    ctx_path = os.path.join(sm.loop_dir, "context.json")
+    ctx_path = sm.context_path
     if not os.path.exists(ctx_path):
         print("No context.json (environment context not configured).")
         return

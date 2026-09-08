@@ -115,7 +115,7 @@ def init_requirement(root, context=None):
         "context_path": None,
     }
     if context:
-        context_path = os.path.join(sm.loop_dir, "context.json")
+        context_path = sm.context_path
         with open(context_path, "w") as f:
             json.dump(context, f, indent=2, ensure_ascii=False)
         result["context_path"] = context_path

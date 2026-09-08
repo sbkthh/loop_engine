@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import time
 
-from constants import STATE_FILE, PRIORITY_ORDER, DRAFT
+from constants import STATE_FILE, CONTEXT_FILE, PRIORITY_ORDER, DRAFT
 from spec_utils import coerce_roots
 
 logger = logging.getLogger("loop")
@@ -19,6 +19,7 @@ class StateManager:
         self.loop_dir = os.path.join(self.root_dir, ".loop")
         self.state_path = os.path.join(self.root_dir, STATE_FILE)
         self.bak_path = self.state_path + ".bak"
+        self.context_path = os.path.join(self.root_dir, CONTEXT_FILE)
 
     def init_state(self):
         os.makedirs(self.loop_dir, exist_ok=True)

@@ -496,19 +496,15 @@ def cmd_self_install(args):
             f.write(content)
         print(f"Skill: {dst}")
     # 2. Install subagent profiles (maker/checker)
-    if agents_dir is None:
-        print("Agents: 该后端的子代理目录尚未确认，已跳过 —— "
-              "请把 agents/*.md 按其格式手工放置")
-    else:
-        src_dir = os.path.join(engine_dir, "agents")
-        os.makedirs(agents_dir, exist_ok=True)
-        for fname in _agent_sources():
-            dst = os.path.join(agents_dir, fname)
-            with open(os.path.join(src_dir, fname)) as f:
-                content = f.read()
-            with open(dst, "w") as f:
-                f.write(content)
-            print(f"Agent: {dst}")
+    src_dir = os.path.join(engine_dir, "agents")
+    os.makedirs(agents_dir, exist_ok=True)
+    for fname in _agent_sources():
+        dst = os.path.join(agents_dir, fname)
+        with open(os.path.join(src_dir, fname)) as f:
+            content = f.read()
+        with open(dst, "w") as f:
+            f.write(content)
+        print(f"Agent: {dst}")
     # 3. Install bin shim
     bin_dir = os.path.expanduser("~/.local/bin")
     os.makedirs(bin_dir, exist_ok=True)
@@ -557,14 +553,11 @@ def cmd_self_check(args):
         else:
             checks.append((f"Skill-{name}", False, "not found — run 'loop_engine self-install'"))
     # 3. Subagent profiles (maker/checker)
-    if agents_dir is None:
-        checks.append(("Agents", True, "目录未确认（该后端待 spike），跳过检查"))
-    else:
-        for fname in _agent_sources():
-            p = os.path.join(agents_dir, fname)
-            checks.append((f"Agent-{fname[:-3]}", os.path.exists(p),
-                           p if os.path.exists(p)
-                           else "not found — run 'loop_engine self-install'"))
+    for fname in _agent_sources():
+        p = os.path.join(agents_dir, fname)
+        checks.append((f"Agent-{fname[:-3]}", os.path.exists(p),
+                       p if os.path.exists(p)
+                       else "not found — run 'loop_engine self-install'"))
     # 4. Data dir
     data_dir = os.path.expanduser("~/.qoder/loop_engine")
     os.makedirs(data_dir, exist_ok=True)

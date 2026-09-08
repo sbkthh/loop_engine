@@ -794,10 +794,11 @@ loop_engine feishu stop
 | 后端 | skills 目录 | 子代理目录 | argv 构造 |
 |---|---|---|---|
 | `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | 已实现 |
-| `pi` | `~/.pi/agent/skills/` | **未确认** | 未实现 → 报错，不回落 |
+| `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 未实现 → 报错，不回落 |
 
 - **数据目录不随后端变**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs），与用哪个 agent CLI 无关；换后端不需要搬状态
-- **未确认的目录宁可跳过**：pi 的子代理目录尚未由 spike 验证，`self-install` 打印提示并跳过、`self-check` 只记一行"目录未确认，跳过检查"（不判失败），避免猜一个路径把文件写进不被加载的地方
+- **两个 pi 目录都是本机实测**（pi 0.85.1 + pi-subagents 0.66.0），不是抄文档：pi 同时扫 `~/.pi/agent/skills/` 与共享的 `~/.agents/skills/`，我们只往前者装，避免把 5 个 skill 混进用户自己的 skill 集；子代理是 pi-subagents 的概念（pi 核心没有），它递归读 `~/.pi/agent/agents/**/*.md`
+- **装过去 ≠ 能直接用**：`agents/*.md` 目前是 qodercli 的 frontmatter 格式（`tools: Read, Write, ...` + `mcpServers:`），pi-subagents 用同一套「YAML + 系统提示词」形状但字段名不同（`tools: read, grep, bash, mcp:<server>/<tool>`），未知 tool 名会被静默忽略 → 子代理拿到空工具集。在改写成 pi 格式之前，pi 侧的 maker/checker 只在交互式用法下有影响；循环的 MAKER/CHECKER 步骤从不派发子代理（就是「普通会话 + 引擎拼的 system prompt」），所以 spawn 路径不依赖这两个文件
 - **后端名填错一律报错**：不在档案表里的值，spawn / self-install / self-check 三处都直接失败，不静默回落到 qodercli
 
 ### 关键设计决策

@@ -71,22 +71,26 @@ def _qodercli_cmd(root, sid, system_prompt, user_text):
 
 
 # One row per agent CLI: how to spawn a step, and where its assets live. A None
-# means "not implemented / not confirmed yet", never "fall back to qodercli" —
-# a silently-falling-back install would leave pi reading qodercli's directories.
+# cmd means "known backend, argv builder not written yet", never "fall back to
+# qodercli" — a silently-falling-back spawn would report pi results that are
+# really qodercli's.
 #
-# pi 0.85.1 verified locally (2026-09-08): it reads ~/.pi/agent/skills/ *and* the
-# shared ~/.agents/skills/; we install to the former so our 5 skills don't join
-# the user's other skill set. Its core has no subagent concept at all (0 hits in
-# the shipped bundle) — maker/checker come from a third-party package we haven't
-# installed, whose profile directory that package defines. So agents stays None
-# until that's settled rather than guessing a path nothing loads from.
+# Both pi directories are measured on this machine (pi 0.85.1 + pi-subagents
+# 0.66.0, 2026-09-08), not read out of docs. pi scans ~/.pi/agent/skills/ *and*
+# the shared ~/.agents/skills/; we install to the former so our 5 skills stay out
+# of the user's general skill set. Subagent profiles are a pi-subagents concept
+# (pi's core has none) and it reads ~/.pi/agent/agents/**/*.md recursively.
+#
+# For whoever writes _pi_cmd: pi has no --strict-mcp-config. The whitelist is
+# pi-mcp-adapter's --mcp-config <path> plus env PI_MCP_CONFIG_MODE=exclusive,
+# which stops the six ambient MCP config layers from merging in.
 _BACKENDS = {
     "qodercli": {"cmd": _qodercli_cmd,
                  "skills": "~/.qoder/skills",
                  "agents": "~/.qoder/agents"},
     "pi": {"cmd": None,
            "skills": "~/.pi/agent/skills",
-           "agents": None},
+           "agents": "~/.pi/agent/agents"},
 }
 
 
@@ -100,11 +104,10 @@ def _profile(name=None):
 
 
 def asset_dirs():
-    """(skills_dir, agents_dir) for the selected backend; agents_dir is None
-    when that backend's subagent location is unconfirmed."""
+    """(skills_dir, agents_dir) for the selected backend."""
     p = _profile()
     return (os.path.expanduser(p["skills"]),
-            None if p["agents"] is None else os.path.expanduser(p["agents"]))
+            os.path.expanduser(p["agents"]))
 
 
 def build_cmd(root, sid, system_prompt, user_text):

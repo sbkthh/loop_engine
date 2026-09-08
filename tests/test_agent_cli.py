@@ -79,13 +79,14 @@ class BuildCmdTest(unittest.TestCase):
         self.assertEqual(skills, os.path.expanduser("~/.qoder/skills"))
         self.assertEqual(agents, os.path.expanduser("~/.qoder/agents"))
 
-    def test_asset_dirs_pi_agents_unconfirmed(self):
-        """pi's skill dir is documented; its subagent dir is not, so self-install
-        must skip it loudly rather than guess a path."""
+    def test_asset_dirs_pi(self):
+        """Both pi directories were measured against a real pi + pi-subagents
+        install; self-install writes here, so a guessed path would land profiles
+        in a directory nothing loads from."""
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}):
             skills, agents = agent_cli.asset_dirs()
         self.assertEqual(skills, os.path.expanduser("~/.pi/agent/skills"))
-        self.assertIsNone(agents)
+        self.assertEqual(agents, os.path.expanduser("~/.pi/agent/agents"))
 
     def test_asset_dirs_unknown_backend_fails(self):
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "nope"}):

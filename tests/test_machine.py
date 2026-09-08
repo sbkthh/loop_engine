@@ -112,6 +112,10 @@ class TestMachineFullRoundTrip(unittest.TestCase):
                 sm = StateManager(self.root)
                 state = sm.load()
                 state["modules"][self.key]["status"] = status
+                if status == "PARTIAL":
+                    # STATUS_TABLE[PARTIAL].next=CLASSIFY 只在已实现(ever_synced)
+                    # 时成立；未实现模块会改判 SCORE（见专门用例）
+                    state["modules"][self.key]["ever_synced"] = True
                 StateManager.clear_current(state)
                 sm.save(state)
                 r = StateMachine(self.root).next()
@@ -1115,6 +1119,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm = StateManager(self.root)
         state = sm.load()
         state["modules"][self.key]["status"] = SYNCED
+        state["modules"][self.key]["ever_synced"] = True
         sm.save(state)
 
         spec_path = os.path.join(self.root,
@@ -1132,8 +1137,9 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertIsNotNone(
             state["modules"][self.key].get("spec_norm_hash"))
 
-    def test_needs_refinement_hash_change_routes_classify(self):
-        """NEEDS_REFINEMENT 模块的 spec 完善后重新进入评分循环。"""
+    def test_needs_refinement_hash_change_routes_score(self):
+        """NEEDS_REFINEMENT 从未实现（无 ever_synced）→ spec 完善后回 SCORE
+        全量重判，绝不走 CLASSIFY（否则可能轻量跳实现→无代码 SYNCED）。"""
         self._init_module_ready()
         sm = StateManager(self.root)
         state = sm.load()
@@ -1147,11 +1153,65 @@ class TestMachineFullRoundTrip(unittest.TestCase):
 
         machine = StateMachine(self.root)
         r = machine.next()
-        self.assertEqual(r["action"], "CLASSIFY_CHANGE")
+        self.assertEqual(r["action"], "SCORE")
 
         sm = StateManager(self.root)
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], "PARTIAL")
+
+    def test_partiaL_never_synced_routes_score(self):
+        """用户场景：全新 spec 经 spec_result 直接登记为 PARTIAL（从未实现、
+        无 ever_synced）→ run_spec 时入口必须是 SCORE，不得走 CLASSIFY 轻量通道。"""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = "PARTIAL"
+        state["modules"][self.key].pop("ever_synced", None)
+        state["current"] = {"module": None, "action": None, "attempt": 0}
+        sm.save(state)
+
+        machine = StateMachine(self.root)
+        r = machine.next()
+        self.assertEqual(r["action"], "SCORE")
+
+    def test_partiaL_ever_synced_routes_classify(self):
+        """已实现模块(ever_synced=True)停在 PARTIAL → 入口仍 CLASSIFY
+        （有代码可比，允许按改动大小走轻量复验）。"""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = "PARTIAL"
+        state["modules"][self.key]["ever_synced"] = True
+        state["current"] = {"module": None, "action": None, "attempt": 0}
+        sm.save(state)
+
+        machine = StateMachine(self.root)
+        r = machine.next()
+        self.assertEqual(r["action"], "CLASSIFY_CHANGE")
+
+    def test_execute_synced_marks_ever_synced_only_after_maker(self):
+        """_execute_synced 仅在本轮跑过 MAKER（maker_attempt>0）时置
+        ever_synced；未实现的模块永远拿不到这把'轻量'钥匙。"""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        machine = StateMachine(self.root)
+        ok_run = lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+
+        mod = state["modules"][self.key]
+        mod["status"] = "PARTIAL"
+        mod["maker_attempt"] = 0
+        mod.pop("ever_synced", None)
+        with _mock.patch("machine.subprocess.run", side_effect=ok_run):
+            machine._execute_synced(state, self.key, mod)
+        self.assertNotIn("ever_synced", state["modules"][self.key])
+
+        mod = state["modules"][self.key]
+        mod["maker_attempt"] = 1
+        with _mock.patch("machine.subprocess.run", side_effect=ok_run):
+            machine._execute_synced(state, self.key, mod)
+        self.assertTrue(state["modules"][self.key].get("ever_synced"))
 
     def test_cosmetic_spec_change_skips_loop(self):
         """Comment/format-only spec edit: hashes refreshed, stays SYNCED,

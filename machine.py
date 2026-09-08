@@ -186,13 +186,18 @@ class StateMachine:
                     module["status"] = PARTIAL
                     module["maker_attempt"] = 0
                     module["review_fix_attempt"] = 0
-                    StateManager.set_current(state, key, CLASSIFY_CHANGE)
+                    # 入口分流：只有"曾经真正 SYNCED 过（磁盘有代码）"的模块，
+                    # 才按"改动大小"CLASSIFY；从未实现的 spec（NEEDS_REFINEMENT
+                    # 完善后、或首次登记）没有代码可比，一律回 SCORE 全量重判，
+                    # 否则会走轻量通道跳过 MAKER → 无代码却 SYNCED。
+                    entry = CLASSIFY_CHANGE if module.get("ever_synced") else SCORE
+                    StateManager.set_current(state, key, entry)
                     self._trace(state, "SCAN", key,
-                                f"spec hash changed -> PARTIAL")
+                                f"spec hash changed -> PARTIAL ({entry})")
                     dirty = True
                     self.sm.save(state)
                     return self._build(
-                        state, CLASSIFY_CHANGE, key, module
+                        state, entry, key, module
                     )
                 elif module.get("spec_norm_hash") is None:
                     # upgraded state: backfill normalized hash silently so
@@ -313,6 +318,10 @@ class StateMachine:
                     "message": f"未知状态 {module['status']}"}
         if entry["next"]:
             action = entry["next"]
+            if module["status"] == PARTIAL and not module.get("ever_synced"):
+                # 全新/从未实现的 spec 停在 PARTIAL：无代码可按"改动大小"判
+                # 轻量，退回全量 SCORE（达标才进 MAKER 写码）。与检测分支同源。
+                action = SCORE
             StateManager.set_current(state, module_key, action)
             self._trace(state, "SCAN", module_key, f"routed to {action}")
             dirty = True
@@ -744,6 +753,11 @@ class StateMachine:
                                    f"{len(roots)} repo(s): "
                                    + ", ".join(sorted(failures)))
             module.pop("sync_test_report", None)
+        if module.get("maker_attempt", 0) > 0:
+            # 只有本轮确实跑过 MAKER（写过代码并绿测）才认定"已实现"。
+            # 供 PARTIAL 入口分流（CLASSIFY vs SCORE）读取；从未实现的 spec
+            # 即使被误判轻量也不会经此置位，避免污染"已有代码"这一判据。
+            module["ever_synced"] = True
         module["status"] = SYNCED
         module["last_synced"] = datetime.datetime.now().isoformat()
         self._audit(state, key, f"{prev_status}->{SYNCED}")

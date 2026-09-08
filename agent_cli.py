@@ -70,7 +70,41 @@ def _qodercli_cmd(root, sid, system_prompt, user_text):
     return cmd
 
 
-_BUILDERS = {"qodercli": _qodercli_cmd}
+# One row per agent CLI: how to spawn a step, and where its assets live. A None
+# means "not implemented / not confirmed yet", never "fall back to qodercli" —
+# a silently-falling-back install would leave pi reading qodercli's directories.
+#
+# pi 0.85.1 verified locally (2026-09-08): it reads ~/.pi/agent/skills/ *and* the
+# shared ~/.agents/skills/; we install to the former so our 5 skills don't join
+# the user's other skill set. Its core has no subagent concept at all (0 hits in
+# the shipped bundle) — maker/checker come from a third-party package we haven't
+# installed, whose profile directory that package defines. So agents stays None
+# until that's settled rather than guessing a path nothing loads from.
+_BACKENDS = {
+    "qodercli": {"cmd": _qodercli_cmd,
+                 "skills": "~/.qoder/skills",
+                 "agents": "~/.qoder/agents"},
+    "pi": {"cmd": None,
+           "skills": "~/.pi/agent/skills",
+           "agents": None},
+}
+
+
+def _profile(name=None):
+    name = name or backend()
+    if name not in _BACKENDS:
+        raise RuntimeError(
+            f"未实现的 agent 后端：{name}"
+            f"（可选：{', '.join(sorted(_BACKENDS))}）")
+    return _BACKENDS[name]
+
+
+def asset_dirs():
+    """(skills_dir, agents_dir) for the selected backend; agents_dir is None
+    when that backend's subagent location is unconfirmed."""
+    p = _profile()
+    return (os.path.expanduser(p["skills"]),
+            None if p["agents"] is None else os.path.expanduser(p["agents"]))
 
 
 def build_cmd(root, sid, system_prompt, user_text):
@@ -78,8 +112,10 @@ def build_cmd(root, sid, system_prompt, user_text):
     the MCP child inherits the OS cwd, so pinning it here is what makes
     codegraph index the target repo instead of the daemon's own directory."""
     name = backend()
-    if name not in _BUILDERS:
+    builder = _profile(name)["cmd"]
+    if builder is None:
+        implemented = sorted(k for k, v in _BACKENDS.items() if v["cmd"])
         raise RuntimeError(
-            f"未实现的 agent 后端：{name}"
-            f"（可选：{', '.join(sorted(_BUILDERS))}）")
-    return _BUILDERS[name](root, sid, system_prompt, user_text)
+            f"agent 后端 {name} 尚未实现 argv 构造"
+            f"（已实现：{', '.join(implemented)}）")
+    return builder(root, sid, system_prompt, user_text)

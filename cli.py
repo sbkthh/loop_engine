@@ -463,19 +463,31 @@ def cmd_schedule_max_concurrency(args):
         sys.exit(1)
 
 
+_SKILLS = ("spec-session", "prd-to-spec", "grill-me",
+           "requirement-register", "manual-loop")
+
+
+def _agent_sources():
+    """Subagent profile files shipped in the repo (maker/checker) — the single
+    list both self-install and self-check work from."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents")
+    return sorted(f for f in os.listdir(d) if f.endswith(".md")) \
+        if os.path.isdir(d) else []
+
+
 def cmd_self_install(args):
-    """Install skills, bin shim, and data directory."""
+    """Install skills, subagent profiles, bin shim, and data directory."""
     from __init__ import __version__
+    import agent_cli
     engine_dir = os.path.dirname(os.path.abspath(__file__))
+    skills_dir, agents_dir = agent_cli.asset_dirs()
     # 1. Install skills
-    _SKILLS = ("spec-session", "prd-to-spec", "grill-me",
-               "requirement-register", "manual-loop")
     for name in _SKILLS:
         src = os.path.join(engine_dir, "skills", name, "SKILL.md")
         if not os.path.exists(src):
             print(f"Skill source not found (skipping): {src}")
             continue
-        dst_dir = os.path.expanduser(f"~/.qoder/skills/{name}")
+        dst_dir = os.path.join(skills_dir, name)
         os.makedirs(dst_dir, exist_ok=True)
         dst = os.path.join(dst_dir, "SKILL.md")
         with open(src) as f:
@@ -483,7 +495,21 @@ def cmd_self_install(args):
         with open(dst, "w") as f:
             f.write(content)
         print(f"Skill: {dst}")
-    # 2. Install bin shim
+    # 2. Install subagent profiles (maker/checker)
+    if agents_dir is None:
+        print("Agents: 该后端的子代理目录尚未确认，已跳过 —— "
+              "请把 agents/*.md 按其格式手工放置")
+    else:
+        src_dir = os.path.join(engine_dir, "agents")
+        os.makedirs(agents_dir, exist_ok=True)
+        for fname in _agent_sources():
+            dst = os.path.join(agents_dir, fname)
+            with open(os.path.join(src_dir, fname)) as f:
+                content = f.read()
+            with open(dst, "w") as f:
+                f.write(content)
+            print(f"Agent: {dst}")
+    # 3. Install bin shim
     bin_dir = os.path.expanduser("~/.local/bin")
     os.makedirs(bin_dir, exist_ok=True)
     shim_path = os.path.join(bin_dir, "loop_engine")
@@ -495,11 +521,11 @@ def cmd_self_install(args):
         print(f"Shim: {shim_path}")
     else:
         print(f"Shim: {shim_path} (already exists)")
-    # 3. Data directory
+    # 4. Data directory
     data_dir = os.path.expanduser("~/.qoder/loop_engine")
     os.makedirs(data_dir, exist_ok=True)
     print(f"Data:  {data_dir}")
-    # 4. Recommend pip install
+    # 5. Recommend pip install
     if "loop_engine" not in sys.modules:
         print(f"\nTip: run 'pip install -e {engine_dir}' to register the"
               " loop_engine entry point (requires pip).")
@@ -522,21 +548,28 @@ def cmd_self_check(args):
         else:
             checks.append(("CLI", False, "not found"))
     # 2. Skills
-    _SKILL_NAMES = ("spec-session", "prd-to-spec", "grill-me",
-                    "requirement-register", "manual-loop")
-    all_skills_ok = True
-    for name in _SKILL_NAMES:
-        skill_path = os.path.expanduser(f"~/.qoder/skills/{name}/SKILL.md")
+    import agent_cli
+    skills_dir, agents_dir = agent_cli.asset_dirs()
+    for name in _SKILLS:
+        skill_path = os.path.join(skills_dir, name, "SKILL.md")
         if os.path.exists(skill_path):
             checks.append((f"Skill-{name}", True, skill_path))
         else:
             checks.append((f"Skill-{name}", False, "not found — run 'loop_engine self-install'"))
-            all_skills_ok = False
-    # 3. Data dir
+    # 3. Subagent profiles (maker/checker)
+    if agents_dir is None:
+        checks.append(("Agents", True, "目录未确认（该后端待 spike），跳过检查"))
+    else:
+        for fname in _agent_sources():
+            p = os.path.join(agents_dir, fname)
+            checks.append((f"Agent-{fname[:-3]}", os.path.exists(p),
+                           p if os.path.exists(p)
+                           else "not found — run 'loop_engine self-install'"))
+    # 4. Data dir
     data_dir = os.path.expanduser("~/.qoder/loop_engine")
     os.makedirs(data_dir, exist_ok=True)
     checks.append(("Data dir", True, data_dir))
-    # 4. Registry
+    # 5. Registry
     reg_path = os.path.join(data_dir, "requirements.json")
     if os.path.exists(reg_path):
         import json
@@ -546,7 +579,7 @@ def cmd_self_check(args):
         checks.append(("Registry", True, f"{n} requirement(s) registered"))
     else:
         checks.append(("Registry", True, "empty — register with 'loop_engine requirement-add'"))
-    # 5. Tests
+    # 6. Tests
     test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests")
     if os.path.exists(test_dir):
         r = subprocess.run([sys.executable, "-m", "pytest", test_dir, "-q", "--tb=no"],

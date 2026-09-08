@@ -106,8 +106,14 @@ class SchedulerBase(unittest.TestCase):
         scheduler.notify_pending = mock.MagicMock()
         self._notify_text_orig = scheduler.notify_text
         scheduler.notify_text = mock.MagicMock()
+        # argv comes from the backend profile; a shell-exported
+        # LOOP_ENGINE_AGENT_CLI would silently retarget every spawn assertion
+        self._backend = mock.patch.dict(os.environ,
+                                        {"LOOP_ENGINE_AGENT_CLI": "qodercli"})
+        self._backend.start()
 
     def tearDown(self):
+        self._backend.stop()
         scheduler.notify_text = self._notify_text_orig
         scheduler.notify_pending = self._notify_pending_orig
         for attr, value in self._paths.items():

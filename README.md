@@ -40,7 +40,8 @@ git clone <repo-url> ~/loop_engine
 cd ~/loop_engine
 
 # 2. 安装：生成 shim（~/.local/bin/loop_engine，指向当前代码目录）
-#    + spec-session skill + 数据目录（~/.qoder/loop_engine）
+#    + 5 个 skill + maker/checker 子代理定义 + 数据目录（~/.qoder/loop_engine）
+#    skill/子代理的目标目录由 agent 后端决定，见「Agent 后端与资产目录」
 python3 __main__.py self-install
 
 # 3. 验证
@@ -58,9 +59,11 @@ Skill-prd-to-spec   OK       /Users/.../prd-to-spec/SKILL.md
 Skill-grill-me      OK       /Users/.../grill-me/SKILL.md
 Skill-requirement-register OK  /Users/.../requirement-register/SKILL.md
 Skill-manual-loop   DEPRECATED  /Users/.../manual-loop/SKILL.md（改为引导走 approve）
+Agent-checker       OK       /Users/.../.qoder/agents/checker.md
+Agent-maker         OK       /Users/.../.qoder/agents/maker.md
 Data dir            OK       /Users/.../.qoder/loop_engine
 Registry            OK       0 requirement(s) registered
-Tests               OK       326 passed in 19.24s
+Tests               OK       508 passed in 43.15s
 
 System ready.
 ```
@@ -739,6 +742,9 @@ loop_engine feishu stop
 ├── __main__.py                 # Python -m 入口
 ├── pyproject.toml              # 构建配置
 ├── README.md                   # 使用指南
+├── agents/                     # 子代理定义源（self-install 拷到后端 agents 目录）
+│   ├── maker.md                # 代码生成：TDD/SDD，按 loop-maker-workflow
+│   └── checker.md              # spec↔plan↔code 一致性校验，不改文件
 ├── wecom_server/               # WeCom 机器人（F/G）
 │   ├── server.py               # Flask 回调服务器（解密/验签/响应）
 │   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理（平台无关，飞书复用）
@@ -781,10 +787,23 @@ loop_engine feishu stop
 ~/.local/bin/loop_engine        # 命令行 shim
 ```
 
+### Agent 后端与资产目录
+
+循环每一步由 `agent_cli` 拉起一个非交互 agent 会话。不同后端的**启动参数**和**资产目录**记在同一张档案表 `agent_cli._BACKENDS` 里，由环境变量 `LOOP_ENGINE_AGENT_CLI` 选择（默认 `qodercli`）；`self-install` / `self-check` 只查这张表，不再各自拼 `~/.qoder/...`。
+
+| 后端 | skills 目录 | 子代理目录 | argv 构造 |
+|---|---|---|---|
+| `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | 已实现 |
+| `pi` | `~/.pi/agent/skills/` | **未确认** | 未实现 → 报错，不回落 |
+
+- **数据目录不随后端变**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs），与用哪个 agent CLI 无关；换后端不需要搬状态
+- **未确认的目录宁可跳过**：pi 的子代理目录尚未由 spike 验证，`self-install` 打印提示并跳过、`self-check` 只记一行"目录未确认，跳过检查"（不判失败），避免猜一个路径把文件写进不被加载的地方
+- **后端名填错一律报错**：不在档案表里的值，spawn / self-install / self-check 三处都直接失败，不静默回落到 qodercli
+
 ### 关键设计决策
 
 - **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信（`agent_cli.py` 是纯 argv 拼装的无状态叶子，不构成核心耦合）
-- **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式——全部收敛在 `agent_cli.build_cmd()`。后端由环境变量 `LOOP_ENGINE_AGENT_CLI` 选择，默认 `qodercli`；填未知值（如尚未实现的 `pi`）直接报错，**不静默回落**，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用。新增后端 = 加一个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
+- **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式、skills/子代理装到哪——全部收敛在 `agent_cli` 一处（argv 走 `build_cmd()`，目录走 `asset_dirs()`）。档案表里有 `pi` 这一行但 `cmd` 仍为 `None`：选它会在 spawn 时报错，**不静默回落**成 qodercli，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用。新增后端 = 档案表加一行 + 一个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
 - **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s 双超时、锁心跳 60s、hard_errors 用尽 3 次转 BLOCKED

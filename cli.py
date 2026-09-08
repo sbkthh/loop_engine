@@ -33,7 +33,7 @@ def _require_lock(root, cmd):
 def cmd_next(args):
     _require_lock(args.root, "next")
     machine = StateMachine(args.root)
-    result = machine.next()
+    result = machine.next(only_key=getattr(args, "module", None))
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -385,7 +385,8 @@ def cmd_approve(args):
 
 
 def cmd_run(args):
-    result = scheduler.run_requirement(args.requirement)
+    result = scheduler.run_requirement(
+        args.requirement, module=getattr(args, "module", None))
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if "error" in result:
         sys.exit(1)
@@ -744,6 +745,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("next", parents=[common], help="Get next directives")
+    p.add_argument("--module", default=None,
+                   help="Pin to one module key (change_id/module_name)")
     p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("commit", parents=[common], help="Commit result and advance")
@@ -868,6 +871,8 @@ def main():
     p = sub.add_parser("run", parents=[common],
                        help="(internal) Execute a requirement to completion")
     p.add_argument("requirement", help="Requirement name")
+    p.add_argument("--module", default=None,
+                   help="Pin to one module key (change_id/module_name)")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("manual-hold", parents=[common],

@@ -812,6 +812,49 @@ class TestRun(SchedulerBase):
         self.assertIn("run req: start", log)
         self.assertIn("finished (idle)", log)
 
+    def test_run_threads_module_into_next(self):
+        """run_requirement(name, module=...) forwards --module to every
+        'next' call; omitted when module is None."""
+        root = self._register_pending("req")
+
+        seen = []
+
+        def make_fake(actions):
+            def fake_run(cmd, **kwargs):
+                if any("__main__.py" in part for part in cmd):
+                    idx = next(i for i, p in enumerate(cmd)
+                               if "__main__.py" in p)
+                    if cmd[idx + 1] == "next":
+                        seen.append(cmd[idx + 2:])
+                        action = actions.pop(0) if actions else "IDLE"
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"action": action,
+                                               "module": "c/m"}),
+                            stderr="", returncode=0)
+                    if cmd[idx + 1] == "commit":
+                        return types.SimpleNamespace(
+                            stdout=json.dumps({"action": "SCORE",
+                                               "next_action": "_DONE_"}),
+                            stderr="", returncode=0)
+                return types.SimpleNamespace(stdout="", stderr="",
+                                             returncode=0)
+            return fake_run
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=make_fake(["SCORE"])):
+            scheduler.run_requirement("req", module="c/m")
+        self.assertTrue(
+            any("--module" in a and a[a.index("--module") + 1] == "c/m"
+                for a in seen),
+            f"expected --module c/m in next argv, got {seen}")
+        seen.clear()
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=make_fake(["SCORE"])):
+            scheduler.run_requirement("req")
+        self.assertTrue(seen, "next was not called")
+        self.assertNotIn("--module", seen[0])
+
     def test_run_archives_step_result(self):
         root = self._register_pending("req")
         next_actions = ["SCORE", "IDLE"]

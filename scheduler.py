@@ -1008,8 +1008,9 @@ def _repair_result(root, sid, detail):
     return True
 
 
-def run_requirement(name):
-    """Execute one requirement to completion: next → qodercli → commit."""
+def run_requirement(name, module=None):
+    """Execute one requirement (or a single module) to completion:
+    next → qodercli → commit."""
     req = next((r for r in _read_registry() if r.get("name") == name), None)
     if not req:
         return {"error": f"Requirement not registered: {name}"}
@@ -1037,9 +1038,11 @@ def run_requirement(name):
             failure_detail = None  # don't leak a retried step's error into a later failure notice
             step_start = time.monotonic()
             try:
-                r = subprocess.run(_engine_cmd("next", "--root", root),
-                                   capture_output=True, text=True,
-                                   timeout=QUICK_TIMEOUT_SECONDS)
+                r = subprocess.run(
+                    _engine_cmd("next", "--root", root,
+                                *(["--module", module] if module else [])),
+                    capture_output=True, text=True,
+                    timeout=QUICK_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 _log(f"run {name}: next timed out")
                 end = "qodercli_failed"

@@ -114,7 +114,7 @@ class StateMachine:
             ALIGN_DOCS: self._commit_align_docs,
         }
 
-    def next(self):
+    def next(self, only_key=None):
         state = self.sm.load()
         dirty = False
 
@@ -151,13 +151,15 @@ class StateMachine:
             logger.info("self-heal project_root: %s -> %s", key, resolved)
 
         mid = StateManager.find_mid_progress(state)
-        if mid:
+        if mid and (only_key is None or mid[0] == only_key):
             module_key, module, action = mid
             if dirty:
                 self.sm.save(state)
             return self._build(state, action, module_key, module)
 
         for key, module in list(state["modules"].items()):
+            if only_key is not None and key != only_key:
+                continue
             if module["status"] in (SYNCED, NEEDS_REFINEMENT):
                 # NEEDS_REFINEMENT: spec 完善后重新进入评分循环
                 spec_path = derive_spec_path(
@@ -204,6 +206,8 @@ class StateMachine:
         # independently of its spec. Route directly to MAKER_STEP1_RED (the
         # plan already exists, no re-scoring or plan generation needed).
         for key, module in list(state["modules"].items()):
+            if only_key is not None and key != only_key:
+                continue
             if module["status"] == SYNCED:
                 plan_path = derive_plan_path(
                     module["change_id"], module["module_name"], self.root_dir
@@ -229,7 +233,7 @@ class StateMachine:
                             state, MAKER_STEP1_RED, key, module
                         )
 
-        selected = StateManager.select_next_module(state)
+        selected = StateManager.select_next_module(state, only_key)
         if not selected:
             if dirty:
                 self.sm.save(state)

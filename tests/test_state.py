@@ -155,6 +155,26 @@ class TestStateManager(unittest.TestCase):
         k, m = StateManager.select_next_module(state)
         self.assertEqual(k, key)
 
+    def test_select_next_module_only_key_pins_lower_priority(self):
+        state = self.sm.init_state()
+        k_ready = StateManager.module_key("c", "ready_mod")
+        k_partial = StateManager.module_key("c", "partial_mod")
+        StateManager.add_module(state, k_ready, "c", "ready_mod")
+        StateManager.add_module(state, k_partial, "c", "partial_mod")
+        state["modules"][k_ready]["status"] = READY
+        state["modules"][k_partial]["status"] = PARTIAL
+        # PARTIAL outranks READY, but pinning to the READY module wins
+        key, _ = StateManager.select_next_module(state, only_key=k_ready)
+        self.assertEqual(key, k_ready)
+
+    def test_select_next_module_only_key_absent(self):
+        state = self.sm.init_state()
+        key = StateManager.module_key("c", "mod")
+        StateManager.add_module(state, key, "c", "mod")
+        state["modules"][key]["status"] = PARTIAL
+        self.assertIsNone(
+            StateManager.select_next_module(state, only_key="c/other"))
+
     def test_add_module_defaults(self):
         state = self.sm.init_state()
         key = StateManager.module_key("c", "mod")

@@ -170,10 +170,12 @@ class StateManager:
         state["current"] = {"module": None, "action": None, "attempt": 0}
 
     @staticmethod
-    def select_next_module(state):
+    def select_next_module(state, only_key=None):
         modules = state.get("modules", {})
         for status in PRIORITY_ORDER:
             for key, module in modules.items():
+                if only_key is not None and key != only_key:
+                    continue
                 if module["status"] == status:
                     return key, module
         return None

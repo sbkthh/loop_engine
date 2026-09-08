@@ -38,12 +38,19 @@ _LLM_SYSTEM_PROMPT = (
     "No tables, code blocks, lists, or links.\n\n"
     "System actions: to trigger a backend action, append on its own line:\n"
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
-    "Actions: approve | spec_result(requirement+module) | history | "
+    "Actions: approve | run_spec(requirement+module) | "
+    "spec_result(requirement+module) | history | "
     "gray_list | adjudicate(requirement+target+decision, "
     "decision=accept|reject, target=all or draft ids e.g. \"28 29\")\n"
     "Do NOT add __JSON_ACTION__ when no action is needed — EXCEPT: "
     "editing spec.md in this turn makes spec_result MANDATORY in this "
     "same reply.\n\n"
+    "Run scope: when the user asks to run/execute the WHOLE requirement "
+    "(批准/执行 <需求>), emit action=approve. When the user asks to run "
+    "ONLY one spec/module (单独跑/只执行 某个 spec, 模块), emit "
+    "action=run_spec with that module key (bare module name is fine, the "
+    "backend resolves it). run_spec still enforces the same gray-list and "
+    "executable-state gates as approve, so it never bypasses safety.\n\n"
     "Gray list rule: when the user asks to view the gray list "
     "(e.g. '查看灰名单'), you MUST output __JSON_ACTION__ "
     "{\"action\": \"gray_list\", \"requirement\": \"<name>\"}. "
@@ -534,6 +541,48 @@ def _execute_approve(name, registry, data_dir, user_id=None):
     return f"已批准 {name}，等待调度（并发上限或正在运行）"
 
 
+def _execute_run_spec(name, module, registry, data_dir, user_id=None):
+    """Run ONE spec (module) to completion, without bypassing any safety
+    gate: gray drafts / lock / module-executability are all enforced, then
+    'run <name> --module <key>' is forked detached."""
+    req = next((r for r in registry if r.get("name") == name), None)
+    if not req:
+        available = ", ".join(r.get("name", "?") for r in registry) or "无"
+        return f"没有找到需求：{name}（可用：{available}）"
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import scheduler
+    from constants import STATUS_TABLE
+    from state import StateManager
+    root = req.get("root", "")
+    if scheduler.is_locked(root):
+        return f"需求「{name}」正在执行中，请等待完成后再单独执行 spec"
+    if scheduler._has_pending_gray_drafts(root):
+        return (f"需求「{name}」有待裁决的灰名单草稿，请先裁决再单独执行 spec"
+                f"（与批准整需求时的同一道闸）")
+    try:
+        st = StateManager(root).load()
+    except Exception as e:
+        return f"读取状态失败：{e}"
+    try:
+        key = _resolve_module_key(st, module)
+    except ValueError as e:
+        return str(e)
+    entry = STATUS_TABLE.get(st["modules"][key].get("status"), {})
+    if "APPROVE" not in entry.get("prefixes", ()):
+        return (f"「{key.split('/')[-1]}」当前不可单独执行"
+                f"（状态：{entry.get('label', '?')}）；"
+                f"需处于 待执行 / Spec变更 状态")
+    proc = subprocess.Popen(
+        scheduler._engine_cmd("run", name, "--module", key),
+        stdout=open(scheduler.LOG_PATH, "a"),
+        stderr=subprocess.STDOUT, start_new_session=True)
+    _log_line = getattr(scheduler, "_log", None)
+    if callable(_log_line):
+        _log_line(f"wecom run_spec: forked {name} --module {key} "
+                  f"(pid {proc.pid})")
+    return f"已开始单独执行 spec：{name} / {key.split('/')[-1]}"
+
+
 def _audit_line(text):
     """Append a line to the shared audit log (same file as audit_hook.sh)."""
     try:
@@ -756,6 +805,12 @@ def _dispatch_json_action(payload, registry, data_dir, user_id):
         if blocked:
             return blocked
         return _execute_approve(name, registry, data_dir, user_id)
+    if action == "run_spec":
+        name = payload.get("requirement")
+        module = payload.get("module")
+        if not name or not module:
+            return "缺少参数：requirement/module"
+        return _execute_run_spec(name, module, registry, data_dir, user_id)
     if action == "spec_result":
         name = payload.get("requirement")
         module = payload.get("module")

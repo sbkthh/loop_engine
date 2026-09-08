@@ -407,6 +407,66 @@ def test_approve_allows_ready_via_status_table(monkeypatch, tmp_path):
     assert "已批准并开始执行" in reply
 
 
+def test_run_spec_missing_params():
+    from wecom_server import router
+    r = router._dispatch_json_action(
+        {"action": "run_spec", "requirement": "req"},
+        [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1")
+    assert "缺少参数" in r
+
+
+def test_run_spec_refuses_non_executable_module(monkeypatch, tmp_path):
+    """Option A gate: a DRAFT target is refused; nothing is forked."""
+    import json
+    from wecom_server import router
+    import scheduler
+
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {"c/m": {"status": "DRAFT"}}, "current": None}))
+    monkeypatch.setattr(scheduler, "is_locked", lambda r: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts", lambda r: False)
+    popened = []
+    monkeypatch.setattr(router.subprocess, "Popen",
+                        lambda *a, **k: popened.append(a))
+
+    r = router._dispatch_json_action(
+        {"action": "run_spec", "requirement": "req", "module": "c/m"},
+        [{"name": "req", "root": str(root)}], "/tmp", "u1")
+
+    assert "不可单独执行" in r
+    assert popened == []
+
+
+def test_run_spec_forks_scoped_run(monkeypatch, tmp_path):
+    """READY target + unlocked + no gray drafts -> fork run --module."""
+    import json
+    from wecom_server import router
+    import scheduler
+
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {"c/m": {"status": "READY"}}, "current": None}))
+    monkeypatch.setattr(scheduler, "is_locked", lambda r: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts", lambda r: False)
+    calls = []
+
+    def fake_popen(cmd, **k):
+        calls.append(cmd)
+        return types.SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(router.subprocess, "Popen", fake_popen)
+
+    r = router._dispatch_json_action(
+        {"action": "run_spec", "requirement": "req", "module": "c/m"},
+        [{"name": "req", "root": str(root)}], "/tmp", "u1")
+
+    assert "已开始单独执行" in r
+    assert "--module" in calls[0] and "c/m" in calls[0]
+
+
 def test_approve_allows_pending_spec_changed_via_status_table(monkeypatch, tmp_path):
     """NEEDS_REFINEMENT state.json + poll 已检测到 SPEC_CHANGED 条目：
     快速拦截放行，达到 scheduler.approve。"""

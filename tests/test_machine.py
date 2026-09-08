@@ -123,6 +123,52 @@ class TestMachineFullRoundTrip(unittest.TestCase):
                         entry["idle_msg"].format(module_key=self.key),
                         r["message"])
 
+    def test_next_only_key_pins_target_over_higher_priority(self):
+        """only_key pins selection to one module even when another module
+        has higher priority (PARTIAL outranks READY)."""
+        from constants import PARTIAL, SCORE
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        StateManager.add_module(state, self.key, "test-change", "test-module")
+        other = StateManager.module_key("test-change", "other-module")
+        StateManager.add_module(state, other, "test-change", "other-module")
+        state["modules"][self.key]["status"] = READY
+        state["modules"][other]["status"] = PARTIAL
+        StateManager.clear_current(state)
+        sm.save(state)
+
+        # unscoped -> higher priority (other-module PARTIAL)
+        r_all = StateMachine(self.root).next()
+        self.assertEqual(r_all.get("module"), other)
+        # scoped to self.key (READY) -> routed to SCORE
+        r = StateMachine(self.root).next(only_key=self.key)
+        self.assertEqual(r.get("module"), self.key)
+        self.assertEqual(r["action"], SCORE)
+
+    def test_next_only_key_returns_idle_when_target_synced(self):
+        """only_key on a SYNCED module returns IDLE and must NOT pick up a
+        different pending module."""
+        from constants import PARTIAL
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        import hashlib
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "rb") as f:
+            spec_hash = hashlib.md5(f.read()).hexdigest()
+        StateManager.add_module(state, self.key, "test-change",
+                                "test-module", spec_hash=spec_hash)
+        other = StateManager.module_key("test-change", "other-module")
+        StateManager.add_module(state, other, "test-change", "other-module")
+        state["modules"][self.key]["status"] = SYNCED
+        state["modules"][other]["status"] = PARTIAL
+        StateManager.clear_current(state)
+        sm.save(state)
+
+        r = StateMachine(self.root).next(only_key=self.key)
+        self.assertEqual(r["action"], "IDLE")
+        self.assertNotEqual(r.get("module"), other)
+
     def test_plan_hash_change_routes_directly_to_maker_step1(self):
         """A SYNCED module whose plan file changed (spec unchanged) routes
         to MAKER_STEP1_RED — skip SCORE and MAKER_STEP0."""

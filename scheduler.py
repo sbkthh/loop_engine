@@ -84,7 +84,7 @@ MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
 MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 # Per-step caps are hung-call backstops, not task budgets.
-STEP_TIMEOUT_SECONDS = 6 * 3600  # one qodercli/LLM step
+STEP_TIMEOUT_SECONDS = 6 * 3600  # one agent-CLI step
 QUICK_TIMEOUT_SECONDS = 30       # local next CLI calls (pure Python, <1s)
 # commit may run the final full test suite (_execute_synced, mvn bounded
 # at 600s internally), so it gets a wider backstop than next()

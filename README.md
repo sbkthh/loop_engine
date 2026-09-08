@@ -794,9 +794,11 @@ loop_engine feishu stop
 | 后端 | skills 目录 | 子代理目录 | argv 构造 |
 |---|---|---|---|
 | `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | 已实现 |
-| `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 未实现 → 报错，不回落 |
+| `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 已实现（flag 集为本机实测） |
 
 - **数据目录不随后端变**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs），与用哪个 agent CLI 无关；换后端不需要搬状态
+- **pi 的启动参数与 qodercli 有四处结构性差异**（`_pi_cmd` 逐条实测）：① 没有 `--cwd`，工作目录就是子进程的 OS cwd（`scheduler` 已经 `cwd=root`）；② 没有逐工具确认，`-p` 下 bash/edit 直接执行，所以也不需要 `--dangerously-skip-permissions` 的对应物——代价是**没有沙箱**，唯一收敛手段是 `--tools` 白名单（默认放行 `read,grep,find,ls,bash,edit,write,mcp`，把 `subagent`/`web_search` 这类扩展工具挡在外面；MCP 走适配器的单个 `mcp` 元工具，白名单里必须写 `mcp` 而不是 `codegraph_*`）；③ `--session-id` 是「没有就创建」，因此不需要 qodercli 那套磁盘探测 + `--resume` 二段式；④ 没有 `--strict-mcp-config` 的对应物，`--mcp-config` 只替换 pi-global 那一层，`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<cwd>/.mcp.json`、`<cwd>/.pi/mcp.json` 仍会合并进来；`PI_MCP_CONFIG_MODE=exclusive` 看着像答案但实测会让 `--mcp-config` 一起失效（0 servers），故**不使用**
+- **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值
 - **两个 pi 目录都是本机实测**（pi 0.85.1 + pi-subagents 0.66.0），不是抄文档：pi 同时扫 `~/.pi/agent/skills/` 与共享的 `~/.agents/skills/`，我们只往前者装，避免把 5 个 skill 混进用户自己的 skill 集；子代理是 pi-subagents 的概念（pi 核心没有），它递归读 `~/.pi/agent/agents/**/*.md`
 - **装过去 ≠ 能直接用**：`agents/*.md` 目前是 qodercli 的 frontmatter 格式（`tools: Read, Write, ...` + `mcpServers:`），pi-subagents 用同一套「YAML + 系统提示词」形状但字段名不同（`tools: read, grep, bash, mcp:<server>/<tool>`），未知 tool 名会被静默忽略 → 子代理拿到空工具集。在改写成 pi 格式之前，pi 侧的 maker/checker 只在交互式用法下有影响；循环的 MAKER/CHECKER 步骤从不派发子代理（就是「普通会话 + 引擎拼的 system prompt」），所以 spawn 路径不依赖这两个文件
 - **后端名填错一律报错**：不在档案表里的值，spawn / self-install / self-check 三处都直接失败，不静默回落到 qodercli
@@ -804,7 +806,8 @@ loop_engine feishu stop
 ### 关键设计决策
 
 - **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信（`agent_cli.py` 是纯 argv 拼装的无状态叶子，不构成核心耦合）
-- **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式、skills/子代理装到哪——全部收敛在 `agent_cli` 一处（argv 走 `build_cmd()`，目录走 `asset_dirs()`）。档案表里有 `pi` 这一行但 `cmd` 仍为 `None`：选它会在 spawn 时报错，**不静默回落**成 qodercli，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用。新增后端 = 档案表加一行 + 一个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
+- **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式、启动噪声长什么样、skills/子代理装到哪——全部收敛在 `agent_cli` 一处（loop 步骤走 `build_cmd()`，企业微信问答走 `build_chat_cmd()` + `clean_reply()`，目录走 `asset_dirs()`）。`qodercli` 与 `pi` 两行都已有 builder；档案表里出现 `cmd: None` 的后端会在 spawn 时报错，**不静默回落**成 qodercli，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用（pi 实测：result.md 单 JSON 对象一次通过，`__JSON_ACTION__` 能被现有正则解析，text/json 两种模式的 stdout 都没有 qodercli 那类启动噪声）。新增后端 = 档案表加一行 + 两个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
+- **G 路径（企业微信直接回复）同样在收口里**：`wecom_server/router.py` 的三处 spawn（需求归属分类、每轮问答、漏登记纠正）原先自己拼 qodercli argv、自己读 `~/.qoder/settings.json` 的模型、自己剥启动噪声，现已全部改走 `agent_cli`——router 里不再出现任何二进制名或模型来源。两条路径的契约差异记在 `agent_cli` 顶部：G 的 prompt 从 **stdin** 进、回复从 **stdout** 出，所以 chat argv 不带任何提示词参数。pi 的 chat `--tools` 比 loop 更窄（去掉 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复）。**代价**：pi 的对应钩子是 `before_tool`，但它只能来自加载的扩展（`-e` / extensions 目录），**不能像 qodercli 那样按次用 `--settings` 传 JSON**，而本仓库没有提供这个扩展 → G 编辑 spec 的审计链（`audit_hook.sh` 写的 SPEC_SNAPSHOT）在 pi 下拿不到，依赖它的漏登记纠正循环随之不触发；`agent_cli.chat_supports_audit_hook()` 就是为此存在，router 在首轮显式打一条 warning 说明「spec_result 只剩 prompt 约束」，而不是让这层基石静默消失。另：G 的模型回落值（原硬编码 `DeepSeek-V4-Flash`）一并去掉了——取不到就不传 `--model`，与 loop 同一口径
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
 - **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s 双超时、锁心跳 60s、hard_errors 用尽 3 次转 BLOCKED

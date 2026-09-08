@@ -1,6 +1,6 @@
 """Intent classification and dispatch for WeCom messages.
 
-All messages go through async LLM path (qodercli subprocess, result pushed
+All messages go through async LLM path (agent-CLI subprocess, result pushed
 via WeCom API). No keyword matching — LLM handles everything.
 """
 import datetime
@@ -18,13 +18,6 @@ import time
 import uuid
 
 logger = logging.getLogger("wecom")
-
-# qodercli startup noise that leaks into stdout before the actual LLM reply
-_LLM_STDOUT_NOISE = (
-    "MCP issues detected",
-    "All dependencies are up to date",
-    "qodercli ",
-)
 
 _LLM_SYSTEM_PROMPT = (
     "You are a WeCom bot assistant for the loop_engine project.\n\n"
@@ -147,11 +140,12 @@ def _cached_modules(root):
 
 
 def _audit_settings():
-    """Per-invocation qodercli settings auditing sensitive tool calls.
+    """Per-invocation settings auditing sensitive tool calls.
 
     Injected via --settings so only WeCom-spawned sessions carry the hook;
-    the user's own qodercli sessions are untouched. Edit/Write are logged
+    the user's own agent sessions are untouched. Edit/Write are logged
     (never blocked) so direct code edits by G leave an audit trail.
+    Backends without hook support (pi) skip this — see _llm_dispatch.
     """
     return json.dumps({
         "hooks": {
@@ -163,22 +157,45 @@ def _audit_settings():
     })
 
 
-def _get_model():
-    """Read persisted model from qodercli settings, fallback to DeepSeek-V4-Flash."""
-    settings_path = os.path.expanduser("~/.qoder/settings.json")
-    try:
-        with open(settings_path) as f:
-            settings = json.load(f)
-            return settings.get("model", {}).get("name", "DeepSeek-V4-Flash")
-    except Exception:
-        return "DeepSeek-V4-Flash"
+def _agent_cli():
+    """The repo-root backend seam. Chat argv, model selection, and stdout-noise
+    stripping all live there, so LOOP_ENGINE_AGENT_CLI switches the WeCom path
+    the same way it switches every loop step."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import agent_cli
+    return agent_cli
+
+
+# One warning per process: on a backend that cannot be handed the hook by value,
+# the spec-edit audit trail is simply absent, and with it the correction loop
+# that re-drives G when it edits spec.md without registering. That is a bedrock
+# guard, so it is stated out loud the first time rather than passing unnoticed.
+_audit_gap_warned = False
+
+
+def _chat_audit_settings():
+    """--settings payload carrying the audit hook, or None on backends that take
+    their hook some other way (pi: a before_tool extension we don't ship) —
+    there the correction loop has nothing to read."""
+    global _audit_gap_warned
+    cli = _agent_cli()
+    if cli.chat_supports_audit_hook():
+        return _audit_settings()
+    if not _audit_gap_warned:
+        _audit_gap_warned = True
+        logger.warning(
+            "[wecom] 后端 %s 无法按 --settings 注入 PreToolUse（其对应物是 before_tool "
+            "扩展，本仓库未提供）：G 的 spec 编辑审计链未接通，漏登记纠正循环不再触发，"
+            "spec_result 只剩 prompt 约束",
+            cli.backend())
+    return None
 
 
 _SESSION_DIR = os.path.expanduser("~/.qoder/loop_engine/sessions")
 
 
 def _get_session_id(user_id, requirement="global"):
-    """Get or create a stable qodercli session ID per WeCom user and
+    """Get or create a stable agent-CLI session ID per WeCom user and
     requirement. Sessions are split per requirement so conversations
     about different requirements never share context.
     Returns (session_id, is_new) where is_new=True means first-time use.
@@ -774,7 +791,6 @@ def _classify_requirement(message, registry):
     names = [r.get("name") for r in registry if r.get("name")]
     if not names:
         return None
-    qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
     prompt = (
         "你只做需求归属分类，不回答其他问题。可选需求："
         + "、".join(names)
@@ -783,15 +799,15 @@ def _classify_requirement(message, registry):
         + f"消息：{message}"
     )
     try:
+        cli = _agent_cli()
         r = subprocess.run(
-            [qodercli_path, "--print", "--session-id", str(uuid.uuid4()),
-             "--model", _get_model(), "--dangerously-skip-permissions"],
+            cli.build_chat_cmd(str(uuid.uuid4())),
             input=prompt, capture_output=True, text=True, timeout=30,
         )
     except Exception as e:
         logger.warning("[wecom] requirement classify failed: %s", e)
         return None
-    reply = (r.stdout or "").strip()
+    reply = cli.clean_reply(r.stdout)
     for name in names:
         if name in reply:
             return name
@@ -859,7 +875,7 @@ def _dispatch_json_action(payload, registry, data_dir, user_id):
 _JSON_ACTION_RE = re.compile(r"__JSON_ACTION__\s*(\{[^{}]*\})", re.DOTALL)
 
 # Per-requirement LLM lock: same requirement shares one session, so its
-# qodercli calls must never overlap. Server-side queues already serialize
+# LLM chat sessions must never overlap. Server-side queues already serialize
 # detected requirements; this covers messages that only classify (LLM) to a
 # requirement and would otherwise run on the "global" queue in parallel.
 # ponytail: 队列按 detect 结果分流，classify 结果只有执行时才知道，
@@ -1009,24 +1025,18 @@ def _spec_correction_prompt(session_id):
     )
 
 
-def _run_llm_turn(qodercli_path, session_flag, session_id, model, settings,
-                  prompt):
-    """One qodercli --print turn with startup-noise cleanup. Returns the
-    LLM reply text ('' when qodercli produced no usable stdout)."""
+def _run_llm_turn(session_id, is_new, prompt, settings=None, timeout=1800):
+    """One chat turn through the backend seam: prompt on stdin, reply from
+    stdout. Returns the reply text ('' when the process produced none)."""
+    cli = _agent_cli()
     r = subprocess.run(
-        [qodercli_path, "--print", session_flag, session_id, "--model", model,
-         "--dangerously-skip-permissions", "--settings", settings],
-        input=prompt, capture_output=True, text=True, timeout=1800)
-    lines = (r.stdout or "").splitlines()
-    while lines and lines[0].strip().startswith(_LLM_STDOUT_NOISE):
-        lines.pop(0)
-    return "\n".join(lines).strip()
+        cli.build_chat_cmd(session_id, is_new, settings),
+        input=prompt, capture_output=True, text=True, timeout=timeout)
+    return cli.clean_reply(r.stdout)
 
 
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
-    qodercli_path = shutil.which("qodercli") or os.path.expanduser("~/.local/bin/qodercli")
-    model = _get_model()
     requirement = _detect_requirement(message, registry)
     if not requirement and not _GLOBAL_INTENT_RE.search(message):
         # no keyword hit — try the most recently active requirement session
@@ -1055,18 +1065,15 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                     f"- ~/.qoder/loop_engine/requirements.json —— 全局需求注册表"
                 )
     # first message creates session, subsequent messages resume it
-    session_flag = "--session-id" if is_new else "--resume"
-    settings = _audit_settings()
+    settings = _chat_audit_settings()
     with _llm_lock(requirement or "global"):
         try:
-            reply = _run_llm_turn(qodercli_path, session_flag, session_id,
-                                  model, settings, prompt)
+            reply = _run_llm_turn(session_id, is_new, prompt, settings)
             # resume failed (session lost, e.g. after server restart) → create fresh
             if not reply and not is_new:
                 logger.info("[wecom] session %s not found, creating new",
                             session_id)
-                reply = _run_llm_turn(qodercli_path, "--session-id", session_id,
-                                      model, settings, prompt)
+                reply = _run_llm_turn(session_id, True, prompt, settings)
         except Exception as e:
             logger.error("[wecom] LLM dispatch error: %s", e)
             return f"处理失败：{e}"
@@ -1088,8 +1095,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                     rounds + 1, session_id)
         approved_before = [p for p in _json_action_payloads(reply)
                            if p.get("action") == "approve"]
-        corrected = _run_llm_turn(qodercli_path, "--resume", session_id,
-                                  model, settings, correction)
+        corrected = _run_llm_turn(session_id, False, correction, settings)
         if not corrected:
             break
         # G re-focusing on registration may drop the approve it already

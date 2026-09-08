@@ -417,6 +417,21 @@ def approve(name=None, all_=False, approved_by=None):
     return 1
 
 
+def pin_module(name, module_key):
+    """Scope the next dispatched run to one module.
+
+    Called after gray-list adjudication: the human answered a question about
+    module X, so resuming must finish X rather than starting fresh specs.
+    The pin dies with the entry (_clear_approval on run end)."""
+    data = load_pending()
+    entry = _find_entry(data, name)
+    if not entry:
+        return False
+    entry["module"] = module_key
+    _save_pending(data)
+    return True
+
+
 def _clear_approval(name):
     data = load_pending()
     before = len(data.get("pending", []))
@@ -1258,11 +1273,14 @@ def dispatch(entries, max_concurrency=2):
         if _has_pending_gray_drafts(root):
             _log(f"dispatch: skip {entry['requirement']} — pending gray drafts")
             continue
+        pin = entry.get("module")
         with open(LOG_PATH, "a") as logf:
             proc = subprocess.Popen(
-                _engine_cmd("run", entry["requirement"]),
+                _engine_cmd("run", entry["requirement"],
+                            *(["--module", pin] if pin else [])),
                 stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
-        _log(f"dispatch: forked run for {entry['requirement']} (pid {proc.pid})")
+        _log(f"dispatch: forked run for {entry['requirement']}"
+             f"{f' (module {pin})' if pin else ''} (pid {proc.pid})")
         forked.append(entry["requirement"])
         running += 1
     return forked

@@ -1872,3 +1872,27 @@ def test_correction_loop_other_sessions_snapshots_ignored(monkeypatch,
     assert approved == ["req"]
     assert "已批准并开始执行" in reply
 
+
+def test_pin_resumed_module_single_module():
+    """Drafts all belonging to one module pin the resume run to it."""
+    from wecom_server.router import _pin_resumed_module
+    pinned = []
+    sched = types.SimpleNamespace(
+        pin_module=lambda name, key: pinned.append((name, key)))
+    drafts = [{"id": 1, "module": "c/m-a"}, {"id": 2, "module": "c/m-a"}]
+
+    assert _pin_resumed_module(sched, "req", drafts, {1, 2}) == "c/m-a"
+    assert pinned == [("req", "c/m-a")]
+
+
+def test_pin_resumed_module_spans_modules():
+    """Cross-module adjudication leaves the run requirement-wide (no pin):
+    machine.next() resumes each parked module first via _gray_resume."""
+    from wecom_server.router import _pin_resumed_module
+    pinned = []
+    sched = types.SimpleNamespace(
+        pin_module=lambda name, key: pinned.append((name, key)))
+    drafts = [{"id": 1, "module": "c/m-a"}, {"id": 2, "module": "c/m-b"}]
+
+    assert _pin_resumed_module(sched, "req", drafts, {1, 2}) is None
+    assert pinned == []

@@ -61,6 +61,25 @@ def _draft_fingerprints(drafts):
     return fps
 
 
+def _gray_resumable_module(state, only_key=None):
+    """Return the parked module whose gray-list drafts are all adjudicated.
+
+    A gray_list pause leaves the module at READY with _gray_resume set, while
+    select_next_module ranks PARTIAL above READY — so newly registered specs
+    starve the parked module indefinitely. Answered work must finish before
+    new work starts, so this module jumps the queue."""
+    for key, module in state.get("modules", {}).items():
+        if only_key is not None and key != only_key:
+            continue
+        if not module.get("_gray_resume"):
+            continue
+        if any(d.get("status") == "pending" and d.get("module") == key
+               for d in state.get("gray_drafts", [])):
+            continue
+        return key, module
+    return None
+
+
 # plan.md / design.md cite CODE line numbers, test counts and "current
 # baseline" stats. Every MAKER_FIX / CODE_REVIEW_FIX refactor shifts them, so
 # treating that drift as a gray-list finding never converges — the rejection
@@ -238,7 +257,8 @@ class StateMachine:
                             state, MAKER_STEP1_RED, key, module
                         )
 
-        selected = StateManager.select_next_module(state, only_key)
+        selected = (_gray_resumable_module(state, only_key)
+                    or StateManager.select_next_module(state, only_key))
         if not selected:
             if dirty:
                 self.sm.save(state)

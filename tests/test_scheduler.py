@@ -1606,6 +1606,19 @@ class TestDispatch(SchedulerBase):
         cmd = p.call_args[0][0]
         self.assertEqual(cmd[-2:], ["run", "req-a"])
 
+    def test_dispatch_pins_module_when_stamped(self):
+        """entry['module'] (stamped after gray-list adjudication) narrows the
+        forked run to that module, so the answered spec finishes instead of
+        drifting into other specs' flows."""
+        entry = dict(self._pending_entry("req-a", "READY_PENDING"),
+                     module="c/m")
+        with mock.patch.object(scheduler.subprocess, "Popen",
+                               return_value=types.SimpleNamespace(pid=1)) as p:
+            scheduler.dispatch([entry], max_concurrency=2)
+
+        self.assertEqual(p.call_args[0][0][-4:],
+                         ["run", "req-a", "--module", "c/m"])
+
     def test_dispatch_forks_all_up_to_limit(self):
         entries = [self._pending_entry("req-a", "READY_PENDING"),
                    self._pending_entry("req-b", "READY_PENDING")]

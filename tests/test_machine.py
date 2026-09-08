@@ -792,6 +792,48 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertNotIn("_gray_resume", state["modules"].get(self.key, {}))
 
+    def _park_on_gray_list(self, draft_status):
+        """Construct the post-CHECKER parked state without the full round-trip:
+        module A stays READY with _gray_resume, plus a competing PARTIAL module
+        B (PARTIAL outranks READY in select_next_module)."""
+        from constants import PARTIAL
+        sm = StateManager(self.root)
+        state = sm.init_state()
+        StateManager.add_module(state, self.key, "test-change", "test-module")
+        StateManager.add_module(state, "test-change/other-module",
+                                "test-change", "other-module")
+        state["modules"]["test-change/other-module"]["status"] = PARTIAL
+        state["modules"][self.key].update(
+            status=READY, soft_warnings=[{"type": "B",
+                                          "description": "method mismatch"}],
+            maker_attempt=1, _gray_resume="MAKER_FIX")
+        state["gray_drafts"] = [{"id": 1, "module": self.key,
+                                 "status": draft_status,
+                                 "summary": "method mismatch"}]
+        sm.save(state)
+        return sm
+
+    def test_gray_resume_jumps_queue_ahead_of_partial(self):
+        """Adjudicated module must resume before any newly registered spec,
+        otherwise PARTIAL starves it and the run drifts to another spec."""
+        sm = self._park_on_gray_list("accepted")
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], "MAKER_FIX")
+        self.assertEqual(r["module"], self.key)
+        self.assertNotIn("_gray_resume", sm.load()["modules"][self.key])
+
+    def test_gray_resume_waits_while_draft_still_pending(self):
+        """Unanswered drafts must not be resumed: the parked module keeps its
+        marker and the PARTIAL module is selected instead."""
+        sm = self._park_on_gray_list("pending")
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["module"], "test-change/other-module")
+        self.assertEqual(r["action"], "SCORE")
+        self.assertEqual(
+            sm.load()["modules"][self.key].get("_gray_resume"), "MAKER_FIX")
+
     def test_align_docs_flag_consumed_by_checker_commit(self):
         """_align_done must not survive CHECKER commit, else next() re-dispatches
         a redundant CHECKER after the module reaches SYNCED."""

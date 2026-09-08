@@ -345,6 +345,22 @@ def _parse_target_ids(target):
         return None
 
 
+def _pin_resumed_module(scheduler, name, drafts, resolved_ids):
+    """Resume only the spec the human just answered.
+
+    Single-module adjudication pins the next run to that module so it finishes
+    instead of drifting into other specs' flows. Mixed-module adjudication
+    leaves the run requirement-wide (machine.next still queues parked
+    modules first)."""
+    mods = {d.get("module") for d in drafts
+            if d.get("id") in resolved_ids and d.get("module")}
+    if len(mods) == 1:
+        module_key = next(iter(mods))
+        scheduler.pin_module(name, module_key)
+        return module_key
+    return None
+
+
 def _execute_adjudicate(name, target, decision, registry, data_dir):
     """Adjudicate gray-list drafts: target is 'all' or one/more draft ids."""
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -403,10 +419,13 @@ def _execute_adjudicate(name, target, decision, registry, data_dir):
         except ValueError:
             scheduler.poll()
             scheduler.approve(name)
+        pinned = _pin_resumed_module(
+            scheduler, name, st.get("gray_drafts", []), pairs)
         cfg = scheduler.load_config()
         scheduler.dispatch(scheduler.load_pending()["pending"],
                            max_concurrency=cfg.get("max_concurrency", 2))
-        lines.append(f"灰名单已全部裁决完毕，继续执行 {name}")
+        lines.append(f"灰名单已全部裁决完毕，继续执行 {name}"
+                     + (f"（本轮仅 {pinned.rsplit('/', 1)[-1]}）" if pinned else ""))
     else:
         lines.append(f"还有 {len(remaining)} 条待裁决"
                      f"（回复「查看灰名单」查看）")
@@ -477,10 +496,14 @@ def _execute_adjudicate_all(target, decision, registry, data_dir):
             except ValueError:
                 scheduler.poll()
                 scheduler.approve(name)
+            pinned = _pin_resumed_module(
+                scheduler, name, st.get("gray_drafts", []), ids)
             cfg = scheduler.load_config()
             scheduler.dispatch(scheduler.load_pending()["pending"],
                                max_concurrency=cfg.get("max_concurrency", 2))
-            all_lines.append(f"  → 灰名单已全部裁决完毕，继续执行 {name}")
+            all_lines.append(f"  → 灰名单已全部裁决完毕，继续执行 {name}"
+                             + (f"（本轮仅 {pinned.rsplit('/', 1)[-1]}）"
+                                if pinned else ""))
         else:
             all_lines.append(f"  → 还有 {len(remaining)} 条待裁决（回复「查看灰名单」查看）")
     if not all_lines:

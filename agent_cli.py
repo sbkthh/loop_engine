@@ -130,7 +130,8 @@ def _pi_cmd(root, sid, system_prompt, user_text):
 # composed prompt arrives on stdin and the reply is whatever lands on stdout, so
 # there is no system-prompt flag and no trailing user-text argument. Session
 # identity is the user's conversation (create on first message, resume after),
-# and the spec-edit audit hook rides in through --settings.
+# and the spec-edit audit hook rides in per backend: --settings JSON or a loaded
+# extension. See chat_audit_mode().
 
 
 def _qodercli_chat_cmd(session_id, is_new, audit_settings):
@@ -166,17 +167,26 @@ def _qodercli_clean_reply(stdout):
 # exactly what the audit hook and the correction loop guard.
 _PI_CHAT_TOOLS = "read,grep,find,ls,bash,edit,write"
 
+# pi's counterpart to a per-call PreToolUse JSON is a tool_call hook that can
+# only come from a loaded extension, so the audit chain ships as a thin .ts
+# adapter sitting next to audit_hook.sh rather than a second copy of its guards.
+_PI_CHAT_BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "wecom_server", "hooks", "pi_audit_bridge.ts")
+
+
+def _pi_chat_bridge():
+    return os.environ.get("LOOP_ENGINE_PI_CHAT_EXTENSION") or _PI_CHAT_BRIDGE
+
 
 def _pi_chat_cmd(session_id, is_new, audit_settings):
     # is_new is unused: --session-id creates the session when it is missing.
-    # audit_settings is unused: qodercli takes a PreToolUse hook as a per-call
-    # --settings JSON; pi's equivalent is a before_tool hook that has to come
-    # from a loaded extension (--extension/-e or a discovered extensions dir),
-    # and nothing here ships one. So the spec-edit audit trail — and the
-    # correction loop that reads it — is unwired under pi, which is what
-    # chat_supports_audit_hook() reports and the caller warns about.
+    # audit_settings is unused: pi gets the hook from the -e extension instead.
+    # The flag is conditional because a missing extension path is a hard pi
+    # failure — shipping without the .ts would take down every G reply.
     cmd = [_pi_binary(), "--print", "--session-id", session_id,
            "--tools", os.environ.get("LOOP_ENGINE_PI_CHAT_TOOLS", _PI_CHAT_TOOLS)]
+    if chat_audit_mode() == "extension":
+        cmd += ["-e", _pi_chat_bridge()]
     model = _pi_model()
     if model:
         cmd += ["--model", model]
@@ -215,13 +225,13 @@ _BACKENDS = {
     "qodercli": {"cmd": _qodercli_cmd,
                  "chat": _qodercli_chat_cmd,
                  "clean": _qodercli_clean_reply,
-                 "audit": True,
+                 "audit": "settings",
                  "skills": "~/.qoder/skills",
                  "agents": "~/.qoder/agents"},
     "pi": {"cmd": _pi_cmd,
            "chat": _pi_chat_cmd,
            "clean": _pi_clean_reply,
-           "audit": False,
+           "audit": "extension",
            "skills": "~/.pi/agent/skills",
            "agents": "~/.pi/agent/agents"},
 }
@@ -269,9 +279,14 @@ def clean_reply(stdout):
     return _profile()["clean"](stdout)
 
 
-def chat_supports_audit_hook():
-    """True when a chat turn can be given the audit hook by value (qodercli's
-    --settings JSON). A backend that needs its own plugin file instead (pi:
-    before_tool in an extension) reports False, so the caller states that the
-    spec-edit trail — and the correction loop built on it — is not in play."""
-    return bool(_profile()["audit"])
+def chat_audit_mode():
+    """How the audit hook reaches one chat turn: "settings" (per-call PreToolUse
+    JSON), "extension" (a loaded .ts adapter next to the hook), or "" — no hook
+    in play, so the spec-edit audit trail and the correction loop built on it
+    are absent. A missing extension file reports "" rather than "extension":
+    pi treats an unloadable -e path as a hard startup failure, and a packaging
+    gap must not cost a human the whole reply."""
+    mode = _profile()["audit"]
+    if mode != "extension":
+        return mode
+    return mode if os.path.isfile(_pi_chat_bridge()) else ""

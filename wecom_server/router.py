@@ -174,18 +174,20 @@ _audit_gap_warned = False
 
 
 def _chat_audit_settings():
-    """--settings payload carrying the audit hook, or None on backends that take
-    their hook some other way (pi: a before_tool extension we don't ship) —
-    there the correction loop has nothing to read."""
+    """--settings payload carrying the audit hook, or None when the backend
+    delivers that same hook another way (pi: -e audit bridge, already on the
+    argv) or cannot deliver it at all — in which case the correction loop has
+    nothing to read and the gap is stated once per process."""
     global _audit_gap_warned
     cli = _agent_cli()
-    if cli.chat_supports_audit_hook():
+    mode = cli.chat_audit_mode()
+    if mode == "settings":
         return _audit_settings()
-    if not _audit_gap_warned:
+    if not _audit_gap_warned and mode == "":
         _audit_gap_warned = True
         logger.warning(
-            "[wecom] 后端 %s 无法按 --settings 注入 PreToolUse（其对应物是 before_tool "
-            "扩展，本仓库未提供）：G 的 spec 编辑审计链未接通，漏登记纠正循环不再触发，"
+            "[wecom] 后端 %s 拿不到审计钩子（不支持按 --settings 注入，或审计桥扩展缺失）："
+            "G 的 spec 编辑审计链未接通，漏登记纠正循环不再触发，"
             "spec_result 只剩 prompt 约束",
             cli.backend())
     return None

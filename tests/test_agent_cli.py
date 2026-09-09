@@ -126,10 +126,12 @@ class PiCmdTest(unittest.TestCase):
     def test_pi_argv_omits_flags_pi_does_not_have(self):
         """--cwd/--strict-mcp-config/--dangerously-skip-permissions are qodercli's;
         passing them to pi would be an unknown-argument failure on every step.
-        --resume has no role either: --session-id creates what it cannot find."""
+        --resume has no role either: --session-id creates what it cannot find.
+        -e is flagged here because it is the chat audit bridge, not because pi
+        lacks the flag: loop steps carry no guard on either backend."""
         cmd = self._cmd(return_value="")
         for flag in ("--cwd", "--resume", "--strict-mcp-config",
-                     "--dangerously-skip-permissions", "--settings"):
+                     "--dangerously-skip-permissions", "--settings", "-e"):
             self.assertNotIn(flag, cmd)
         self.assertNotIn("--model", cmd)
 
@@ -200,10 +202,25 @@ class ChatCmdTest(unittest.TestCase):
         self.assertEqual(resumed[1:4], ["--print", "--session-id", "sid-1"])
         self.assertEqual(resumed[resumed.index("--tools") + 1],
                          agent_cli._PI_CHAT_TOOLS)
+        self.assertEqual(resumed[resumed.index("-e") + 1],
+                         os.path.join(os.path.dirname(os.path.abspath(agent_cli.__file__)),
+                                      "wecom_server", "hooks", "pi_audit_bridge.ts"))
         self.assertNotIn("--resume", resumed)
         self.assertNotIn("--settings", resumed)
         self.assertNotIn("--mcp-config", resumed)
         self.assertNotIn("--model", resumed)
+
+    def test_pi_chat_argv_without_bridge(self):
+        """A bridge the install dropped must degrade to an unguarded turn, not to
+        pi exiting 1 on every WeCom reply."""
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("LOOP_ENGINE_")}
+        env["LOOP_ENGINE_AGENT_CLI"] = "pi"
+        env["LOOP_ENGINE_PI_CHAT_EXTENSION"] = "/nonexistent/pi_audit_bridge.ts"
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(agent_cli, "_pi_model", return_value=""):
+            cmd = agent_cli.build_chat_cmd("sid-1", True, "SETTINGS")
+        self.assertNotIn("-e", cmd)
 
     def test_pi_chat_tools_drops_mcp_keeps_spec_edits(self):
         """G answers from state.json and edits spec.md itself: MCP would only
@@ -223,14 +240,19 @@ class ChatCmdTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}):
             self.assertEqual(agent_cli.clean_reply("  【req】hi \n"), "【req】hi")
 
-    def test_chat_supports_audit_hook(self):
-        """The flag is about handing a hook by value (--settings JSON). pi's
-        before_tool hook needs a loaded extension we don't ship, so under pi the
-        caller must learn that instead of watching the correction loop go quiet."""
+    def test_chat_audit_mode(self):
+        """The mode says how the hook reaches a turn, and "" is a state, not an
+        afterthought: pi exits 1 on an unloadable -e path, so a bridge the
+        packaging dropped has to degrade to an unguarded turn the caller warns
+        about — not to every WeCom reply failing."""
         with _default_env():
-            self.assertTrue(agent_cli.chat_supports_audit_hook())
+            self.assertEqual(agent_cli.chat_audit_mode(), "settings")
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}):
-            self.assertFalse(agent_cli.chat_supports_audit_hook())
+            self.assertEqual(agent_cli.chat_audit_mode(), "extension")
+        with mock.patch.dict(os.environ, {
+                "LOOP_ENGINE_AGENT_CLI": "pi",
+                "LOOP_ENGINE_PI_CHAT_EXTENSION": "/nonexistent/bridge.ts"}):
+            self.assertEqual(agent_cli.chat_audit_mode(), "")
 
     def test_unknown_backend_fails_fast_on_chat_too(self):
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "nope"}):
@@ -267,18 +289,34 @@ class RouterChatSeamTest(unittest.TestCase):
         cmd = self._spawned_cmd(None)
         self.assertTrue(cmd[0].endswith("qodercli"))
 
-    def test_pi_backend_spawns_pi_without_audit_settings(self):
+    def test_pi_backend_spawns_pi_with_extension_instead_of_settings(self):
         cmd = self._spawned_cmd("pi")
         self.assertTrue(cmd[0].endswith("pi"))
         self.assertNotIn("--settings", cmd)
+        self.assertIn("-e", cmd)
 
     def test_audit_settings_follow_the_backend(self):
-        """The correction loop is a bedrock guard; under pi it has nothing to
-        read, so it must be visibly off rather than silently kept configured."""
+        """Two delivery channels, one hook: qodercli gets it as a --settings JSON
+        on every turn, pi gets it from the -e extension that build_chat_cmd puts
+        on the argv — hence None here, which no longer means the chain is off."""
         with _default_env():
             self.assertIn("Bash|Edit|Write", self.router._chat_audit_settings())
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}):
             self.assertIsNone(self.router._chat_audit_settings())
+
+    def test_missing_bridge_warns_once(self):
+        """The one state where the correction loop truly has nothing to read. It
+        has to be said out loud, once, not swallowed by the None return."""
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("LOOP_ENGINE_")}
+        env["LOOP_ENGINE_AGENT_CLI"] = "pi"
+        env["LOOP_ENGINE_PI_CHAT_EXTENSION"] = "/nonexistent/bridge.ts"
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.router, "_audit_gap_warned", False), \
+                mock.patch.object(self.router.logger, "warning") as warn:
+            self.assertIsNone(self.router._chat_audit_settings())
+            self.assertIsNone(self.router._chat_audit_settings())
+        self.assertEqual(warn.call_count, 1)
 
 
 class PiModelTest(unittest.TestCase):

@@ -803,7 +803,7 @@ def _classify_requirement(message, registry):
     try:
         cli = _agent_cli()
         r = subprocess.run(
-            cli.build_chat_cmd(str(uuid.uuid4())),
+            cli.build_chat_cmd(str(uuid.uuid4()), step=cli.CLASSIFY_STEP),
             input=prompt, capture_output=True, text=True, timeout=30,
         )
     except Exception as e:

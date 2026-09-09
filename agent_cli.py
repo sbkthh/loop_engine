@@ -20,15 +20,65 @@ behaviour is unchanged by importing this module).
 """
 
 import json
+import logging
 import os
 import shutil
+import subprocess
+from functools import lru_cache
+
+from constants import ALL_STEP_KEYS, CHAT_STEP, CLASSIFY_STEP
 
 _MCP_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "minimal_mcp.json")
 
+# Per-step model names live in a file next to this module, not in code: the two
+# backends spell models differently and a vendor name committed here would be
+# pushed into every mirror checkout.
+_MODEL_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "agent_models.json")
+
+_LOG = logging.getLogger(__name__)
+_WARNED = set()
+
+
+def _warn_once(key, msg):
+    """Config problems are human-made and non-fatal, but a per-spawn warning
+    would bury the audit log. First one only; the state is visible in argv."""
+    if key not in _WARNED:
+        _WARNED.add(key)
+        _LOG.warning(msg)
+
 
 def backend():
     return os.environ.get("LOOP_ENGINE_AGENT_CLI", "qodercli")
+
+
+def _model_config_path():
+    # Cache keys take the path, so pointing this env at a fixture re-reads.
+    return os.environ.get("LOOP_ENGINE_MODEL_CONFIG") or _MODEL_CONFIG
+
+
+@lru_cache(maxsize=None)
+def _known_models(name):
+    """Model names the CLI accepts, or None when we can't ask.
+
+    Validation exists because an unknown --model is not an error: measured
+    2026-09-09, qodercli answers rc=0 with `Model "X" is not available right
+    now; using "auto" instead` and keeps serving the rest of the session from
+    auto. Cost is one 3s call per process, paid only once a section actually
+    names something.
+    """
+    binary = _qodercli_binary() if name == "qodercli" else _pi_binary()
+    try:
+        r = subprocess.run([binary, "--list-models"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    names = {ln.strip().lower() for ln in r.stdout.splitlines() if ln.strip()}
+    names.discard("model")  # column header
+    return names or None
 
 
 def _qodercli_binary():
@@ -36,7 +86,7 @@ def _qodercli_binary():
             or os.path.expanduser("~/.local/bin/qodercli"))
 
 
-def _qodercli_model():
+def _qodercli_settings_model():
     """Model for loop-agent sessions, from the same settings the WeCom G path
     reads (~/.qoder/settings.json model.name). Empty string means pass no
     --model and keep the CLI's own default."""
@@ -45,6 +95,71 @@ def _qodercli_model():
             return json.load(f).get("model", {}).get("name") or ""
     except (OSError, ValueError):
         return ""
+
+
+def _qodercli_model(step=None):
+    return _configured_model("qodercli", step) or _qodercli_settings_model()
+
+
+@lru_cache(maxsize=None)
+def _step_models(name, path):
+    """step → model for backend `name`; {} means "no usable config, behave as
+    before this file existed".
+
+    All-or-nothing on purpose. Omitting --model on a resumed session does not
+    re-read settings.json — measured 2026-09-09, qodercli keeps serving that
+    session with whatever model the previous turn used. A half-filled file
+    would therefore make a step's model depend on which step ran last, which
+    is exactly the silent drift the engine exists to prevent. So a section is
+    live only when `default` resolves to a name every unnamed step can fall
+    back to.
+
+    A name the CLI does not list drops the section rather than being passed
+    through: an unknown --model exits 0 (see _known_models), so the typo would
+    surface as a differently-priced run, not as a failure.
+    """
+    try:
+        with open(path) as f:
+            section = json.load(f).get(name)
+    except OSError:
+        return {}
+    except ValueError as e:
+        _warn_once(f"parse:{path}", f"agent_models.json 解析失败，按未配置处理：{e}")
+        return {}
+    if not isinstance(section, dict):
+        return {}
+    wanted = {str(k): str(v).strip() for k, v in section.items() if str(v).strip()}
+    if not wanted:
+        return {}
+    known = _known_models(name)
+
+    def usable(model):
+        if known is None or model.lower() in known:
+            return True
+        _warn_once(f"model:{name}:{model}",
+                   f"型号 {model!r} 不在 {name} 的 --list-models 结果里，"
+                   f"整份每步模型配置不生效（写错不会报错，只会静默跑在 auto 上）")
+        return False
+
+    default = wanted.get("default", "")
+    if not default or not usable(default):
+        if "default" not in wanted:
+            _warn_once(f"default:{path}",
+                       f"{name} 段配了步骤级模型但没有 default：整段不生效。"
+                       "省略 --model 会沿用上一轮的模型，未配的步骤不能留空")
+        return {}
+    resolved = {"default": default}
+    for step in ALL_STEP_KEYS:
+        model = wanted.get(step) or default
+        resolved[step] = model if usable(model) else default
+    return resolved
+
+
+def _configured_model(name, step):
+    models = _step_models(name, _model_config_path())
+    if not models:
+        return ""
+    return models.get(step) or models["default"]
 
 
 def _session_file_exists(sid, cwd):
@@ -56,7 +171,7 @@ def _session_file_exists(sid, cwd):
     return os.path.isfile(path)
 
 
-def _qodercli_cmd(root, sid, system_prompt, user_text):
+def _qodercli_cmd(root, sid, system_prompt, user_text, action=None):
     # --resume when the session is already on disk, --session-id otherwise: the
     # first step of a module-run creates it, every later step continues it.
     #
@@ -69,7 +184,7 @@ def _qodercli_cmd(root, sid, system_prompt, user_text):
            "--strict-mcp-config", "--mcp-config", _MCP_CONFIG,
            "--dangerously-skip-permissions",
            "--cwd", root, "--append-system-prompt", system_prompt]
-    model = _qodercli_model()
+    model = _qodercli_model(action)
     if model:
         cmd += ["--model", model]
     cmd.append(user_text)
@@ -82,7 +197,7 @@ def _pi_binary():
             or os.path.expanduser("~/.nvm/versions/node/v22.22.0/bin/pi"))
 
 
-def _pi_model():
+def _pi_settings_model():
     """pi's own default, spelled provider/model for its --model flag.
 
     ~/.pi/agent/settings.json only carries defaultProvider/defaultModel once a
@@ -102,6 +217,10 @@ def _pi_model():
     return f"{provider}/{model}" if provider else model
 
 
+def _pi_model(step=None):
+    return _configured_model("pi", step) or _pi_settings_model()
+
+
 # pi's builtin tools are read/grep/find/ls/bash/edit/write (+powershell); MCP
 # arrives through the adapter's single `mcp` meta-tool, so an allowlist naming
 # codegraph_* matches nothing and `mcp` is what has to be listed. Everything the
@@ -110,7 +229,7 @@ def _pi_model():
 _PI_TOOLS = "read,grep,find,ls,bash,edit,write,mcp"
 
 
-def _pi_cmd(root, sid, system_prompt, user_text):
+def _pi_cmd(root, sid, system_prompt, user_text, action=None):
     # root is deliberately unused: pi has no --cwd, and the child's OS cwd (which
     # scheduler.run pins to root) is both pi's working dir and the cwd its MCP
     # children inherit. --session-id creates the session when missing, so the
@@ -119,7 +238,7 @@ def _pi_cmd(root, sid, system_prompt, user_text):
            "--mcp-config", _MCP_CONFIG,
            "--tools", os.environ.get("LOOP_ENGINE_PI_TOOLS", _PI_TOOLS),
            "--append-system-prompt", system_prompt]
-    model = _pi_model()
+    model = _pi_model(action)
     if model:
         cmd += ["--model", model]
     cmd.append(user_text)
@@ -134,10 +253,10 @@ def _pi_cmd(root, sid, system_prompt, user_text):
 # extension. See chat_audit_mode().
 
 
-def _qodercli_chat_cmd(session_id, is_new, audit_settings):
+def _qodercli_chat_cmd(session_id, is_new, audit_settings, step=CHAT_STEP):
     cmd = [_qodercli_binary(), "--print",
            "--session-id" if is_new else "--resume", session_id]
-    model = _qodercli_model()
+    model = _qodercli_model(step)
     if model:
         cmd += ["--model", model]
     cmd.append("--dangerously-skip-permissions")
@@ -178,7 +297,7 @@ def _pi_chat_bridge():
     return os.environ.get("LOOP_ENGINE_PI_CHAT_EXTENSION") or _PI_CHAT_BRIDGE
 
 
-def _pi_chat_cmd(session_id, is_new, audit_settings):
+def _pi_chat_cmd(session_id, is_new, audit_settings, step=CHAT_STEP):
     # is_new is unused: --session-id creates the session when it is missing.
     # audit_settings is unused: pi gets the hook from the -e extension instead.
     # The flag is conditional because a missing extension path is a hard pi
@@ -187,7 +306,7 @@ def _pi_chat_cmd(session_id, is_new, audit_settings):
            "--tools", os.environ.get("LOOP_ENGINE_PI_CHAT_TOOLS", _PI_CHAT_TOOLS)]
     if chat_audit_mode() == "extension":
         cmd += ["-e", _pi_chat_bridge()]
-    model = _pi_model()
+    model = _pi_model(step)
     if model:
         cmd += ["--model", model]
     return cmd
@@ -253,10 +372,14 @@ def asset_dirs():
             os.path.expanduser(p["agents"]))
 
 
-def build_cmd(root, sid, system_prompt, user_text):
+def build_cmd(root, sid, system_prompt, user_text, action=None):
     """Spawn-ready argv list for one loop step. Caller runs it with cwd=root —
     the MCP child inherits the OS cwd, so pinning it here is what makes
-    codegraph index the target repo instead of the daemon's own directory."""
+    codegraph index the target repo instead of the daemon's own directory.
+
+    `action` names the step so agent_models.json can give each one its own
+    model; None or an unconfigured name means "whatever this backend defaults
+    to"."""
     name = backend()
     builder = _profile(name)["cmd"]
     if builder is None:
@@ -264,14 +387,18 @@ def build_cmd(root, sid, system_prompt, user_text):
         raise RuntimeError(
             f"agent 后端 {name} 尚未实现 argv 构造"
             f"（已实现：{', '.join(implemented)}）")
-    return builder(root, sid, system_prompt, user_text)
+    return builder(root, sid, system_prompt, user_text, action)
 
 
-def build_chat_cmd(session_id, is_new=True, audit_settings=None):
+def build_chat_cmd(session_id, is_new=True, audit_settings=None,
+                   step=CHAT_STEP):
     """Spawn-ready argv for one WeCom turn. The prompt goes on stdin and the
-    reply is read back with clean_reply(), so nothing here carries text."""
+    reply is read back with clean_reply(), so nothing here carries text.
+
+    `step` separates the G conversation from the requirement-classification
+    turn, which is a one-shot session rather than a resumed conversation."""
     chat = _profile()["chat"]
-    return chat(session_id, is_new, audit_settings)
+    return chat(session_id, is_new, audit_settings, step)
 
 
 def clean_reply(stdout):

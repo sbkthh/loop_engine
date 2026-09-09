@@ -28,6 +28,14 @@ ALL_ACTIONS = (
     ALIGN_DOCS,
 )
 
+# Keys agent_models.json may name a step by: the loop's actions plus the two
+# chat turns, which have no action of their own. ALL_ACTIONS finally gets a
+# consumer here, so an eleventh action that nobody wired up fails
+# tests/test_constants.py instead of silently defaulting.
+CHAT_STEP = "CHAT"                        # G 问答轮（wecom_server/router._run_llm_turn）
+CLASSIFY_STEP = "CLASSIFY_REQUIREMENT"    # 需求归属分类（一次性会话，不续跑）
+ALL_STEP_KEYS = ALL_ACTIONS + (CHAT_STEP, CLASSIFY_STEP)
+
 # Declarative truth table: single source for status semantics consumed by
 # machine.py (routing), scheduler.py (triggers/auto-exec), router.py
 # (prefix permissions). Dict insertion order = priority order (highest first).

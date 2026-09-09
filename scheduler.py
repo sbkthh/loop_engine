@@ -973,16 +973,20 @@ _REPAIR_PROMPT = (
 )
 
 
-def _repair_result(root, sid, detail):
+def _repair_result(root, sid, detail, action=None):
     """Resume the same LLM session to rewrite result.md in valid format.
 
     No tests/compilation rerun: the step's work is already done, only the
     output envelope was malformed. Returns False when the repair call fails.
+
+    `action` is the step being repaired, so the rewrite runs on that step's
+    configured model — a resume with no --model keeps whatever the previous
+    turn used, which is otherwise invisible to whoever set the file up.
     """
     try:
         cmd = agent_cli.build_cmd(
             root, sid, _REPAIR_PROMPT.format(detail=detail),
-            "Rewrite .loop/result.md with the required JSON object")
+            "Rewrite .loop/result.md with the required JSON object", action)
         q = subprocess.run(
             cmd, cwd=root,
             capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS)
@@ -1080,7 +1084,7 @@ def run_requirement(name, module=None):
                                      f"{root}:{module_key}"))
             try:
                 cmd = agent_cli.build_cmd(root, sid, LOOP_AGENT_PROMPT,
-                                          json.dumps(payload))
+                                          json.dumps(payload), action)
                 # cwd=root: the codegraph MCP child inherits this process's OS
                 # cwd (not the CLI's --cwd), so leaving it unset makes the MCP
                 # server boot in the daemon's loop_engine dir and index the
@@ -1171,7 +1175,7 @@ def run_requirement(name, module=None):
                 format_repairs += 1
                 _log(f"run {name}: repairing result.md (repair "
                      f"{format_repairs})")
-                if not _repair_result(root, sid, failure_detail):
+                if not _repair_result(root, sid, failure_detail, action):
                     break
             if bad_commit_output:
                 break

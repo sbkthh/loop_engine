@@ -1170,6 +1170,8 @@ class TestRun(SchedulerBase):
         session (previously --no-session-persistence defeated it)."""
         with mock.patch.object(agent_cli, "_session_file_exists",
                                return_value=True), \
+                mock.patch.object(agent_cli, "_qodercli_model",
+                                  return_value="gmodel"), \
                 mock.patch.object(scheduler.subprocess, "run",
                                   return_value=types.SimpleNamespace(
                                       stdout="", stderr="",
@@ -1181,6 +1183,62 @@ class TestRun(SchedulerBase):
         self.assertNotIn("--session-id", cmd)
         self.assertIn("--strict-mcp-config", cmd)
         self.assertNotIn("--no-session-persistence", cmd)
+
+    def test_repair_inherits_the_step_it_fixes(self):
+        """The rewrite resumes that step's own session, so it must ask for that
+        step's model: a repair left on the ambient default would move the
+        conversation to another model mid-module, invisibly."""
+        steps = []
+        real_build = agent_cli.build_cmd
+
+        def spy(root, sid, system_prompt, user_text, action=None):
+            steps.append(action)
+            return real_build(root, sid, system_prompt, user_text, action)
+
+        with mock.patch.object(agent_cli, "build_cmd", spy), \
+                mock.patch.object(agent_cli, "_qodercli_model",
+                                  return_value="gmodel"), \
+                mock.patch.object(scheduler.subprocess, "run",
+                                  return_value=types.SimpleNamespace(
+                                      stdout="", stderr="", returncode=0)):
+            scheduler._repair_result("/tmp/x", "sid", "detail", "CHECKER")
+            scheduler._repair_result("/tmp/x", "sid", "detail")
+        self.assertEqual(steps, ["CHECKER", None])
+
+    def test_step_spawn_passes_its_action_to_the_builder(self):
+        """The per-step model table has exactly one loop consumer: whatever the
+        scheduler hands build_cmd. If that argument goes unpopulated the whole
+        file is decoration."""
+        root = self._register_pending("req")
+        actions = []
+        next_actions = ["SCORE", "IDLE"]
+
+        def spy(root_, sid, system_prompt, user_text, action=None):
+            actions.append(action)
+            return ["/bin/true"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(
+                    next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": next_actions.pop(0),
+                                           "module": "c/m"}),
+                        stderr="", returncode=0)
+                return types.SimpleNamespace(
+                    stdout=json.dumps({"action": "SCORE",
+                                       "next_action": "MAKER_STEP0"}),
+                    stderr="", returncode=0)
+            with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(agent_cli, "build_cmd", spy), \
+                mock.patch.object(scheduler.subprocess, "run",
+                                  side_effect=fake_run):
+            scheduler.run_requirement("req")
+        self.assertEqual(actions, ["SCORE"])
 
     def _run_capture_first_qodercli_cmd(self, model_value):
         root = self._register_pending("req")
@@ -1435,7 +1493,7 @@ class TestRun(SchedulerBase):
                         stderr="", returncode=0)
             return types.SimpleNamespace(stdout="", stderr="", returncode=0)
 
-        def fake_repair(root_, sid, detail):
+        def fake_repair(root_, sid, detail, action=None):
             repaired["sids"].append(sid)
             repaired["details"].append(detail)
             with open(os.path.join(root, ".loop", "result.md"), "w") as f:
@@ -1490,7 +1548,7 @@ class TestRun(SchedulerBase):
                         stderr="", returncode=0)
             return types.SimpleNamespace(stdout="", stderr="", returncode=0)
 
-        def fake_repair(root_, sid, detail):
+        def fake_repair(root_, sid, detail, action=None):
             repair_calls["n"] += 1
             with open(os.path.join(root, ".loop", "result.md"), "w") as f:
                 f.write('{"cross_consistency": "PASS"}')  # still broken
@@ -1542,7 +1600,7 @@ class TestRun(SchedulerBase):
                         stderr="", returncode=0)
             return types.SimpleNamespace(stdout="", stderr="", returncode=0)
 
-        def fake_repair(root_, sid, detail):
+        def fake_repair(root_, sid, detail, action=None):
             calls["repair"] += 1
             return True
 

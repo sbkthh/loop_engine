@@ -1,0 +1,21 @@
+{
+  "_comment": "每个步骤用哪个模型。留空 = 不覆盖；default 解析不出具体名字时整段不生效（见 agent_cli._step_models）。仓库里刻意不写任何型号名：两个后端拼写不同，且这会随镜像推到别人机器上。填本机 `qodercli --list-models` / `pi --list-models` 里的名字。",
+  "qodercli": {
+    "default": "",
+    "SCORE": "",
+    "CLASSIFY_CHANGE": "",
+    "MAKER_STEP0": "",
+    "MAKER_STEP1_RED": "",
+    "MAKER_STEP2_GREEN": "",
+    "CHECKER": "",
+    "MAKER_FIX": "",
+    "CODE_REVIEW": "",
+    "CODE_REVIEW_FIX": "",
+    "ALIGN_DOCS": "",
+    "CHAT": "",
+    "CLASSIFY_REQUIREMENT": ""
+  },
+  "pi": {
+    "default": ""
+  }
+}

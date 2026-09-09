@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent_cli
+from constants import CHECKER
 
 
 def _default_env():
@@ -304,6 +305,41 @@ class RouterChatSeamTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}):
             self.assertIsNone(self.router._chat_audit_settings())
 
+    def _steps_reaching_the_resolver(self, call):
+        seen = []
+
+        def fake_model(step=None):
+            seen.append(step)
+            return ""
+
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("LOOP_ENGINE_")}
+
+        def fake_run(cmd, **kwargs):
+            return type("R", (), {"stdout": "req", "returncode": 0})()
+
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(agent_cli, "_qodercli_model",
+                                  side_effect=fake_model), \
+                mock.patch.object(self.router.subprocess, "run", fake_run):
+            call()
+        return seen
+
+    def test_classify_turn_asks_for_its_own_step(self):
+        """One-shot session, cheap answer: this is the turn that gains most from
+        a flash tier, and the only one where a per-message model is genuinely
+        independent (a resumed G turn keeps whichever model its first message
+        picked)."""
+        seen = self._steps_reaching_the_resolver(
+            lambda: self.router._classify_requirement(
+                "改个报错", [{"name": "req", "root": "/tmp/req"}]))
+        self.assertEqual(seen, [agent_cli.CLASSIFY_STEP])
+
+    def test_g_conversation_turn_asks_for_chat_step(self):
+        seen = self._steps_reaching_the_resolver(
+            lambda: self.router._run_llm_turn("sid-1", True, "PROMPT"))
+        self.assertEqual(seen, [agent_cli.CHAT_STEP])
+
     def test_missing_bridge_warns_once(self):
         """The one state where the correction loop truly has nothing to read. It
         has to be said out loud, once, not swallowed by the None return."""
@@ -357,6 +393,189 @@ class PiModelTest(unittest.TestCase):
             f.write("{not json")
         with mock.patch.dict(os.environ, {"HOME": home}):
             self.assertEqual(agent_cli._pi_model(), "")
+
+
+class ModelConfigTest(unittest.TestCase):
+    """agent_models.json decides which model each step pays for. The measurements
+    behind the two rules it encodes (2026-09-09, qodercli 1.0.45): resuming a
+    session without --model keeps the previous turn's model rather than
+    re-reading settings.json, and an unknown --model exits 0 while serving the
+    session from "auto". Half a config is therefore worse than none."""
+
+    def setUp(self):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("LOOP_ENGINE_")}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        warned = mock.patch.object(agent_cli, "_WARNED", set())
+        warned.start()
+        self.addCleanup(warned.stop)
+
+    def _cfg(self, payload, known="__unset__"):
+        """Point the resolver at a fixture file. Fresh directory per call:
+        _step_models caches on (backend, path), so a reused path would hand back
+        the previous test's answer."""
+        path = os.path.join(tempfile.mkdtemp(), "agent_models.json")
+        if payload is not None:
+            with open(path, "w") as f:
+                if isinstance(payload, str):
+                    f.write(payload)
+                else:
+                    json.dump(payload, f)
+        patcher = mock.patch.dict(os.environ,
+                                  {"LOOP_ENGINE_MODEL_CONFIG": path})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        if known != "__unset__":
+            kn = mock.patch.object(agent_cli, "_known_models",
+                                   return_value=known)
+            kn.start()
+            self.addCleanup(kn.stop)
+        return path
+
+    def test_step_key_wins_and_unnamed_step_uses_default(self):
+        self._cfg({"qodercli": {"default": "mid", "CHECKER": "deep"}},
+                  known={"mid", "deep"})
+        self.assertEqual(agent_cli._qodercli_model("CHECKER"), "deep")
+        self.assertEqual(agent_cli._qodercli_model("SCORE"), "mid")
+        self.assertEqual(agent_cli._qodercli_model(), "mid")
+
+    def test_unrecognised_step_stays_inside_the_section(self):
+        """A torn stdout must not send the next turn of the same session back to
+        settings.json — that would be the silent drift the section exists to
+        prevent."""
+        self._cfg({"qodercli": {"default": "mid"}}, known={"mid"})
+        with mock.patch.object(agent_cli, "_qodercli_settings_model",
+                               return_value="elsewhere"):
+            self.assertEqual(agent_cli._qodercli_model("NOT_AN_ACTION"), "mid")
+
+    def test_sections_are_per_backend(self):
+        self._cfg({"qodercli": {"default": "q", "CHAT": "qc"},
+                   "pi": {"default": "p"}}, known={"q", "qc", "p"})
+        self.assertEqual(agent_cli._pi_model("CHAT"), "p")
+        self.assertEqual(agent_cli._qodercli_model("CHAT"), "qc")
+
+    def test_settings_model_is_the_last_link_only_when_section_is_inert(self):
+        self._cfg({"qodercli": {"default": "mid"}}, known={"mid"})
+        with mock.patch.object(agent_cli, "_qodercli_settings_model",
+                               return_value="from-settings") as s:
+            self.assertEqual(agent_cli._qodercli_model("CHECKER"), "mid")
+            s.assert_not_called()
+
+    def test_step_models_without_default_disable_the_section(self):
+        self._cfg({"qodercli": {"CHECKER": "deep"}}, known={"deep"})
+        with mock.patch.object(agent_cli, "_qodercli_settings_model",
+                               return_value="from-settings"):
+            self.assertEqual(agent_cli._qodercli_model("CHECKER"),
+                             "from-settings")
+
+    def test_unknown_model_name_disables_the_section(self):
+        self._cfg({"qodercli": {"default": "Typo"}})
+        with mock.patch.object(agent_cli, "_known_models",
+                               return_value={"qwen3.8-max", "qwen3.8-flash"}), \
+                mock.patch.object(agent_cli, "_qodercli_settings_model",
+                                  return_value="from-settings"):
+            self.assertEqual(agent_cli._qodercli_model("CHECKER"),
+                             "from-settings")
+
+    def test_unknown_step_model_falls_back_to_default(self):
+        self._cfg({"qodercli": {"default": "mid", "CHECKER": "Typo"}},
+                  known={"mid"})
+        self.assertEqual(agent_cli._qodercli_model("CHECKER"), "mid")
+
+    def test_unaskable_backend_skips_validation(self):
+        """--list-models failing means we don't know the catalog, not that every
+        name is wrong."""
+        self._cfg({"qodercli": {"default": "mid"}}, known=None)
+        self.assertEqual(agent_cli._qodercli_model("CHECKER"), "mid")
+
+    def test_catalog_is_one_call_per_backend_not_per_spawn(self):
+        """Validation runs a real CLI, so it has to be paid once. A per-spawn
+        lookup would add seconds to every step to re-derive an answer that
+        cannot change inside one process. The first call here is the genuine
+        one-off; everything after it must be a cache hit."""
+        real = agent_cli._known_models("qodercli")
+
+        def fail_run(cmd, **kwargs):
+            raise AssertionError(f"second lookup re-ran {cmd}")
+
+        with mock.patch.object(agent_cli.subprocess, "run", fail_run):
+            again = agent_cli._known_models("qodercli")
+        self.assertEqual(again, real)
+
+    def test_corrupt_file_warns_once_and_stays_inert(self):
+        self._cfg("{not json")
+        with mock.patch.object(agent_cli, "_qodercli_settings_model",
+                               return_value="from-settings"), \
+                self.assertLogs("agent_cli", level="WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(agent_cli._qodercli_model("CHECKER"),
+                                 "from-settings")
+        self.assertEqual(len(logs.output), 1)
+
+    def test_missing_file_is_not_a_condition_anyone_must_fix(self):
+        self._cfg(None)
+        with mock.patch.object(agent_cli, "_qodercli_settings_model",
+                               return_value="from-settings"):
+            self.assertEqual(agent_cli._qodercli_model("CHECKER"),
+                             "from-settings")
+
+    def test_shipped_config_leaves_argv_exactly_as_it_was(self):
+        """The repo file carries the shape and no names. That must be
+        indistinguishable from the file not existing at all — otherwise
+        committing it changed how this machine spends its credits."""
+        with _default_env(), \
+                mock.patch.object(agent_cli, "_session_file_exists",
+                                  return_value=False), \
+                mock.patch.object(agent_cli, "_qodercli_settings_model",
+                                  return_value="settings-model"):
+            with_step = agent_cli.build_cmd("/root/x", "sid-1", "S", "U",
+                                            CHECKER)
+            without = agent_cli.build_cmd("/root/x", "sid-1", "S", "U")
+            self.assertEqual(with_step, without)
+            self.assertEqual(with_step[with_step.index("--model") + 1],
+                             "settings-model")
+
+
+class ChatStepTest(unittest.TestCase):
+    """The classification turn is a one-shot session; G replies are a resumed
+    conversation. Only the first is genuinely per-message, so they must not be
+    forced to share one model."""
+
+    def _cfg(self, payload):
+        path = os.path.join(tempfile.mkdtemp(), "agent_models.json")
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        return mock.patch.dict(os.environ, {
+            "LOOP_ENGINE_MODEL_CONFIG": path,
+            "LOOP_ENGINE_AGENT_CLI": "qodercli"})
+
+    def test_classify_turn_and_g_turn_resolve_differently(self):
+        cfg = {"qodercli": {"default": "deep",
+                            "CLASSIFY_REQUIREMENT": "flash"}}
+        with self._cfg(cfg), \
+                mock.patch.object(agent_cli, "_known_models",
+                                  return_value={"deep", "flash"}):
+            classify = agent_cli.build_chat_cmd(
+                "sid-1", True, None, step=agent_cli.CLASSIFY_STEP)
+            chat = agent_cli.build_chat_cmd("sid-1", True, None)
+        self.assertEqual(classify[classify.index("--model") + 1], "flash")
+        self.assertEqual(chat[chat.index("--model") + 1], "deep")
+
+    def test_g_turn_argv_unchanged_when_nothing_is_configured(self):
+        with _default_env(), \
+                mock.patch.object(agent_cli, "_qodercli_settings_model",
+                                  return_value="settings-model"):
+            classify = agent_cli.build_chat_cmd("sid-1", True, "SET",
+                                                step=agent_cli.CLASSIFY_STEP)
+            self.assertEqual(
+                classify,
+                [classify[0], "--print", "--session-id", "sid-1",
+                 "--model", "settings-model",
+                 "--dangerously-skip-permissions", "--settings", "SET"])
+            self.assertEqual(agent_cli.build_chat_cmd("sid-1", True, "SET"),
+                             classify)
 
 
 if __name__ == "__main__":

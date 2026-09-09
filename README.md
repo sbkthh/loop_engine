@@ -556,6 +556,9 @@ loop_engine wecom status
 # 停止服务器
 loop_engine wecom stop
 
+# 个人每步模型配置在仓库外，不带这个 env = 静默回到后端默认模型
+export LOOP_ENGINE_MODEL_CONFIG=~/.qoder/loop_engine/agent_models.json
+
 # 重启服务器（代码改动后）
 loop_engine wecom stop && loop_engine wecom start --port 5000
 
@@ -563,6 +566,11 @@ loop_engine wecom stop && loop_engine wecom start --port 5000
 loop_engine wecom config --show
 loop_engine wecom config --set key=value
 ```
+
+> 改 `agent_models.json` 与改代码一样要重启才生效：`agent_cli` 每进程只读一次并缓存，长驻的
+> wecom / feishu 守护进程不会热加载，表现是「配置填好了、进程还在用 `~/.qoder/settings.json`
+> 的默认模型」。feishu 同理：`loop_engine feishu stop` 后带上面那个 env 再
+> `nohup loop_engine feishu start …`。
 
 ### 隧道
 
@@ -634,6 +642,12 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 - **非 editable 安装要配 `LOOP_ENGINE_MODEL_CONFIG`**：根目录 JSON 不在 `pyproject` 的 package-data
   覆盖范围内（只有 `wecom_server`/`feishu_server` 的 `hooks/*` 进包），装进 site-packages 时不会带上，
   表现为「配了没生效」。把该 env 指到文件绝对路径即可（`minimal_mcp.json` 有同一个既存问题）。
+- **个人配置写仓库外那份**：仓库根的 `agent_models.json` 被 `tests/test_constants.py` 钉成「只有形状、
+  没有型号名」——填了值本地这条测试就红，提交则随镜像推到别人机器上。把值写进
+  `~/.qoder/loop_engine/agent_models.json`，起进程时 `export LOOP_ENGINE_MODEL_CONFIG` 指过去（命令见上面
+  「重启服务器」）。不带这个 env 不会报错，只是回到后端默认模型。
+- **生效时机是进程启动后第一次 spawn**：`_step_models` 按 (后端, 路径) 缓存读盘结果，改文件不会热加载，
+  长驻的 wecom / feishu 守护进程要重启——见上面「重启服务器」那条。
 
 ---
 
@@ -656,7 +670,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 # 配置
 loop_engine feishu config
 
-# 启动 / 状态 / 停止
+# 启动 / 状态 / 停止（启动前先 export LOOP_ENGINE_MODEL_CONFIG，见「模型」）
 nohup loop_engine feishu start >> ~/.qoder/loop_engine/feishu.log 2>&1 &
 loop_engine feishu status
 loop_engine feishu stop

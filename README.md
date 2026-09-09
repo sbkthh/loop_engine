@@ -598,7 +598,42 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 
 ### 模型
 
-后台 qodercli 子进程自动使用 `~/.qoder/settings.json` 中配置的默认模型，可通过 `/model` 命令切换。
+每一步（含企业微信的两类轮次）都可以单独指定模型，配置在仓库根 `agent_models.json`
+（与 `minimal_mcp.json` 同级，由 `agent_cli` 读取）：
+
+```json
+{ "qodercli": { "default": "", "CHECKER": "", "CHAT": "", "CLASSIFY_REQUIREMENT": "" },
+  "pi":       { "default": "" } }
+```
+
+- **步骤键** = `constants.ALL_STEP_KEYS`：10 个 loop action（`SCORE`/`CLASSIFY_CHANGE`/
+  `MAKER_STEP0`/`MAKER_STEP1_RED`/`MAKER_STEP2_GREEN`/`CHECKER`/`MAKER_FIX`/
+  `CODE_REVIEW`/`CODE_REVIEW_FIX`/`ALIGN_DOCS`）+ `CHAT`（G 问答轮）+
+  `CLASSIFY_REQUIREMENT`（需求归属轮）。
+- **仓库里所有值都是空串，这是刻意的**：两个后端拼写型号的方式不同，且这个仓会镜像推到别人机器上，
+  写死厂商型号名等于把一台机器的目录塞进所有人的 checkout。填本机 `qodercli --list-models` /
+  `pi --list-models` 列出的名字，填一行生效一行。
+- **全有或全无**：某后端段里只要有一个非空值，该段每个 step 都必须能解析出具体名字（step 留空取
+  `default`）；`default` 缺失或不可用 ⇒ **整段视为不存在**，warn 一条，行为回到「全程一个默认模型」。
+  半填配置不再被允许，原因见下面的实测。
+- **型号要在校验名单内**：配置里的名字必须出现在该后端 `--list-models` 的输出里（每进程查一次并缓存）。
+  不在名单 ⇒ 该值按未填处理并 warn。查不到名单（后端没有这个 flag）则跳过校验。
+- **回落链**：`agent_models.json` 的 step 键 → 该后端 `default` → 后端自身默认（qodercli 读
+  `~/.qoder/settings.json` 的 `model.name`，可用 `/model` 切换；pi 读 `~/.pi/agent/settings.json`
+  的 `defaultProvider`/`defaultModel`）→ 不传 `--model`。文件缺失或全空时，argv 与引入本文件之前
+  **逐字节相同**（`tests/test_agent_cli.py` 用等值断言钉住）。
+- **两条 2026-09-09 的实测（qodercli 1.0.45）就是上面两条规则的理由**：① 续跑时**省略** `--model`
+  不回读 `settings.json`，而是沿用该会话上一轮实际使用的模型——所以半填配置会让某步的模型取决于
+  「上一步是谁」，随执行顺序漂移且不留痕迹；② 不存在的型号 **rc=0**，只打一行
+  `Model "X" is not available right now; using "auto" instead` 然后真跑在 `auto` 上，并且这个 `auto`
+  会按 ① 粘住后续轮——所以「填错必须响着失败」在这两个后端上做不到，能做的只有事前拒收。
+  反过来，续跑时**显式**给 `--model` 是有效的（实测同一段会话内出现两种模型），所以「共会话」与
+  「按步骤分档」可以叠加。
+- **`CHAT` 键的含义受 ① 约束**：G 问答是续跑的长会话，`CHAT` 实际等于「该会话第一次发言时用的模型」；
+  真正每轮独立的只有 `CLASSIFY_REQUIREMENT`（一次性 uuid 会话）。
+- **非 editable 安装要配 `LOOP_ENGINE_MODEL_CONFIG`**：根目录 JSON 不在 `pyproject` 的 package-data
+  覆盖范围内（只有 `wecom_server`/`feishu_server` 的 `hooks/*` 进包），装进 site-packages 时不会带上，
+  表现为「配了没生效」。把该 env 指到文件绝对路径即可（`minimal_mcp.json` 有同一个既存问题）。
 
 ---
 
@@ -734,7 +769,7 @@ loop_engine feishu stop
 ├── report.py                   # 报告生成
 ├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
 ├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
-├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 模型来源）
+├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 每步模型解析）
 ├── scope_audit.py              # 未申报改动审计（声明 vs git 实际，可推微信）
 ├── setup.py                    # Phase 0 初始化
 ├── registry.py                 # 需求注册表
@@ -798,7 +833,7 @@ loop_engine feishu stop
 
 - **数据目录不随后端变**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs），与用哪个 agent CLI 无关；换后端不需要搬状态
 - **pi 的启动参数与 qodercli 有四处结构性差异**（`_pi_cmd` 逐条实测）：① 没有 `--cwd`，工作目录就是子进程的 OS cwd（`scheduler` 已经 `cwd=root`）；② 没有逐工具确认，`-p` 下 bash/edit 直接执行，所以也不需要 `--dangerously-skip-permissions` 的对应物——代价是**没有沙箱**，唯一收敛手段是 `--tools` 白名单（默认放行 `read,grep,find,ls,bash,edit,write,mcp`，把 `subagent`/`web_search` 这类扩展工具挡在外面；MCP 走适配器的单个 `mcp` 元工具，白名单里必须写 `mcp` 而不是 `codegraph_*`）；③ `--session-id` 是「没有就创建」，因此不需要 qodercli 那套磁盘探测 + `--resume` 二段式；④ 没有 `--strict-mcp-config` 的对应物，`--mcp-config` 只替换 pi-global 那一层，`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<cwd>/.mcp.json`、`<cwd>/.pi/mcp.json` 仍会合并进来；`PI_MCP_CONFIG_MODE=exclusive` 看着像答案但实测会让 `--mcp-config` 一起失效（0 servers），故**不使用**
-- **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值
+- **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值。这一层是**后端默认**，在它之前还有一层按步骤的 `agent_models.json`（见「模型」小节）；实测续跑时显式带 `--model` 有效，所以「一个模块共用一段会话」与「每步不同模型」可以叠加
 - **两个 pi 目录都是本机实测**（pi 0.85.1 + pi-subagents 0.66.0），不是抄文档：pi 同时扫 `~/.pi/agent/skills/` 与共享的 `~/.agents/skills/`，我们只往前者装，避免把 5 个 skill 混进用户自己的 skill 集；子代理是 pi-subagents 的概念（pi 核心没有），它递归读 `~/.pi/agent/agents/**/*.md`
 - **装过去 ≠ 能直接用**：`agents/*.md` 目前是 qodercli 的 frontmatter 格式（`tools: Read, Write, ...` + `mcpServers:`），pi-subagents 用同一套「YAML + 系统提示词」形状但字段名不同（`tools: read, grep, bash, mcp:<server>/<tool>`），未知 tool 名会被静默忽略 → 子代理拿到空工具集。在改写成 pi 格式之前，pi 侧的 maker/checker 只在交互式用法下有影响；循环的 MAKER/CHECKER 步骤从不派发子代理（就是「普通会话 + 引擎拼的 system prompt」），所以 spawn 路径不依赖这两个文件
 - **后端名填错一律报错**：不在档案表里的值，spawn / self-install / self-check 三处都直接失败，不静默回落到 qodercli

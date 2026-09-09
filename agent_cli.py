@@ -114,6 +114,10 @@ def _step_models(name, path):
     live only when `default` resolves to a name every unnamed step can fall
     back to.
 
+    Passing --model explicitly on a resume does win (measured in the same
+    session: qfmodel → qmodel_38max), which is what lets per-step tiers coexist
+    with one shared session per module.
+
     A name the CLI does not list drops the section rather than being passed
     through: an unknown --model exits 0 (see _known_models), so the typo would
     surface as a differently-priced run, not as a failure.

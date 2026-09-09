@@ -1,5 +1,5 @@
 {
-  "_comment": "每个步骤用哪个模型。留空 = 不覆盖；default 解析不出具体名字时整段不生效（见 agent_cli._step_models）。仓库里刻意不写任何型号名：两个后端拼写不同，且这会随镜像推到别人机器上。填本机 `qodercli --list-models` / `pi --list-models` 里的名字。",
+  "_comment": "每个步骤用哪个模型。留空 = 不覆盖；default 解析不出具体名字时整段不生效（见 agent_cli._step_models）。仓库里刻意不写任何型号名：两个后端拼写不同，且这会随镜像推到别人机器上（tests/test_constants.py 钉住这份全空）。本机要填的值写到 <数据目录>/agent_models.json（默认 ~/.qoder/loop_engine/agent_models.json，存在就自动读，无需 env）。填本机 `qodercli --list-models` / `pi --list-models` 里的名字。",
   "qodercli": {
     "default": "",
     "SCORE": "",

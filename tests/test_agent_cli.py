@@ -522,10 +522,13 @@ class ModelConfigTest(unittest.TestCase):
                              "from-settings")
 
     def test_shipped_config_leaves_argv_exactly_as_it_was(self):
-        """The repo file carries the shape and no names. That must be
-        indistinguishable from the file not existing at all — otherwise
-        committing it changed how this machine spends its credits."""
+        """The repo file carries the shape and no names, and no personal copy
+        sits in the data dir. Together those must be indistinguishable from the
+        file not existing at all — otherwise committing it changed how this
+        machine spends its credits."""
+        absent = os.path.join(tempfile.mkdtemp(), "absent")
         with _default_env(), \
+                mock.patch.object(agent_cli, "DATA_DIR", absent), \
                 mock.patch.object(agent_cli, "_session_file_exists",
                                   return_value=False), \
                 mock.patch.object(agent_cli, "_qodercli_settings_model",
@@ -536,6 +539,45 @@ class ModelConfigTest(unittest.TestCase):
             self.assertEqual(with_step, without)
             self.assertEqual(with_step[with_step.index("--model") + 1],
                              "settings-model")
+
+    def _personal(self, payload):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "agent_models.json")
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        return d, path
+
+    def test_personal_config_in_data_dir_needs_no_env(self):
+        """The reason the data dir is searched: a machine's model names have to
+        survive `self-install` and a restart without anyone remembering to
+        export something. Missing that export is how a filled config silently
+        stops being one."""
+        d, path = self._personal({"qodercli": {"default": "personal"}})
+        with mock.patch.object(agent_cli, "DATA_DIR", d), \
+                mock.patch.object(agent_cli, "_known_models",
+                                  return_value={"personal"}):
+            self.assertEqual(agent_cli._model_config_path(), path)
+            self.assertEqual(agent_cli._qodercli_model("CHECKER"), "personal")
+
+    def test_named_env_does_not_fall_back_to_the_data_dir_copy(self):
+        """LOOP_ENGINE_MODEL_CONFIG is a statement about which file decides. It
+        pointing at nothing stays inert like any other missing file rather than
+        quietly resolving from the data dir, where a different machine's names
+        may be."""
+        d, _ = self._personal({"qodercli": {"default": "personal"}})
+        missing = os.path.join(tempfile.mkdtemp(), "gone.json")
+        with mock.patch.object(agent_cli, "DATA_DIR", d), \
+                mock.patch.dict(os.environ,
+                                {"LOOP_ENGINE_MODEL_CONFIG": missing}):
+            self.assertEqual(agent_cli._model_config_path(), missing)
+            self.assertEqual(agent_cli._configured_model("qodercli",
+                                                         "CHECKER"), "")
+
+    def test_repo_template_is_the_last_link(self):
+        absent = os.path.join(tempfile.mkdtemp(), "absent")
+        with mock.patch.object(agent_cli, "DATA_DIR", absent):
+            self.assertEqual(agent_cli._model_config_path(),
+                             agent_cli._MODEL_CONFIG)
 
 
 class ChatStepTest(unittest.TestCase):

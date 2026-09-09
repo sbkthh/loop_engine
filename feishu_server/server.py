@@ -11,13 +11,14 @@ import queue
 import threading
 import time
 
+from constants import DATA_DIR
+
 from .feishu_api import download_file, send_text
 
 logger = logging.getLogger("feishu")
 
 # Runtime config, set by start()
 CONFIG = {}
-DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 
 # Per-requirement serial queues, same design as the WeCom server (kept as a
 # copy so the production WeCom path stays untouched).

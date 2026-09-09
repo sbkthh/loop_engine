@@ -8,6 +8,8 @@ from urllib.parse import unquote
 
 import requests
 
+from constants import DATA_DIR
+
 logger = logging.getLogger("feishu")
 
 _token_cache = {"token": None, "expires_at": 0.0}
@@ -78,7 +80,7 @@ def _send(open_id, msg_type, payload, config, label):
     return True
 
 
-_FILES_DIR = os.path.expanduser("~/.qoder/loop_engine/files")
+_FILES_DIR = os.path.join(DATA_DIR, "files")
 
 
 def download_file(message_id, file_key, config, save_dir=_FILES_DIR):

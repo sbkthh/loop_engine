@@ -1,13 +1,14 @@
-"""Registry: global requirement registry CRUD at ~/.qoder/loop_engine/requirements.json."""
+"""Registry: global requirement registry CRUD at <DATA_DIR>/requirements.json
+(DATA_DIR = ~/.qoder/loop_engine unless LOOP_ENGINE_DATA_DIR says otherwise)."""
 
 import json
 import os
 import tempfile
 import datetime
 
-REGISTRY_PATH = os.path.join(
-    os.path.expanduser("~/.qoder/loop_engine"), "requirements.json"
-)
+from constants import DATA_DIR
+
+REGISTRY_PATH = os.path.join(DATA_DIR, "requirements.json")
 
 
 def load():

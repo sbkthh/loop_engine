@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 
 from flask import Flask, request, Response
 
+from constants import DATA_DIR
+
 from .crypto import verify_signature, decrypt_callback, encrypt_callback
 
 logger = logging.getLogger("wecom")
@@ -24,7 +26,6 @@ app = Flask(__name__)
 
 # Runtime config, set by start()
 CONFIG = {}
-DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 
 # Per-requirement serial queues: messages of the same requirement execute
 # strictly in arrival order (they share one qodercli session), different

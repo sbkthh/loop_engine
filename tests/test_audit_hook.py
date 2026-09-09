@@ -145,3 +145,33 @@ def test_hook_snapshots_spec_md_edit():
     content = _read(os.path.join(snap_dir, names[0]))
     assert "Scenario: 出库" in content
     assert "SPEC_SNAPSHOT" in _read(log)
+
+
+def test_loop_engine_data_dir_moves_both_hook_write_targets():
+    """The writer is bash, the reader is Python, and the correction loop between
+    them only works while both resolve the same directory. Only
+    LOOP_ENGINE_DATA_DIR is set here — no AUDIT_LOG/SNAP_DIR — because that is
+    what a relocated install actually looks like."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    from wecom_server.router import _SPEC_SNAP_RE
+
+    data_dir = tempfile.mkdtemp()
+    spec = os.path.join(tempfile.mkdtemp(), "specs", "wms-out", "spec.md")
+    os.makedirs(os.path.dirname(spec))
+    with open(spec, "w") as f:
+        f.write("# Spec\n\nScenario: 出库\n")
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("AUDIT_LOG", "SNAP_DIR")}
+    env["LOOP_ENGINE_DATA_DIR"] = data_dir
+    payload = json.dumps({"session_id": SESSION_UUID, "tool_name": "Edit",
+                          "tool_input": {"file_path": spec}})
+    r = subprocess.run(["bash", HOOK], input=payload, env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+    snap_dir = os.path.join(data_dir, "spec-snapshots")
+    names = os.listdir(snap_dir)
+    assert len(names) == 1 and _SPEC_SNAP_RE.match(names[0]), names
+    assert "SPEC_SNAPSHOT" in _read(os.path.join(data_dir, "audit.log"))

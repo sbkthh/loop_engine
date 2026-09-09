@@ -556,9 +556,6 @@ loop_engine wecom status
 # 停止服务器
 loop_engine wecom stop
 
-# 个人每步模型配置在仓库外，不带这个 env = 静默回到后端默认模型
-export LOOP_ENGINE_MODEL_CONFIG=~/.qoder/loop_engine/agent_models.json
-
 # 重启服务器（代码改动后）
 loop_engine wecom stop && loop_engine wecom start --port 5000
 
@@ -569,8 +566,10 @@ loop_engine wecom config --set key=value
 
 > 改 `agent_models.json` 与改代码一样要重启才生效：`agent_cli` 每进程只读一次并缓存，长驻的
 > wecom / feishu 守护进程不会热加载，表现是「配置填好了、进程还在用 `~/.qoder/settings.json`
-> 的默认模型」。feishu 同理：`loop_engine feishu stop` 后带上面那个 env 再
-> `nohup loop_engine feishu start …`。
+> 的默认模型」。feishu 同理：`loop_engine feishu stop` 后再 `nohup loop_engine feishu start …`。
+> 本机要填的模型名写在 `<数据目录>/agent_models.json`（默认 `~/.qoder/loop_engine/agent_models.json`），
+> 放在那里**不需要任何 env**；`LOOP_ENGINE_MODEL_CONFIG` 只在这个文件放在别处时才需要（non-editable
+> 安装拿不到仓库根目录的 JSON，见「模型」小节）。
 
 ### 隧道
 
@@ -639,13 +638,14 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
   「按步骤分档」可以叠加。
 - **`CHAT` 键的含义受 ① 约束**：G 问答是续跑的长会话，`CHAT` 实际等于「该会话第一次发言时用的模型」；
   真正每轮独立的只有 `CLASSIFY_REQUIREMENT`（一次性 uuid 会话）。
-- **非 editable 安装要配 `LOOP_ENGINE_MODEL_CONFIG`**：根目录 JSON 不在 `pyproject` 的 package-data
-  覆盖范围内（只有 `wecom_server`/`feishu_server` 的 `hooks/*` 进包），装进 site-packages 时不会带上，
-  表现为「配了没生效」。把该 env 指到文件绝对路径即可（`minimal_mcp.json` 有同一个既存问题）。
-- **个人配置写仓库外那份**：仓库根的 `agent_models.json` 被 `tests/test_constants.py` 钉成「只有形状、
-  没有型号名」——填了值本地这条测试就红，提交则随镜像推到别人机器上。把值写进
-  `~/.qoder/loop_engine/agent_models.json`，起进程时 `export LOOP_ENGINE_MODEL_CONFIG` 指过去（命令见上面
-  「重启服务器」）。不带这个 env 不会报错，只是回到后端默认模型。
+- **查找顺序**：`LOOP_ENGINE_MODEL_CONFIG` → `<数据目录>/agent_models.json`（存在就读）→ 仓库根的那份。
+  仓库根的文件由 `__file__` 定位，非 editable 安装时拿不到（根目录 JSON 不在 `pyproject` 的 package-data
+  覆盖范围内，只有 `wecom_server`/`feishu_server` 的 `hooks/*` 进包）——那种安装把值写进数据目录就自动
+  生效，不必配 env；`minimal_mcp.json` 有同一个既存问题，暂无对应物。
+- **个人配置写数据目录那份**：仓库根的 `agent_models.json` 被 `tests/test_constants.py` 钉成「只有形状、
+  没有型号名」——填了值本地这条测试就红，提交则随镜像推到别人机器上。值写在
+  `~/.qoder/loop_engine/agent_models.json`（即 `<数据目录>/agent_models.json`，`LOOP_ENGINE_DATA_DIR` 换目录
+  时跟着换）不需要任何 env。三处都找不到、或整段解析不出模型名，行为退回今天的单模型，不报错。
 - **生效时机是进程启动后第一次 spawn**：`_step_models` 按 (后端, 路径) 缓存读盘结果，改文件不会热加载，
   长驻的 wecom / feishu 守护进程要重启——见上面「重启服务器」那条。
 
@@ -670,7 +670,7 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 # 配置
 loop_engine feishu config
 
-# 启动 / 状态 / 停止（启动前先 export LOOP_ENGINE_MODEL_CONFIG，见「模型」）
+# 启动 / 状态 / 停止（改过 agent_models.json 后必须重启，见「模型」）
 nohup loop_engine feishu start >> ~/.qoder/loop_engine/feishu.log 2>&1 &
 loop_engine feishu status
 loop_engine feishu stop
@@ -815,15 +815,18 @@ loop_engine feishu stop
     ├── test_wecom_api.py       ├── test_wecom_crypto.py
     └── test_agent_cli.py
 
-~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）
+~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）；LOOP_ENGINE_DATA_DIR 可整体搬到别处
 ├── requirements.json           # 需求注册表
 ├── pending.json                # poll 待执行清单
 ├── schedule.json               # 调度器配置（max_concurrency）
 ├── runs.json                   # 执行历史（requirement → 起止/轮次/结局）
+├── agent_models.json           # 本机每步模型配置（放这里就不需要任何 env）
 ├── wecom.json                  # WeCom 应用配置（密钥）
 ├── feishu.json                 # 飞书应用配置（密钥）
 ├── audit.log                   # 敏感命令审计日志
 ├── sessions/                   # 微信用户会话状态
+├── spec-snapshots/             # G 改 spec.md 前的快照（漏登记纠正链读它）
+├── files/                      # 飞书附件落盘
 └── .loop/                      # 本地循环状态
 
 ~/.qoder/skills/                # 5 个协作 Skill
@@ -845,7 +848,12 @@ loop_engine feishu stop
 | `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | 已实现 |
 | `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 已实现（flag 集为本机实测） |
 
-- **数据目录不随后端变**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs），与用哪个 agent CLI 无关；换后端不需要搬状态
+- **数据目录不随后端变，且可整体搬迁**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs /
+  sessions / spec-snapshots / audit.log / 本机 `agent_models.json`），与用哪个 agent CLI 无关；换后端不需要
+  搬状态。这个路径全仓库只写在 `constants.DATA_DIR` 一处（`tests/test_constants.py` 钉住），启动前设
+  `LOOP_ENGINE_DATA_DIR` 就能整体换到别处——`audit_hook.sh` 读的是同一个 env，钩子写的快照与 router 的纠正
+  循环不会分家。在 WSL / 那台跑 pi 的 Linux 机器上，`~` 是 Linux 家目录（`/home/<user>/.qoder/loop_engine`），
+  与 Windows 侧的 `C:\Users\<name>\.qoder` 是两份互不可见的状态；想共用就把 env 指到同一个可访问路径
 - **pi 的启动参数与 qodercli 有四处结构性差异**（`_pi_cmd` 逐条实测）：① 没有 `--cwd`，工作目录就是子进程的 OS cwd（`scheduler` 已经 `cwd=root`）；② 没有逐工具确认，`-p` 下 bash/edit 直接执行，所以也不需要 `--dangerously-skip-permissions` 的对应物——代价是**没有沙箱**，唯一收敛手段是 `--tools` 白名单（默认放行 `read,grep,find,ls,bash,edit,write,mcp`，把 `subagent`/`web_search` 这类扩展工具挡在外面；MCP 走适配器的单个 `mcp` 元工具，白名单里必须写 `mcp` 而不是 `codegraph_*`）；③ `--session-id` 是「没有就创建」，因此不需要 qodercli 那套磁盘探测 + `--resume` 二段式；④ 没有 `--strict-mcp-config` 的对应物，`--mcp-config` 只替换 pi-global 那一层，`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<cwd>/.mcp.json`、`<cwd>/.pi/mcp.json` 仍会合并进来；`PI_MCP_CONFIG_MODE=exclusive` 看着像答案但实测会让 `--mcp-config` 一起失效（0 servers），故**不使用**
 - **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值。这一层是**后端默认**，在它之前还有一层按步骤的 `agent_models.json`（见「模型」小节）；实测续跑时显式带 `--model` 有效，所以「一个模块共用一段会话」与「每步不同模型」可以叠加
 - **两个 pi 目录都是本机实测**（pi 0.85.1 + pi-subagents 0.66.0），不是抄文档：pi 同时扫 `~/.pi/agent/skills/` 与共享的 `~/.agents/skills/`，我们只往前者装，避免把 5 个 skill 混进用户自己的 skill 集；子代理是 pi-subagents 的概念（pi 核心没有），它递归读 `~/.pi/agent/agents/**/*.md`

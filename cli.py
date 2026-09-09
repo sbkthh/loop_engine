@@ -10,7 +10,7 @@ import time
 
 from state import StateManager
 from machine import StateMachine
-from constants import DRAFT, ALL_STATUSES
+from constants import DRAFT, ALL_STATUSES, DATA_DIR
 from setup import setup_requirement, init_from_prd, add_project_to_requirement
 from spec_utils import coerce_roots
 import report
@@ -518,7 +518,7 @@ def cmd_self_install(args):
     else:
         print(f"Shim: {shim_path} (already exists)")
     # 4. Data directory
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     os.makedirs(data_dir, exist_ok=True)
     print(f"Data:  {data_dir}")
     # 5. Recommend pip install
@@ -559,7 +559,7 @@ def cmd_self_check(args):
                        p if os.path.exists(p)
                        else "not found — run 'loop_engine self-install'"))
     # 4. Data dir
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     os.makedirs(data_dir, exist_ok=True)
     checks.append(("Data dir", True, data_dir))
     # 5. Registry
@@ -600,7 +600,7 @@ def cmd_self_check(args):
 
 def cmd_wecom_start(args):
     from wecom_server.server import start
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     config_path = os.path.join(data_dir, "wecom.json")
     if not os.path.exists(config_path):
         print("WeCom not configured. Run 'loop_engine wecom config' first.")
@@ -640,7 +640,7 @@ def cmd_wecom_status(args):
 
 def cmd_wecom_config(args):
     import json
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     config_path = os.path.join(data_dir, "wecom.json")
     if args.show:
         if os.path.exists(config_path):
@@ -680,7 +680,7 @@ def cmd_wecom_config(args):
 
 def cmd_feishu_start(args):
     from feishu_server.server import start
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     config_path = os.path.join(data_dir, "feishu.json")
     if not os.path.exists(config_path):
         print("Feishu not configured. Run 'loop_engine feishu config' first.")
@@ -719,7 +719,7 @@ def cmd_feishu_status(args):
 
 def cmd_feishu_config(args):
     import json
-    data_dir = os.path.expanduser("~/.qoder/loop_engine")
+    data_dir = DATA_DIR
     config_path = os.path.join(data_dir, "feishu.json")
     if args.show:
         if os.path.exists(config_path):

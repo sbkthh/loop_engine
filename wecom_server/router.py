@@ -17,6 +17,8 @@ import threading
 import time
 import uuid
 
+from constants import DATA_DIR
+
 logger = logging.getLogger("wecom")
 
 _LLM_SYSTEM_PROMPT = (
@@ -96,7 +98,7 @@ _MODULE_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+")
 # Audit-hook SPEC_SNAPSHOT files (<YYYYMMDDTHHMMSS>-<session-id>-<module>.md)
 # mark that G edited a spec.md this session; used to re-drive G when it
 # replies without a spec_result registration.
-_SPEC_SNAP_DIR = os.path.expanduser("~/.qoder/loop_engine/spec-snapshots")
+_SPEC_SNAP_DIR = os.path.join(DATA_DIR, "spec-snapshots")
 _SPEC_SNAP_RE = re.compile(
     r"^(\d{8}T\d{6})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12})-(.+)\.md$")
@@ -193,7 +195,7 @@ def _chat_audit_settings():
     return None
 
 
-_SESSION_DIR = os.path.expanduser("~/.qoder/loop_engine/sessions")
+_SESSION_DIR = os.path.join(DATA_DIR, "sessions")
 
 
 def _get_session_id(user_id, requirement="global"):
@@ -628,7 +630,7 @@ def _execute_run_spec(name, module, registry, data_dir, user_id=None):
 def _audit_line(text):
     """Append a line to the shared audit log (same file as audit_hook.sh)."""
     try:
-        log_path = os.path.expanduser("~/.qoder/loop_engine/audit.log")
+        log_path = os.path.join(DATA_DIR, "audit.log")
         ts = datetime.datetime.now().isoformat(timespec="seconds")
         with open(log_path, "a") as f:
             f.write(f"[{ts}] {text}\n")
@@ -1064,7 +1066,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                     f"\n\n本需求的相关背景文件路径，需要时可自行读取：\n"
                     f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿、SCORE 评分明细（评分不足时含具体缺口原因）\n"
                     f"- {root}/.loop/context.json —— 环境上下文（数据库/Nacos/网关；setup 时可选写入，存在则被注入到每步指令）\n"
-                    f"- ~/.qoder/loop_engine/requirements.json —— 全局需求注册表"
+                    f"- {os.path.join(DATA_DIR, 'requirements.json')} —— 全局需求注册表"
                 )
     # first message creates session, subsequent messages resume it
     settings = _chat_audit_settings()

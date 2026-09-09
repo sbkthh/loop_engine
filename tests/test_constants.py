@@ -58,3 +58,56 @@ def test_shipped_model_config_names_known_steps_only():
         # nothing committed but the shape: a vendor name here would be pushed
         # into every mirror checkout and be wrong on most of them
         assert not [v for v in section.values() if v], backend
+
+
+def test_data_dir_is_named_in_exactly_one_place():
+    """The relocatability below only holds while one module spells the path. A
+    second literal keeps pointing at ~/.qoder after the move, and the two ends
+    of a guard — audit_hook.sh writing snapshots, router reading them — then
+    live in different directories with nothing failing."""
+    import re
+
+    hits = []
+    for entry in sorted(os.listdir(_REPO_ROOT)):
+        if not entry.endswith(".py"):
+            continue
+        with open(os.path.join(_REPO_ROOT, entry)) as f:
+            src = re.sub(r"\s+", " ", f.read())
+        if 'expanduser( "~/.qoder/loop_engine"' in src:
+            hits.append(entry)
+    assert hits == ["constants.py"]
+
+
+def test_one_env_relocates_every_derived_path(tmp_path):
+    """A subprocess, because these are import-time bindings — which is exactly
+    when a real run resolves them. Patching them in-process would prove nothing
+    about the env this feature is for."""
+    import json
+    import subprocess
+    import sys
+
+    data = str(tmp_path)
+    # the personal model config is the file most likely to be forgotten
+    with open(os.path.join(data, "agent_models.json"), "w") as f:
+        json.dump({"qodercli": {"default": ""}}, f)
+    code = (
+        "import json, constants, registry, scheduler, agent_cli;"
+        "from wecom_server import router;from feishu_server import feishu_api;"
+        "print(json.dumps({"
+        "'registry': registry.REGISTRY_PATH,"
+        "'pending': scheduler.PENDING_PATH,"
+        "'schedule': scheduler.CONFIG_PATH,"
+        "'log': scheduler.LOG_PATH,"
+        "'runs': scheduler.RUNS_PATH,"
+        "'snap': router._SPEC_SNAP_DIR,"
+        "'sessions': router._SESSION_DIR,"
+        "'files': feishu_api._FILES_DIR,"
+        "'models': agent_cli._model_config_path()}))"
+    )
+    env = dict(os.environ, LOOP_ENGINE_DATA_DIR=data,
+               LOOP_ENGINE_MODEL_CONFIG="")
+    r = subprocess.run([sys.executable, "-c", code], cwd=_REPO_ROOT, env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    for name, path in json.loads(r.stdout).items():
+        assert path.startswith(data + os.sep), (name, path)

@@ -21,14 +21,13 @@ import uuid
 import requests  # noqa: E402 — used by notify_pending()
 
 import agent_cli
-from constants import MAX_MAKER_ATTEMPTS, STATUS_TABLE
+from constants import DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
                         discover_modules, coerce_roots)
 from wecom_server.wecom_api import md_bold, md_color
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.expanduser("~/.qoder/loop_engine")
 REGISTRY_PATH = os.path.join(DATA_DIR, "requirements.json")
 PENDING_PATH = os.path.join(DATA_DIR, "pending.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "schedule.json")

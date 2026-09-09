@@ -1,5 +1,17 @@
 """Constants: state names, thresholds, delimiters, path templates."""
 
+import os
+
+# One place names the per-machine data dir: the requirement registry, pending
+# and schedule state, logs, sessions, spec snapshots and the personal
+# agent_models.json all hang off it. Set LOOP_ENGINE_DATA_DIR before launching
+# to relocate the whole set (a WSL home, a second account); callers join
+# subpaths so nothing gets left behind on the default. Evaluated at import, so
+# it is a launch-time setting, not a per-call one. Deliberately not
+# backend-aware — pi moves skills/agents only.
+DATA_DIR = os.environ.get("LOOP_ENGINE_DATA_DIR") or os.path.expanduser(
+    "~/.qoder/loop_engine")
+
 # Module statuses (macro phase of a module's lifecycle)
 SYNCED = "SYNCED"
 PARTIAL = "PARTIAL"

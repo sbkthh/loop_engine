@@ -16,8 +16,12 @@
 #    Read-only Bash (cat/grep/ls/git status) stays allowed.
 input=$(cat)
 
-AUDIT_LOG="${AUDIT_LOG:-$HOME/.qoder/loop_engine/audit.log}"
-SNAP_DIR="${SNAP_DIR:-$HOME/.qoder/loop_engine/spec-snapshots}"
+# Same single source as constants.DATA_DIR. router.py's correction loop globs
+# SNAP_DIR, so a relocated data dir must move both sides or the spec-edit
+# guard silently stops finding the snapshots this hook writes.
+DATA_DIR="${LOOP_ENGINE_DATA_DIR:-$HOME/.qoder/loop_engine}"
+AUDIT_LOG="${AUDIT_LOG:-$DATA_DIR/audit.log}"
+SNAP_DIR="${SNAP_DIR:-$DATA_DIR/spec-snapshots}"
 
 info=$(printf '%s' "$input" | /usr/bin/python3 -c '
 import json, sys

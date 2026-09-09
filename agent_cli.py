@@ -26,7 +26,7 @@ import shutil
 import subprocess
 from functools import lru_cache
 
-from constants import ALL_STEP_KEYS, CHAT_STEP, CLASSIFY_STEP
+from constants import ALL_STEP_KEYS, CHAT_STEP, CLASSIFY_STEP, DATA_DIR
 
 _MCP_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "minimal_mcp.json")
@@ -54,8 +54,22 @@ def backend():
 
 
 def _model_config_path():
+    """Where this machine's per-step model names live.
+
+    The repo copy is a shape-only template — a filled one fails
+    tests/test_constants.py and would push one box's model catalogue into every
+    mirror checkout — so personal values belong in <DATA_DIR>/agent_models.json,
+    which is picked up without any env. The explicit env stays for setups where
+    the data dir isn't writable (non-editable installs, see README).
+    """
     # Cache keys take the path, so pointing this env at a fixture re-reads.
-    return os.environ.get("LOOP_ENGINE_MODEL_CONFIG") or _MODEL_CONFIG
+    env = os.environ.get("LOOP_ENGINE_MODEL_CONFIG")
+    if env:
+        return env
+    personal = os.path.join(DATA_DIR, "agent_models.json")
+    if os.path.exists(personal):
+        return personal
+    return _MODEL_CONFIG
 
 
 @lru_cache(maxsize=None)

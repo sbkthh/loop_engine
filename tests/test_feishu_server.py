@@ -236,6 +236,32 @@ def test_post_message_text_only(monkeypatch):
     assert seen["content"] == "用户说：纯富文本 链接(https://x)"
 
 
+def test_unparsable_post_replies_instead_of_silence(monkeypatch):
+    """Nodes with unknown tags (screenshot / divider) parse to empty text.
+    Dropping those made the bot look dead; the sender must get a reply."""
+    pushed, pushes = _wire_dispatch_and_push(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("should not dispatch")))
+
+    payload = {
+        "header": {"event_id": "evt-post3",
+                   "event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_abc"}},
+            "message": {"message_type": "post", "message_id": "om_10",
+                        "content": json.dumps({"post": {"zh_cn": {
+                            "content": [[
+                                {"tag": "img", "image_key": "img_v1"},
+                                {"tag": "hr"},
+                            ]]}}})},
+        },
+    }
+    server._handle_event(payload)
+    assert pushed.wait(timeout=2)
+    assert pushes == [("ou_abc", "未识别到文本内容，请用纯文本重发。")]
+
+
 def test_parse_post_extracts_text_and_files():
     text, files = server._parse_post({"post": {"zh_cn": {"content": [
         [{"tag": "text", "text": "a"}, {"tag": "at", "user_id": "u"}],

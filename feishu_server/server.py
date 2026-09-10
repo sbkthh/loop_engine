@@ -88,6 +88,15 @@ def _handle_event(payload):
         text, files = _parse_post(pc)
         logger.info("[feishu] post from %s: %s (%d file(s))",
                     open_id, text[:100], len(files))
+        if not text and not files:
+            # Every node carried an unknown tag (img / hr / code_block /
+            # todo) or the text sat in the post title. Dropping it silently
+            # is indistinguishable from "service down" to the sender, and
+            # the raw payload is what tells us which tag to support next.
+            logger.info("[feishu] unparsed post payload: %s",
+                        str(message.get("content", ""))[:2000])
+            _push(open_id, "未识别到文本内容，请用纯文本重发。")
+            return
         threading.Thread(target=_process_post, daemon=True,
                          args=(message.get("message_id", ""), text,
                                files, open_id)).start()

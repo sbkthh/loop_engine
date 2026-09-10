@@ -17,7 +17,8 @@ from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         resolve_project_roots,
                         read_test_commands,
                         read_checker_test_commands,
-                        read_maker_test_commands)
+                        read_maker_test_commands,
+                        read_synced_test_commands)
 import spec_utils
 
 
@@ -374,3 +375,46 @@ class TestPerRepoCommandHelpers(unittest.TestCase):
                          "mvn clean test -pl inventory -am")
         self.assertEqual(out[os.path.abspath(self.repo_b)],
                          "mvn clean test -pl consumer -am")
+
+
+class TestSyncedTestCommands(unittest.TestCase):
+    """The final gate runs the change's own modules, not the whole reactor.
+
+    Motivation: cross-dock-dashboard was blocked by WmsDashboardTest, a
+    pre-existing environmental red in kunhe-report that the module never
+    touched. The gate verifies what changed.
+    """
+
+    def setUp(self):
+        self.cmd_by_repo = {
+            os.path.abspath("/repos/kunhe-report"): "mvn clean test",
+            os.path.abspath("/repos/opc-sna"): "mvn clean test",
+        }
+
+    def test_only_repos_owning_declared_files_are_planned(self):
+        out = read_synced_test_commands(
+            self.cmd_by_repo, ["/repos/kunhe-report", "/repos/opc-sna"],
+            ["/repos/kunhe-report/kunhe-report-server/src/main/java/X.java"])
+        self.assertEqual(out, {os.path.abspath("/repos/kunhe-report"):
+                               "mvn clean test -pl kunhe-report-server -am"})
+
+    def test_clean_survives_unlike_the_checker_variant(self):
+        # CHECKER may skip clean because GREEN just ran it; the last gate may
+        # not — a stale target/ must not be able to reach SYNCED.
+        out = read_synced_test_commands(
+            self.cmd_by_repo, ["/repos/opc-sna"],
+            ["/repos/opc-sna/consumer/src/main/java/Y.java"])
+        cmd = out[os.path.abspath("/repos/opc-sna")]
+        self.assertIn("clean test", cmd)
+        self.assertNotEqual(cmd, "mvn test -pl consumer -am")
+
+    def test_files_outside_every_repo_plan_nothing(self):
+        # Empty dict is the caller's signal to fall back to the base command;
+        # a module that declares no files must not silently skip the gate.
+        self.assertEqual(
+            read_synced_test_commands(self.cmd_by_repo,
+                                      ["/repos/kunhe-report"],
+                                      ["/somewhere/else/a.java"]), {})
+        self.assertEqual(
+            read_synced_test_commands(self.cmd_by_repo,
+                                      ["/repos/kunhe-report"], []), {})

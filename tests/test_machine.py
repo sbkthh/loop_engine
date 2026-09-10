@@ -1835,6 +1835,43 @@ class TestExecuteSyncedMultiRepo(unittest.TestCase):
             machine._execute_synced(state, self.key, module)
         return module
 
+    def _run_cmds(self, rc_by_repo=None):
+        from unittest import mock
+        machine = StateMachine(self.root)
+        state = machine.sm.load()
+        module = state["modules"][self.key]
+        seen = []
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            seen.append((cwd, " ".join(cmd)))
+            return types.SimpleNamespace(
+                returncode=(rc_by_repo or {}).get(cwd, 0), stdout="", stderr="")
+
+        with mock.patch("machine.subprocess.run", side_effect=fake_run):
+            machine._execute_synced(state, self.key, module)
+        return seen, module
+
+    def test_gate_runs_only_repos_owning_the_declared_files(self):
+        # The cross-dock-dashboard case: an unrelated pre-existing red in a
+        # sibling repo must not be able to hold this module out of SYNCED.
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["files_modified"] = [os.path.join(
+            self.repo_a, "inventory/src/main/java/Foo.java")]
+        sm.save(state)
+        seen, module = self._run_cmds()
+        self.assertEqual([cwd for cwd, _ in seen], [self.repo_a])
+        self.assertEqual(seen[0][1], "mvn clean test -pl inventory -am")
+        self.assertEqual(module["status"], "SYNCED")
+
+    def test_module_declaring_no_files_still_faces_full_gate(self):
+        # Scoping must never become a way to skip the gate: with nothing
+        # declared, every bound repo still runs its base command.
+        seen, _ = self._run_cmds()
+        self.assertEqual(sorted(cwd for cwd, _ in seen),
+                         sorted([self.repo_a, self.repo_b]))
+        self.assertEqual({cmd for _, cmd in seen}, {"mvn clean test"})
+
     def test_all_repos_green_reaches_synced(self):
         module = self._run({self.repo_a: 0, self.repo_b: 0})
         self.assertEqual(module["status"], "SYNCED")

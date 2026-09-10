@@ -21,6 +21,7 @@ from spec_utils import (discover_modules, compute_spec_hash,
                         compute_spec_norm_hash, compute_plan_hash,
                         derive_spec_path, derive_plan_path, resolve_project_root,
                         coerce_roots, read_test_commands,
+                        read_synced_test_commands,
                         count_plan_existing_claims)
 from parser import (
     parse_maker_output, parse_checker_output,
@@ -744,9 +745,18 @@ class StateMachine:
                      for r in coerce_roots(module.get(
                          "project_roots", module.get("project_root")))]
             cmd_by_repo = read_test_commands(roots)
+            scoped = read_synced_test_commands(
+                cmd_by_repo, roots,
+                module.get("files_created", []) + module.get("files_modified", []))
             failures = {}
             for repo in roots:
-                cmd = cmd_by_repo[repo]
+                cmd = scoped.get(os.path.abspath(repo))
+                if cmd is None:
+                    if scoped:
+                        # no file of this module lives in this repo — nothing
+                        # here can have been made inconsistent by the change
+                        continue
+                    cmd = cmd_by_repo[repo]
                 try:
                     result = subprocess.run(
                         cmd.split(), cwd=repo,

@@ -221,6 +221,22 @@ def _with_module_scope(cmd, modules):
     return cmd
 
 
+def _module_names(repo_root, files):
+    """Maven module names that own `files`, stripped relative to the OWNING
+    REPO (Bug α: stripping against the requirement root yields the repo name).
+    Files outside repo_root are ignored — no reactor here can test them.
+    """
+    repo_root = os.path.abspath(repo_root).replace(os.sep, "/") + "/"
+    modules = set()
+    for path in files:
+        path = path.replace(os.sep, "/")
+        if path.startswith(repo_root):
+            first = path[len(repo_root):].split("/", 1)[0]
+            if first:
+                modules.add(first)
+    return modules
+
+
 def read_checker_test_command(cmd, repo_root, files=()):
     """CHECKER-only incremental test command scoped to the modules of `files`.
 
@@ -230,15 +246,7 @@ def read_checker_test_command(cmd, repo_root, files=()):
     the stripped first segment is the repo name and `-pl` is wrong.
     """
     cmd = re.sub(r"\bclean\s+", "", cmd)
-    repo_root = os.path.abspath(repo_root).replace(os.sep, "/") + "/"
-    modules = set()
-    for path in files:
-        path = path.replace(os.sep, "/")
-        if path.startswith(repo_root):
-            first = path[len(repo_root):].split("/", 1)[0]
-            if first:
-                modules.add(first)
-    return _with_module_scope(cmd, modules)
+    return _with_module_scope(cmd, _module_names(repo_root, files))
 
 
 _PLAN_SRC_RE = re.compile(r"([\w.-]+)/src/(?:main|test)/")
@@ -303,6 +311,27 @@ def read_checker_test_commands(cmd_by_repo, repo_roots, files):
     return {repo: read_checker_test_command(
         cmd_by_repo.get(repo, "mvn test"), repo, buckets[repo])
         for repo in buckets}
+
+
+def read_synced_test_commands(cmd_by_repo, repo_roots, files):
+    """Per-repo final-gate command, scoped to the modules the module declares.
+
+    Same scoping source as CHECKER (the declared files, which scope_audit
+    verifies against git), but `clean` stays: this is the last gate before
+    SYNCED, and a stale target/ must not be able to pass it. Unlike the CHECKER
+    variant, a repo with no files of this module gets NO run at all — the gate
+    verifies what changed, and an untouched repo's pre-existing red is not this
+    module's inconsistency.
+    """
+    buckets = _files_by_repo(repo_roots, files)
+    out = {}
+    for repo, owned in buckets.items():
+        if not owned:
+            continue
+        out[repo] = _with_module_scope(
+            cmd_by_repo.get(repo, "mvn clean test"),
+            _module_names(repo, owned))
+    return out
 
 
 def read_maker_test_commands(cmd_by_repo, repo_roots, plan_path):

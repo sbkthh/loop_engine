@@ -550,10 +550,11 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         """review_fix_attempt left over from a run that died mid-fix must
         reset on the next cycle's SCORE commit, else the
         MAX_REVIEW_FIX_CYCLES guard skips CODE_REVIEW_FIX."""
+        from constants import MAX_REVIEW_FIX_CYCLES
         self._init_module_ready()
         sm = StateManager(self.root)
         state = sm.load()
-        state["modules"][self.key]["review_fix_attempt"] = 1
+        state["modules"][self.key]["review_fix_attempt"] = MAX_REVIEW_FIX_CYCLES
         sm.save(state)
         machine = StateMachine(self.root)
 

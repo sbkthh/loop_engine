@@ -1240,6 +1240,69 @@ class TestRun(SchedulerBase):
             scheduler.run_requirement("req")
         self.assertEqual(actions, ["SCORE"])
 
+    def test_step_spawn_clears_the_previous_round_archive(self):
+        """A shared session plus a readable result-<ACTION>.md lets a backend
+        echo last round's verdict instead of re-deriving one — measured on pi,
+        where SCORE returned 72 unchanged against a spec that had grown. The
+        archive must be gone before the step starts."""
+        root = self._register_pending("req")
+        archive = os.path.join(root, ".loop", "result-SCORE.md")
+        with open(archive, "w") as f:
+            f.write('{"score": 72}')
+        seen = []
+        next_actions = ["SCORE", "IDLE"]
+
+        def spy(root_, sid, system_prompt, user_text, action=None):
+            seen.append(os.path.exists(archive))
+            return ["/bin/true"]
+
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(
+                    next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": next_actions.pop(0),
+                                           "module": "c/m"}),
+                        stderr="", returncode=0)
+                return types.SimpleNamespace(
+                    stdout=json.dumps({"action": "SCORE",
+                                       "next_action": "MAKER_STEP0"}),
+                    stderr="", returncode=0)
+            with open(os.path.join(root, ".loop", "result.md"), "w") as f:
+                f.write("ok")
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch.object(agent_cli, "build_cmd", spy), \
+                mock.patch.object(scheduler.subprocess, "run",
+                                  side_effect=fake_run):
+            scheduler.run_requirement("req")
+        self.assertEqual(seen, [False])
+
+    def test_agent_prompt_declares_result_files_output_only(self):
+        """Every step shares one prompt, so the ban on reading past verdicts
+        belongs there rather than being repeated per action."""
+        self.assertIn("result-*.md", scheduler.LOOP_AGENT_PROMPT)
+        self.assertIn("never read them as", scheduler.LOOP_AGENT_PROMPT)
+
+    def test_run_refuses_while_gray_drafts_are_pending(self):
+        """next() cannot reach _gray_resume until the drafts are adjudicated,
+        so an ungated run silently replays the chain from SCORE (measured: a
+        full 31-minute run). Refuse loudly, and spawn nothing."""
+        root = self._register_pending("req")
+        state_path = os.path.join(root, ".loop", "state.json")
+        with open(state_path) as f:
+            state = json.load(f)
+        state["gray_drafts"] = [{"id": 1, "module": "c/m", "summary": "warn",
+                                 "status": "pending"}]
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+
+        with mock.patch.object(scheduler.subprocess, "run",
+                               side_effect=AssertionError("spawned")):
+            result = scheduler.run_requirement("req")
+        self.assertIn("灰名单草稿待裁决", result["error"])
+
     def _run_capture_first_qodercli_cmd(self, model_value):
         root = self._register_pending("req")
         captured = []

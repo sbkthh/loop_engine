@@ -70,6 +70,10 @@ LOOP_AGENT_PROMPT = (
     "and write your output to .loop/result.md in the specified output format. "
     "The directives may carry 'context.previous_result' — the previous step's "
     "output; use it as context for continuity. "
+    ".loop/result.md and .loop/result-*.md are output-only: never read them as "
+    "input. They hold some past round's verdict, and echoing one instead of "
+    "re-deriving from the current files turns a re-run into a false pass. "
+    "Re-read the spec/plan files themselves every time. "
     "If 'context.environment' is present, it lists this requirement's runtime "
     "endpoints (UAT databases, Nacos namespace/data_ids, API gateways); secret "
     "values are given as *_env variable NAMES, not plaintext — resolve them from "
@@ -1006,6 +1010,15 @@ def run_requirement(name, module=None):
     if not req:
         return {"error": f"Requirement not registered: {name}"}
     root = req["root"]
+    if _has_pending_gray_drafts(root):
+        # Same gate approve() and dispatch() apply. machine.next() cannot use
+        # _gray_resume while drafts are pending, so an ungated run falls back
+        # to the status entry and replays the whole chain from SCORE.
+        _log(f"run {name}: blocked by pending gray drafts")
+        return {"error": (
+            f"{name} 有灰名单草稿待裁决，未执行。先跑 "
+            f"loop_engine resolve-draft --root <root> <id> accept|reject"
+            f"（或微信回复裁决）再执行")}
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
     user_id = None
@@ -1082,6 +1095,16 @@ def run_requirement(name, module=None):
                 sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                      f"{root}:{module_key}"))
             try:
+                # Remove this action's archive from a previous round before the
+                # spawn: a backend that finds result-<ACTION>.md readable may
+                # echo its verdict instead of re-deriving one from the spec,
+                # which is a false pass. Commit rewrites it after the step, so
+                # nothing that would have survived a round is lost — only the
+                # few minutes of a re-run in which a stale human-facing pointer
+                # (result-CHECKER.md) is absent.
+                stale = os.path.join(root, ".loop", f"result-{action}.md")
+                if os.path.exists(stale):
+                    os.unlink(stale)
                 cmd = agent_cli.build_cmd(root, sid, LOOP_AGENT_PROMPT,
                                           json.dumps(payload), action)
                 # cwd=root: the codegraph MCP child inherits this process's OS

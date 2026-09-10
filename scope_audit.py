@@ -12,9 +12,9 @@ import sys
 from constants import STATE_FILE
 
 try:
-    from scheduler import notify_text as _wecom_notify
+    from scheduler import notify_text as _chat_notify
 except ImportError:
-    _wecom_notify = None
+    _chat_notify = None
 
 # Engine-internal artifacts filtered from git status output
 _FILTER_DIRS = frozenset({".loop", ".codegraph", ".git"})
@@ -181,8 +181,8 @@ def format_report(results):
     return "\n".join(lines)
 
 
-def format_wecom_summary(results):
-    """Compact one-line-per-module summary for WeChat notification (fits <2048 bytes).
+def format_chat_summary(results):
+    """Compact one-line-per-module summary for the chat notification (fits <2048 bytes).
 
     Only called when there are unexplained changes — clean modules are not
     included; the goal is to surface what needs attention, not confirm what's fine.
@@ -211,16 +211,16 @@ def format_wecom_summary(results):
     return "\n".join(lines)
 
 
-def notify_wecom(results, root):
+def notify_chat(results, root):
     """Push audit summary via WeCom when there are gaps. Silently skipped otherwise."""
     has_gaps = any(r.get("unexplained") for r in results.values())
     if not has_gaps:
         return False
-    if not _wecom_notify:
+    if not _chat_notify:
         return False
     try:
-        text = format_wecom_summary(results)
-        return _wecom_notify(text)
+        text = format_chat_summary(results)
+        return _chat_notify(text)
     except Exception:
         return False
 
@@ -236,4 +236,4 @@ def cmd_scope_audit(args):
 
     results = audit(state, root)
     print(format_report(results))
-    notify_wecom(results, root)
+    notify_chat(results, root)

@@ -1825,9 +1825,10 @@ class TestNotify(SchedulerBase):
         self.assertTrue(text.startswith("**[调度] 检测到待处理项：**"))
         self.assertIn("**req-a**（Spec变更）：c/m", text)
         self.assertIn("**req-b**（待完善）：c/m", text)
-        self.assertIn("微信回复「批准执行 req-a」即可开始执行", text)
+        self.assertIn("回复「批准执行 req-a」即可开始执行", text)
         self.assertIn("请回复「完善spec」进一步完善 spec", text)
         self.assertNotIn("终端执行", text)
+        self.assertNotIn("微信回复", text)
 
     def test_notify_pending_gray_list_guides_adjudication(self):
         with mock.patch.object(scheduler, "notify_pending",

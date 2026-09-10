@@ -490,7 +490,7 @@ def _format_gray_draft(d, summary_max=_GRAY_SUMMARY_MAX, prefix=""):
 
     The raw summary is free-form checker prose (markdown links, backticks,
     embedded [type] prefixes, 700+ chars) — flatten it into three short
-    lines so the adjudication message stays readable on WeChat.
+    lines so the adjudication message stays readable in a chat bubble.
     summary_max=None keeps the full text (used by the 查看灰名单 reply,
     where the full reasoning is needed to adjudicate).
     """
@@ -535,7 +535,7 @@ def _pending_gray_evidence(root):
 
 
 def notify_pending(fresh_entries):
-    """Push WeCom notification for newly detected pending items."""
+    """Push a chat notification for newly detected pending items."""
     if not fresh_entries:
         return
     lines = [md_bold("[调度] 检测到待处理项：")]
@@ -559,7 +559,7 @@ def notify_pending(fresh_entries):
                         f"请回复「查看灰名单」了解详情")
             else:
                 advice.append(
-                    f"微信回复「批准执行 {entry['requirement']}」即可开始执行")
+                    f"回复「批准执行 {entry['requirement']}」即可开始执行")
         elif trigger == NEEDS_REFINEMENT:
             advice.append("请回复「完善spec」进一步完善 spec")
         elif trigger == BLOCKED:
@@ -938,7 +938,7 @@ def _end_message(name, end, steps, elapsed_min, failure_detail, root, module=Non
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
     if end == "gray_list":
         return (f"{base}{md_color('执行暂停', 'comment')}：Checker 发现待人工裁决的问题（灰名单）。"
-                f"微信回复「查看灰名单」了解详情")
+                f"回复「查看灰名单」了解详情")
     if end == "no_advance":
         reason = _no_advance_reason(root, module)
         next_hint = ("处理完成后回复「批准执行 {name}」继续"
@@ -1018,7 +1018,7 @@ def run_requirement(name, module=None):
         return {"error": (
             f"{name} 有灰名单草稿待裁决，未执行。先跑 "
             f"loop_engine resolve-draft --root <root> <id> accept|reject"
-            f"（或微信回复裁决）再执行")}
+            f"（或在聊天里回复裁决）再执行")}
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
     user_id = None

@@ -620,5 +620,54 @@ class ChatStepTest(unittest.TestCase):
                              classify)
 
 
+class SessionProbeTest(unittest.TestCase):
+    """P5: a probe that misses is not neutral — the step then gets
+    --session-id for a session that already exists and qodercli exits 42."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        patcher = mock.patch.object(
+            agent_cli.os.path, "expanduser",
+            side_effect=lambda p: p.replace("~", self.home))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_session(self, slug_cwd, sid):
+        # qodercli's own slug comes from the path it booted in, which is the
+        # resolved one (macOS tempdirs live under /var → /private/var)
+        processed = os.path.realpath(slug_cwd).replace("/", "-").replace(".", "-")
+        d = os.path.join(self.home, ".qoder", "projects", processed)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"{sid}.jsonl"), "w") as f:
+            f.write("{}\n")
+
+    def test_finds_session_of_a_symlinked_root(self):
+        real = os.path.join(self.tmp.name, "real-ws")
+        os.makedirs(real)
+        link = os.path.join(self.tmp.name, "link-ws")
+        os.symlink(real, link)
+        self._write_session(real, "sid-1")
+        self.assertTrue(agent_cli._session_file_exists("sid-1", link))
+
+    def test_missing_session_stays_missing(self):
+        real = os.path.join(self.tmp.name, "real-ws")
+        os.makedirs(real)
+        self.assertFalse(agent_cli._session_file_exists("sid-1", real))
+
+
+class SessionDirsTest(unittest.TestCase):
+    def test_covers_every_backend_regardless_of_selection(self):
+        """P4: the weekly cron cleaned only qodercli, so pi sessions grew
+        unbounded. Backend selection is per-spawn; disk hygiene is not."""
+        expected = {os.path.expanduser("~/.qoder/projects"),
+                    os.path.expanduser("~/.pi/agent/sessions")}
+        with _default_env():
+            self.assertEqual(set(agent_cli.session_dirs()), expected)
+            os.environ["LOOP_ENGINE_AGENT_CLI"] = "pi"
+            self.assertEqual(set(agent_cli.session_dirs()), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

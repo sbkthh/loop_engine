@@ -413,8 +413,9 @@ def cmd_manual_end(args):
 
 
 def session_clean(projects_dir, older_than_days, dry_run=False):
-    """Delete qodercli session files (<project>/<uuid>.jsonl + sibling dir)
-    older than N days, for every project dir under ~/.qoder/projects."""
+    """Delete session files (<project>/<uuid>.jsonl + sibling dir) older than
+    N days under *projects_dir*. Called once per backend store — see
+    agent_cli.session_dirs()."""
     cutoff = time.time() - older_than_days * 86400
     removed = 0
     if not os.path.isdir(projects_dir):
@@ -439,11 +440,13 @@ def session_clean(projects_dir, older_than_days, dry_run=False):
 
 
 def cmd_session_clean(args):
-    projects_dir = os.path.expanduser("~/.qoder/projects")
-    removed = session_clean(projects_dir, args.older_than, dry_run=args.dry_run)
-    prefix = "[dry-run] " if args.dry_run else ""
-    print(f"{prefix}Removed {removed} session(s) older than "
-          f"{args.older_than}d from {projects_dir}")
+    import agent_cli
+    for projects_dir in agent_cli.session_dirs():
+        removed = session_clean(projects_dir, args.older_than,
+                                dry_run=args.dry_run)
+        print(f"{'[dry-run] ' if args.dry_run else ''}"
+              f"Removed {removed} session(s) older than "
+              f"{args.older_than}d from {projects_dir}")
 
 
 def cmd_schedule_status(args):

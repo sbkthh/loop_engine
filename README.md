@@ -315,6 +315,10 @@ loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
 ```
 
+> 有未裁决的灰名单草稿时 `run` 直接拒绝执行（与 `approve`/自动派发同一道闸）：
+> `machine.next()` 在草稿未裁决前拿不到 `_gray_resume`，硬跑会退回 SCORE 把整链
+> 重付一遍。先 `resolve-draft` 裁决，再 run。
+
 ### 调度器配置
 
 ```bash
@@ -336,7 +340,7 @@ loop_engine schedule max-concurrency 2
 ### 定时自动轮询（crontab）
 
 ```bash
-# 每 10 分钟轮询一次 + 每周一 3 点清理旧 qodercli 会话（shim 路径，不依赖 cd）
+# 每 10 分钟轮询一次 + 每周一 3 点清理各后端旧会话（qodercli 与 pi 都扫，shim 路径，不依赖 cd）
 crontab -e
 */10 * * * * ~/.local/bin/loop_engine poll
 0 3 * * 1 ~/.local/bin/loop_engine session-clean

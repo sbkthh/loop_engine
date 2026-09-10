@@ -183,8 +183,11 @@ def _configured_model(name, step):
 def _session_file_exists(sid, cwd):
     """True when a persisted session jsonl already exists for (sid, cwd).
     qodercli stores sessions under
-    ~/.qoder/projects/<cwd-with-slashes-and-dots-as-dashes>/<sid>.jsonl."""
-    processed = cwd.replace("/", "-").replace(".", "-")
+    ~/.qoder/projects/<resolved-cwd-with-slashes-and-dots-as-dashes>/<sid>.jsonl.
+    realpath is load-bearing: the CLI slugifies the *resolved* path, so a root
+    behind a symlink (macOS /tmp → /private/tmp) would otherwise never match,
+    and the follow-up step would pass --session-id for a live session and exit 42."""
+    processed = os.path.realpath(cwd).replace("/", "-").replace(".", "-")
     path = os.path.expanduser(f"~/.qoder/projects/{processed}/{sid}.jsonl")
     return os.path.isfile(path)
 
@@ -364,13 +367,15 @@ _BACKENDS = {
                  "clean": _qodercli_clean_reply,
                  "audit": "settings",
                  "skills": "~/.qoder/skills",
-                 "agents": "~/.qoder/agents"},
+                 "agents": "~/.qoder/agents",
+                 "sessions": "~/.qoder/projects"},
     "pi": {"cmd": _pi_cmd,
            "chat": _pi_chat_cmd,
            "clean": _pi_clean_reply,
            "audit": "extension",
            "skills": "~/.pi/agent/skills",
-           "agents": "~/.pi/agent/agents"},
+           "agents": "~/.pi/agent/agents",
+           "sessions": "~/.pi/agent/sessions"},
 }
 
 
@@ -388,6 +393,13 @@ def asset_dirs():
     p = _profile()
     return (os.path.expanduser(p["skills"]),
             os.path.expanduser(p["agents"]))
+
+
+def session_dirs():
+    """Session stores of every known backend. Unlike assets this is not
+    filtered by the active one: a machine that switched backends would leave
+    the previous backend's jsonl files growing without bound."""
+    return [os.path.expanduser(p["sessions"]) for p in _BACKENDS.values()]
 
 
 def build_cmd(root, sid, system_prompt, user_text, action=None):

@@ -225,6 +225,11 @@ def _module_names(repo_root, files):
     """Maven module names that own `files`, stripped relative to the OWNING
     REPO (Bug α: stripping against the requirement root yields the repo name).
     Files outside repo_root are ignored — no reactor here can test them.
+    A first segment that exists on disk WITHOUT a pom.xml is not a maven
+    module (openspec/, docs/): scoping to it runs 'mvn -pl openspec' and the
+    reactor dies with "Could not find the selected project" instead of
+    testing the module. Segments absent from disk stay trusted as declared
+    (synthetic paths in tests, files not yet materialized).
     """
     repo_root = os.path.abspath(repo_root).replace(os.sep, "/") + "/"
     modules = set()
@@ -232,8 +237,13 @@ def _module_names(repo_root, files):
         path = path.replace(os.sep, "/")
         if path.startswith(repo_root):
             first = path[len(repo_root):].split("/", 1)[0]
-            if first:
-                modules.add(first)
+            if not first:
+                continue
+            seg_dir = os.path.join(repo_root, first)
+            if os.path.isdir(seg_dir) and not os.path.exists(
+                    os.path.join(seg_dir, "pom.xml")):
+                continue
+            modules.add(first)
     return modules
 
 
@@ -321,16 +331,21 @@ def read_synced_test_commands(cmd_by_repo, repo_roots, files):
     SYNCED, and a stale target/ must not be able to pass it. Unlike the CHECKER
     variant, a repo with no files of this module gets NO run at all — the gate
     verifies what changed, and an untouched repo's pre-existing red is not this
-    module's inconsistency.
+    module's inconsistency. Same for a repo whose declared files all live in
+    directories that are not maven modules (docs-only: openspec/ plans and
+    specs) — there is no reactor scoping to run, and 'mvn -pl openspec' would
+    die in the reactor (false BLOCKED).
     """
     buckets = _files_by_repo(repo_roots, files)
     out = {}
     for repo, owned in buckets.items():
         if not owned:
             continue
+        modules = _module_names(repo, owned)
+        if not modules:
+            continue
         out[repo] = _with_module_scope(
-            cmd_by_repo.get(repo, "mvn clean test"),
-            _module_names(repo, owned))
+            cmd_by_repo.get(repo, "mvn clean test"), modules)
     return out
 
 

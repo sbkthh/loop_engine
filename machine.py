@@ -745,16 +745,18 @@ class StateMachine:
                      for r in coerce_roots(module.get(
                          "project_roots", module.get("project_root")))]
             cmd_by_repo = read_test_commands(roots)
-            scoped = read_synced_test_commands(
-                cmd_by_repo, roots,
-                module.get("files_created", []) + module.get("files_modified", []))
+            declared = (module.get("files_created", [])
+                        + module.get("files_modified", []))
+            scoped = read_synced_test_commands(cmd_by_repo, roots, declared)
             failures = {}
             for repo in roots:
                 cmd = scoped.get(os.path.abspath(repo))
                 if cmd is None:
-                    if scoped:
-                        # no file of this module lives in this repo — nothing
-                        # here can have been made inconsistent by the change
+                    if scoped or declared:
+                        # nothing testable in this repo for the change: either
+                        # no declared file lives here, or its declared files
+                        # map to no maven module (docs-only under openspec/) —
+                        # nothing here can have been made inconsistent
                         continue
                     cmd = cmd_by_repo[repo]
                 try:

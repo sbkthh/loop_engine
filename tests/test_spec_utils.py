@@ -233,6 +233,11 @@ class TestCheckerTestCommandRepoRoot(unittest.TestCase):
         self.req_root = self.tmp.name
         self.repo = os.path.join(self.req_root, "kunhe-wms")
         os.makedirs(os.path.join(self.repo, "inventory-service", "src/main/java"))
+        # Real maven modules carry a pom.xml; _module_names only trusts a
+        # first segment as a module when it does (or when it does not exist).
+        for d in (self.repo, os.path.join(self.repo, "inventory-service")):
+            with open(os.path.join(d, "pom.xml"), "w"):
+                pass
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -336,8 +341,10 @@ class TestPerRepoCommandHelpers(unittest.TestCase):
         self.root = self.tmp.name
         self.repo_a = os.path.join(self.root, "kunhe-wms")
         self.repo_b = os.path.join(self.root, "opc-sna")
-        os.makedirs(os.path.join(self.repo_a, "inventory/src/main/java"))
-        os.makedirs(os.path.join(self.repo_b, "consumer/src/main/java"))
+        for repo, mod in ((self.repo_a, "inventory"), (self.repo_b, "consumer")):
+            os.makedirs(os.path.join(repo, mod, "src/main/java"))
+            with open(os.path.join(repo, mod, "pom.xml"), "w"):
+                pass
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -418,3 +425,30 @@ class TestSyncedTestCommands(unittest.TestCase):
         self.assertEqual(
             read_synced_test_commands(self.cmd_by_repo,
                                       ["/repos/kunhe-report"], []), {})
+
+    def test_docs_only_repo_plans_no_run(self):
+        # sku-management regression: declared files under <repo>/openspec/
+        # (plan/spec markdown) used to scope 'mvn clean test -pl openspec',
+        # dying in the reactor ("Could not find the selected project in the
+        # reactor: openspec") and falsely blocking the module.
+        with tempfile.TemporaryDirectory() as root:
+            repo = os.path.join(root, "opc-sna")
+            os.makedirs(os.path.join(repo, "openspec/changes/chg/plans"))
+            out = read_synced_test_commands(
+                {os.path.abspath(repo): "mvn clean test"}, [repo],
+                [os.path.join(repo, "openspec/changes/chg/plans/p.md")])
+            self.assertEqual(out, {})
+
+    def test_docs_files_do_not_poison_code_module_scoping(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = os.path.join(root, "opc-sna")
+            os.makedirs(os.path.join(repo, "openspec/changes/chg"))
+            os.makedirs(os.path.join(repo, "svc/src/main/java"))
+            with open(os.path.join(repo, "svc/pom.xml"), "w"):
+                pass
+            out = read_synced_test_commands(
+                {os.path.abspath(repo): "mvn clean test"}, [repo],
+                [os.path.join(repo, "openspec/changes/chg/spec.md"),
+                 os.path.join(repo, "svc/src/main/java/Foo.java")])
+            self.assertEqual(out, {os.path.abspath(repo):
+                                   "mvn clean test -pl svc -am"})

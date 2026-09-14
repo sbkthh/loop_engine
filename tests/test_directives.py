@@ -194,6 +194,8 @@ class TestMultiRepoDirectiveWire(unittest.TestCase):
         self.repo_b = os.path.join(self.root, "opc-sna")
         for repo, mod in ((self.repo_a, "inventory"), (self.repo_b, "consumer")):
             os.makedirs(os.path.join(repo, mod, "src/main/java"))
+            with open(os.path.join(repo, mod, "pom.xml"), "w"):
+                pass
 
     def tearDown(self):
         self.tmp.cleanup()

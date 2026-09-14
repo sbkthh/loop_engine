@@ -1872,6 +1872,36 @@ class TestExecuteSyncedMultiRepo(unittest.TestCase):
                          sorted([self.repo_a, self.repo_b]))
         self.assertEqual({cmd for _, cmd in seen}, {"mvn clean test"})
 
+    def test_docs_only_declaration_skips_every_repo(self):
+        # sku-management regression: declared files are plan/spec markdown
+        # under openspec/ — no maven module ever runs, and the gate must not
+        # die on 'mvn -pl openspec' (reactor error -> false BLOCKED).
+        os.makedirs(os.path.join(self.repo_a, "openspec/changes/chg/plans"))
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["files_modified"] = [os.path.join(
+            self.repo_a, "openspec/changes/chg/plans/p.md")]
+        sm.save(state)
+        seen, module = self._run_cmds()
+        self.assertEqual(seen, [])
+        self.assertEqual(module["status"], "SYNCED")
+
+    def test_docs_only_repo_does_not_block_the_code_repo_run(self):
+        os.makedirs(os.path.join(self.repo_a, "openspec/changes/chg"))
+        os.makedirs(os.path.join(self.repo_b, "mod/src/main/java"))
+        with open(os.path.join(self.repo_b, "mod/pom.xml"), "w"):
+            pass
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["files_modified"] = [
+            os.path.join(self.repo_a, "openspec/changes/chg/spec.md"),
+            os.path.join(self.repo_b, "mod/src/main/java/Foo.java")]
+        sm.save(state)
+        seen, module = self._run_cmds()
+        self.assertEqual([cwd for cwd, _ in seen], [self.repo_b])
+        self.assertEqual(seen[0][1], "mvn clean test -pl mod -am")
+        self.assertEqual(module["status"], "SYNCED")
+
     def test_all_repos_green_reaches_synced(self):
         module = self._run({self.repo_a: 0, self.repo_b: 0})
         self.assertEqual(module["status"], "SYNCED")

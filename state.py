@@ -8,7 +8,7 @@ import tempfile
 import time
 
 from constants import STATE_FILE, CONTEXT_FILE, PRIORITY_ORDER, DRAFT
-from spec_utils import coerce_roots
+from spec_utils import coerce_roots, derive_plan_path
 
 logger = logging.getLogger("loop")
 
@@ -51,18 +51,49 @@ class StateManager:
 
     @staticmethod
     def _migrate(state):
-        """Promote legacy scalar `project_root` to canonical `project_roots`.
+        """Reconstruct fields older state.json files predate, in memory only.
 
-        Memory-only; disk files are not rewritten by this pass. The derived
-        scalar is kept in sync (= project_roots[0]) so un-migrated readers
-        keep working for one release. Idempotent.
+        Covers `project_root` -> canonical `project_roots` (the derived scalar
+        is kept in sync = project_roots[0] so un-migrated readers keep working
+        for one release) and the missing `ever_synced` flag. Disk files are not
+        rewritten by this pass; both passes are idempotent.
         """
         for mod in state.get("modules", {}).values():
             roots = coerce_roots(mod.get("project_roots",
                                           mod.get("project_root")))
             mod["project_roots"] = roots
             mod["project_root"] = roots[0]
+        StateManager._backfill_ever_synced(state)
         return state
+
+    @staticmethod
+    def _backfill_ever_synced(state):
+        """Recover `ever_synced` for modules that synced before it existed.
+
+        The flag (added 2026-09-08) gates the CLASSIFY_CHANGE light path, so a
+        module that shipped earlier re-runs SCORE -> MAKER_STEP0 -> whole-
+        document CHECKER on every later change. Reconstruct it from evidence
+        rather than a one-off script: `last_synced` alone is NOT enough -- that
+        is exactly the "no code yet but marked SYNCED" case f908a23 guarded
+        against -- so a plan must still be on disk *and* a MAKER must have run.
+        Read-only and per-load, so a module losing its plan self-corrects.
+        """
+        root = state.get("root_dir") or ""
+        if not os.path.isabs(root):
+            return
+        for mod in state.get("modules", {}).values():
+            if mod.get("ever_synced") or not mod.get("last_synced"):
+                continue
+            if mod.get("maker_attempt", 0) < 1:
+                continue
+            paths = [derive_plan_path(mod.get("change_id"),
+                                      mod.get("module_name"), root)]
+            stored = mod.get("plan_path")
+            if stored:
+                paths.append(stored if os.path.isabs(stored)
+                             else os.path.join(root, stored))
+            if any(os.path.exists(p) for p in paths):
+                mod["ever_synced"] = True
 
     def _recover_corrupt(self):
         """Unparseable state.json: quarantine it, restore last good backup."""

@@ -279,5 +279,124 @@ class TestAddModuleProjectRoots(unittest.TestCase):
         self.assertEqual(module["project_root"], "./b")
 
 
+class TestEverSyncedBackfill(unittest.TestCase):
+    """Loader shim: modules that shipped before `ever_synced` existed (f908a23)
+    regain the CLASSIFY_CHANGE light path, but only on three-way evidence."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sm = StateManager(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_raw(self, mod_fields):
+        raw = {
+            "version": 1,
+            "root_dir": self.sm.root_dir,
+            "current": {"module": None, "action": None, "attempt": 0},
+            "modules": {"chg/mod": dict(mod_fields)},
+            "gray_drafts": [], "trace": [], "audit_trail": [],
+        }
+        os.makedirs(os.path.dirname(self.sm.state_path), exist_ok=True)
+        with open(self.sm.state_path, "w") as f:
+            json.dump(raw, f)
+        return raw
+
+    def _plan_on_disk(self, rel=None):
+        rel = rel or "openspec/changes/chg/plans/mod-plan.md"
+        full = os.path.join(self.sm.root_dir, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as f:
+            f.write("# plan\n")
+        return rel
+
+    def test_three_way_evidence_backfills(self):
+        self._plan_on_disk()
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
+        })
+        self.assertTrue(
+            self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+
+    def test_last_synced_alone_is_not_enough(self):
+        """无 plan 无 maker 记录 = f908a23 要防的「没有代码却 SYNCED」，不得回填。"""
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17",
+        })
+        self.assertNotIn("ever_synced", self.sm.load()["modules"]["chg/mod"])
+
+    def test_plan_and_maker_but_never_synced_is_not_backfilled(self):
+        """跑过 MAKER 却从未过闸的模块（PARTIAL）拿不到轻量钥匙。"""
+        self._plan_on_disk()
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": PARTIAL,
+            "maker_attempt": 2,
+        })
+        self.assertNotIn("ever_synced", self.sm.load()["modules"]["chg/mod"])
+
+    def test_maker_attempt_zero_is_not_backfilled(self):
+        self._plan_on_disk()
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 0,
+        })
+        self.assertNotIn("ever_synced", self.sm.load()["modules"]["chg/mod"])
+
+    def test_stored_plan_path_also_counts(self):
+        """plan 不在约定路径（历史遗留/手工挪动）时，state 里记的 plan_path 也算。"""
+        rel = self._plan_on_disk("openspec/changes/chg/plans/other-name.md")
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
+            "plan_path": rel,
+        })
+        self.assertTrue(
+            self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+
+    def test_existing_flag_is_never_downgraded(self):
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "ever_synced": True,
+        })
+        self.assertTrue(
+            self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+
+    def test_backfill_is_memory_only_and_idempotent(self):
+        self._plan_on_disk()
+        raw = self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
+        })
+        self.assertTrue(
+            self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+        with open(self.sm.state_path) as f:
+            self.assertEqual(json.load(f), raw)
+        self.assertTrue(
+            self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+
+    def test_missing_plan_self_corrects_on_next_load(self):
+        self._plan_on_disk()
+        self._write_raw({
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
+        })
+        self.assertTrue(self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
+        os.remove(os.path.join(self.sm.root_dir,
+                               "openspec/changes/chg/plans/mod-plan.md"))
+        self.assertNotIn("ever_synced", self.sm.load()["modules"]["chg/mod"])
+
+    def test_relative_root_dir_skips_backfill(self):
+        """判据要落盘查找；root_dir 不可信（相对/缺失）时宁可不回填。"""
+        state = {"root_dir": ".", "modules": {"chg/mod": {
+            "change_id": "chg", "module_name": "mod", "status": SYNCED,
+            "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
+        }}}
+        StateManager._migrate(state)
+        self.assertNotIn("ever_synced", state["modules"]["chg/mod"])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1256,6 +1256,34 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             machine._execute_synced(state, self.key, mod)
         self.assertTrue(state["modules"][self.key].get("ever_synced"))
 
+    def test_legacy_synced_module_backfills_into_classify(self):
+        """存量模块（state.json 里没有 ever_synced 字段）：last_synced + plan 在盘
+        + maker_attempt>=1 三条齐全 → 回填发生在 load()，spec 变更的入口因此是
+        CLASSIFY_CHANGE 而不是全量 SCORE。钉的是「回填真的到了决策点」。"""
+        self._init_module_ready()
+        plan = os.path.join(
+            self.root, "openspec/changes/test-change/plans/test-module-plan.md")
+        os.makedirs(os.path.dirname(plan), exist_ok=True)
+        with open(plan, "w") as f:
+            f.write("# plan\n")
+        sm = StateManager(self.root)
+        state = sm.load()
+        mod = state["modules"][self.key]
+        mod["status"] = SYNCED
+        mod["last_synced"] = "2026-08-21T16:51:17"
+        mod["maker_attempt"] = 1
+        sm.save(state)
+        with open(sm.state_path) as f:
+            self.assertNotIn("ever_synced", json.load(f)["modules"][self.key])
+
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "a") as f:
+            f.write("\n## New Scenario\n")
+
+        r = StateMachine(self.root).next()
+        self.assertEqual(r["action"], "CLASSIFY_CHANGE")
+
     def test_cosmetic_spec_change_skips_loop(self):
         """Comment/format-only spec edit: hashes refreshed, stays SYNCED,
         no CLASSIFY_CHANGE routing."""

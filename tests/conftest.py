@@ -15,10 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent_cli  # noqa: E402
 import pytest  # noqa: E402
+import spec_utils  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _isolated_data_dir(monkeypatch):
     absent = os.path.join(tempfile.mkdtemp(), "absent")
     monkeypatch.setattr(agent_cli, "DATA_DIR", absent)
+    # directives.build resolves prev-spec baselines out of <DATA_DIR>/spec-snapshots
+    monkeypatch.setattr(spec_utils, "DATA_DIR", absent)
     monkeypatch.delenv("LOOP_ENGINE_MODEL_CONFIG", raising=False)

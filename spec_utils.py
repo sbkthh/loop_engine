@@ -7,6 +7,7 @@ import os
 import re
 
 from constants import (
+    DATA_DIR,
     SPEC_PATH_TEMPLATE,
     PLAN_PATH_TEMPLATE,
     REPORT_PATH_TEMPLATE,
@@ -107,6 +108,30 @@ def compute_spec_hash(spec_path):
         return None
     with open(spec_path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
+
+
+def find_spec_baseline(root_dir, module_name, spec_hash):
+    """Locate an on-disk copy of a spec version by md5; "" when unresolvable.
+
+    MAKER_STEP0 and CLASSIFY_CHANGE are delta-scoped: they must diff the
+    current spec against `prev_spec_hash`. A hash alone is useless — the two
+    places that keep spec copies are the audit hook's per-Edit snapshots
+    (true pre-edit content) and `.loop/backup/` (written at registration).
+    Newest match wins so a repeated edit sequence yields the closest baseline.
+    """
+    if not spec_hash:
+        return ""
+    dirs = [
+        sorted(glob.glob(os.path.join(
+            DATA_DIR, "spec-snapshots", f"*-{module_name}.md"))),
+        sorted(glob.glob(os.path.join(
+            root_dir, ".loop", "backup", f"spec-{module_name}-*.md"))),
+    ]
+    for paths in dirs:
+        for p in reversed(paths):
+            if compute_spec_hash(p) == spec_hash:
+                return p
+    return ""
 
 
 def normalize_spec(text):

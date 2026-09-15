@@ -13,6 +13,7 @@ from spec_utils import (
     read_checker_test_command, read_maker_test_command,
     coerce_roots, read_test_commands,
     read_checker_test_commands, read_maker_test_commands,
+    find_spec_baseline,
 )
 
 # 只有会真正连库/跑验证的步骤才注入 context.json：MAKER 写码要连库取配置、
@@ -66,6 +67,11 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
     test_cmd = cmd_by_repo[project_root]
     spec_hash = module.get("spec_hash", "")
     attempt = module.get("maker_attempt", 0)
+    # Delta-scoped steps must diff against the PREVIOUS spec version. A bare
+    # hash is not diffable — resolving it to a file is what keeps MAKER_STEP0
+    # from silently degrading to "newest backup, which is the current spec".
+    prev_spec_path = find_spec_baseline(
+        root_dir, module_name, module.get("prev_spec_hash", ""))
 
     base = {
         "action": action,
@@ -118,6 +124,10 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         old_hash = module.get("prev_spec_hash", "")
         d["instructions"] = (
             "Read the spec file. Compare with the previous version (hash changed).\n"
+            "Baseline: `context.prev_spec_path` holds the previous spec content "
+            "(its md5 equals context.old_hash); when it is empty there is no "
+            "earlier version on disk and the change counts as new/unknown, so "
+            "classify it as 重量.\n"
             "Classify the change magnitude:\n"
             "- 轻量 (lightweight): typo, constraint tweak, field rename, "
             "enum value add, comment/format\n"
@@ -131,19 +141,35 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "magnitude must be exactly 轻量 or 重量."
         )
         d["context"]["old_hash"] = old_hash
+        d["context"]["prev_spec_path"] = prev_spec_path
 
     elif action == MAKER_STEP0:
         d["plan_path"] = plan_path
+        if prev_spec_path:
+            scope = (
+                "Scope: ONLY the current spec change. Diff the spec against "
+                "`context.prev_spec_path` (the previous version, its md5 "
+                "equals context.prev_spec_hash) to identify what THIS change "
+                "requires. The plan must include ONLY tasks required by this "
+                "change.\n"
+                "Pre-existing spec↔code deviations NOT introduced by this "
+                "change are OUT OF SCOPE: do NOT list them as tasks, do NOT "
+                "plan fixes for them — the CHECKER detects them "
+                "independently.\n"
+            )
+        else:
+            scope = (
+                "Scope: the WHOLE spec. context.prev_spec_path is empty, so no "
+                "previous spec version is recoverable and the delta of this "
+                "change cannot be established. The out-of-scope exemption does "
+                "NOT apply without a known delta: plan every spec requirement "
+                "against the current code, including gaps a previous round "
+                "left open. State '基线不可得，按全量 spec 规划' in the plan's "
+                "§0 so the reviewer can tell why this run is broad.\n"
+            )
         d["instructions"] = (
             "Planning Mode. Read the spec file and AGENTS.md.\n"
-            "Scope: ONLY the current spec change. Compare the spec with the "
-            "previous version to identify what THIS change requires "
-            "(find the newest backup file .loop/backup/spec-<module>-*.md, "
-            "or use prev_spec_hash for reference). The plan must include "
-            "ONLY tasks required by this change.\n"
-            "Pre-existing spec↔code deviations NOT introduced by this change "
-            "are OUT OF SCOPE: do NOT list them as tasks, do NOT plan fixes "
-            "for them — the CHECKER detects them independently.\n"
+            + scope +
             "CRITICAL — project roots: this module may be bound to MULTIPLE "
             "repositories (see `context.project_roots` below). Every file "
             "path in the plan MUST be qualified by the repo it belongs to; "
@@ -182,6 +208,7 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             "Do NOT write any test or implementation code."
         )
         d["context"]["prev_spec_hash"] = module.get("prev_spec_hash", "")
+        d["context"]["prev_spec_path"] = prev_spec_path
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
             "no code fences, no commentary:\n"

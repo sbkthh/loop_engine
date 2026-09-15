@@ -1,5 +1,6 @@
 """Tests for directives.py — CHECKER incremental test command."""
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants import (CHECKER, MAKER_STEP0, ALIGN_DOCS,
+from constants import (CHECKER, CLASSIFY_CHANGE, MAKER_STEP0, ALIGN_DOCS,
                        MAKER_STEP1_RED, MAKER_STEP2_GREEN)
 from directives import build
 
@@ -59,24 +60,41 @@ class TestMakerStep0Scope(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _module(self):
+    def _module(self, prev="oldhash"):
         return {
             "change_id": "chg1",
             "module_name": "m1",
             "project_root": ".",
             "spec_hash": "newhash",
-            "prev_spec_hash": "oldhash",
+            "prev_spec_hash": prev,
             "maker_attempt": 0,
         }
 
-    def test_maker_step0_plan_scoped_to_current_change_only(self):
-        out = build(MAKER_STEP0, "chg1/m1", self._module(), self.root)
+    def _place_baseline(self, text):
+        path = os.path.join(self.root, ".loop", "backup", "spec-m1-1.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return hashlib.md5(text.encode("utf-8")).hexdigest(), path
+
+    def test_resolved_baseline_becomes_the_diff_target(self):
+        prev, path = self._place_baseline("导出 19 列")
+        out = build(MAKER_STEP0, "chg1/m1", self._module(prev), self.root)
         ins = out["directives"]["instructions"]
         self.assertIn("ONLY the current spec change", ins)
         self.assertIn("OUT OF SCOPE", ins)
         self.assertIn("do NOT list them as tasks", ins)
-        self.assertEqual(
-            out["directives"]["context"]["prev_spec_hash"], "oldhash")
+        self.assertIn("context.prev_spec_path", ins)
+        self.assertEqual(out["directives"]["context"]["prev_spec_path"], path)
+
+    def test_unresolvable_baseline_plans_the_whole_spec(self):
+        # The draft-33 failure mode: no recoverable previous version, yet the
+        # plan still claimed "this increment produces no implementation tasks".
+        out = build(MAKER_STEP0, "chg1/m1", self._module(), self.root)
+        ins = out["directives"]["instructions"]
+        self.assertEqual(out["directives"]["context"]["prev_spec_path"], "")
+        self.assertIn("Scope: the WHOLE spec", ins)
+        self.assertNotIn("OUT OF SCOPE", ins)
 
     def test_maker_step0_prev_hash_empty_when_absent(self):
         m = self._module()
@@ -84,6 +102,14 @@ class TestMakerStep0Scope(unittest.TestCase):
         out = build(MAKER_STEP0, "chg1/m1", m, self.root)
         self.assertEqual(
             out["directives"]["context"]["prev_spec_hash"], "")
+        self.assertEqual(out["directives"]["context"]["prev_spec_path"], "")
+
+    def test_classify_change_gets_the_baseline_file_to_diff(self):
+        prev, path = self._place_baseline("导出 19 列")
+        out = build(CLASSIFY_CHANGE, "chg1/m1", self._module(prev), self.root)
+        self.assertEqual(out["directives"]["context"]["prev_spec_path"], path)
+        self.assertIn("context.prev_spec_path",
+                      out["directives"]["instructions"])
 
 
 class TestAlignDocsDirective(unittest.TestCase):

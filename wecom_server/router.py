@@ -735,7 +735,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         # no git HEAD for this spec — snapshot current content so there is
         # at least a registration-time rollback point
         shutil.copy2(spec_path, backup_path)
-        backup_note = backup_path + " (pre-edit snapshot, no git HEAD)"
+        backup_note = backup_path + " (registration-time copy, NOT pre-edit: no git HEAD)"
     sm.set_module_field(st, module_key, "spec_hash", new_hash)
     if new_norm_hash:
         sm.set_module_field(st, module_key, "spec_norm_hash", new_norm_hash)

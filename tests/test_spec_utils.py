@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -452,3 +453,52 @@ class TestSyncedTestCommands(unittest.TestCase):
                  os.path.join(repo, "svc/src/main/java/Foo.java")])
             self.assertEqual(out, {os.path.abspath(repo):
                                    "mvn clean test -pl svc -am"})
+
+
+class TestFindSpecBaseline(unittest.TestCase):
+    """strategic-stockup-creation regression: prev_spec_hash had content on
+    disk all along, but nothing resolved a hash back to a file, so MAKER_STEP0
+    diffed the spec against a backup that WAS the spec and reported zero tasks.
+    """
+
+    def _write(self, path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def test_resolves_audit_hook_snapshot(self):
+        with tempfile.TemporaryDirectory() as data, \
+                tempfile.TemporaryDirectory() as root:
+            old = self._write(os.path.join(
+                data, "spec-snapshots",
+                "20260821T181839-48d41cc6-8852-49d1-ae89-3e4d013d746a-m1.md"),
+                "19 columns")
+            with unittest.mock.patch.object(spec_utils, "DATA_DIR", data):
+                got = spec_utils.find_spec_baseline(root, "m1", old)
+            self.assertEqual(got, os.path.join(data, "spec-snapshots",
+                             "20260821T181839-48d41cc6-8852-49d1-ae89-3e4d013d746a-m1.md"))
+
+    def test_falls_back_to_registration_backup(self):
+        with tempfile.TemporaryDirectory() as data, \
+                tempfile.TemporaryDirectory() as root:
+            old = self._write(os.path.join(
+                root, ".loop", "backup", "spec-m1-1789399293.md"), "v1")
+            self._write(os.path.join(
+                root, ".loop", "backup", "spec-m1-1789399999.md"), "v2")
+            with unittest.mock.patch.object(spec_utils, "DATA_DIR", data):
+                self.assertEqual(
+                    spec_utils.find_spec_baseline(root, "m1", old),
+                    os.path.join(root, ".loop", "backup", "spec-m1-1789399293.md"))
+
+    def test_unresolvable_hash_returns_empty(self):
+        with tempfile.TemporaryDirectory() as data, \
+                tempfile.TemporaryDirectory() as root:
+            self._write(os.path.join(
+                root, ".loop", "backup", "spec-m1-1.md"), "v2")
+            with unittest.mock.patch.object(spec_utils, "DATA_DIR", data):
+                self.assertEqual(
+                    spec_utils.find_spec_baseline(root, "m1", "deadbeef"), "")
+
+    def test_empty_hash_skips_the_scan(self):
+        self.assertEqual(spec_utils.find_spec_baseline("/nope", "m1", ""), "")

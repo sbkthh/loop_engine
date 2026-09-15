@@ -146,11 +146,17 @@ loop_engine requirement-add cross-dock-system \
 ~/loop-work/cross-dock/
 ├── backend/              ← worktree from ~/repos/backend-service, branch feature/cd-001
 ├── frontend/             ← worktree from ~/repos/web-portal, branch feature/cd-001
+├── plans/                ← MAKER_STEP0 写的执行计划，按 <change_id>/<module>-plan.md 分目录
+├── LOOP_REPORT.md        ← 整个需求的模块状态表（一份，不按 change 复制）
 ├── .loop/
 │   ├── state.json
 │   └── prd_summary.json  ← PRD 摘要（/prd-to-spec 的输入）
-└── openspec/             ← /prd-to-spec 运行后生成 artifacts
+└── openspec/             ← /prd-to-spec 运行后生成 artifacts（proposal/design/specs/tasks）
 ```
+
+> `plans/` 与 `LOOP_REPORT.md` 是引擎产物，**不放进 openspec 变更包**：`openspec archive` 会把整个
+> 变更目录搬进 `changes/archive/<date>-<name>/`，包内的 plan 会连带离开 `state.json` 记录的路径，
+> 而 plan_hash/gap audit/`ever_synced` 回填这些按路径找文件的读者不会报错，只会静默失配。
 
 `--prd` 自动完成：
 

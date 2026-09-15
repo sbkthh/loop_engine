@@ -79,8 +79,8 @@ def derive_plan_path(change_id, module_name, root="."):
         change_id=change_id, module_name=module_name))
 
 
-def derive_report_path(change_id, root="."):
-    return os.path.join(root, REPORT_PATH_TEMPLATE.format(change_id=change_id))
+def derive_report_path(root="."):
+    return os.path.join(root, REPORT_PATH_TEMPLATE)
 
 
 def coerce_roots(value):

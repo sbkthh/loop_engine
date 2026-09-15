@@ -304,7 +304,7 @@ class TestEverSyncedBackfill(unittest.TestCase):
         return raw
 
     def _plan_on_disk(self, rel=None):
-        rel = rel or "openspec/changes/chg/plans/mod-plan.md"
+        rel = rel or "plans/chg/mod-plan.md"
         full = os.path.join(self.sm.root_dir, rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w") as f:
@@ -347,7 +347,7 @@ class TestEverSyncedBackfill(unittest.TestCase):
 
     def test_stored_plan_path_also_counts(self):
         """plan 不在约定路径（历史遗留/手工挪动）时，state 里记的 plan_path 也算。"""
-        rel = self._plan_on_disk("openspec/changes/chg/plans/other-name.md")
+        rel = self._plan_on_disk("plans/chg/other-name.md")
         self._write_raw({
             "change_id": "chg", "module_name": "mod", "status": SYNCED,
             "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
@@ -384,8 +384,7 @@ class TestEverSyncedBackfill(unittest.TestCase):
             "last_synced": "2026-08-21T16:51:17", "maker_attempt": 1,
         })
         self.assertTrue(self.sm.load()["modules"]["chg/mod"].get("ever_synced"))
-        os.remove(os.path.join(self.sm.root_dir,
-                               "openspec/changes/chg/plans/mod-plan.md"))
+        os.remove(os.path.join(self.sm.root_dir, "plans/chg/mod-plan.md"))
         self.assertNotIn("ever_synced", self.sm.load()["modules"]["chg/mod"])
 
     def test_relative_root_dir_skips_backfill(self):

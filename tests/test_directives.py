@@ -163,7 +163,7 @@ class TestMakerScopedCommand(unittest.TestCase):
         self.root = os.path.abspath(self.tmp.name)
         os.makedirs(os.path.join(self.root, "mod-a/src/main/java"))
         self.plan = os.path.join(
-            self.root, "openspec/changes/chg1/plans/m1-plan.md")
+            self.root, "plans/chg1/m1-plan.md")
         os.makedirs(os.path.dirname(self.plan), exist_ok=True)
         with open(self.plan, "w", encoding="utf-8") as f:
             f.write("- 改 mod-a/src/main/java/Foo.java\n")

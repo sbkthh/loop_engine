@@ -15,11 +15,11 @@ from parser import (
 class TestParseMakerOutputStep0(unittest.TestCase):
     def test_step0_success(self):
         text = ('{"status": "SUCCESS", '
-                '"plan_path": "openspec/changes/cross-dock-v2/plans/dashboard-plan.md"}')
+                '"plan_path": "plans/cross-dock-v2/dashboard-plan.md"}')
         result = parse_maker_output(text)
         self.assertEqual(result['status'], 'SUCCESS')
         self.assertEqual(result['plan_path'],
-                         'openspec/changes/cross-dock-v2/plans/dashboard-plan.md')
+                         'plans/cross-dock-v2/dashboard-plan.md')
         self.assertEqual(result['mode'], 'step0')
 
     def test_step0_failed(self):

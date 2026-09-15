@@ -244,7 +244,7 @@ class TestPoll(SchedulerBase):
         m = _module("c", "m", "SYNCED", spec_hash=h)
         m["plan_hash"] = "stale"
         _make_state(root, {"c/m": m})
-        plan_path = os.path.join(root, "openspec/changes/c/plans/m-plan.md")
+        plan_path = os.path.join(root, "plans/c/m-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         with open(plan_path, "w") as f:
             f.write("rewritten plan")
@@ -262,7 +262,7 @@ class TestPoll(SchedulerBase):
     def test_poll_synced_matching_plan_not_detected(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         h = _make_spec(root, "c", "m")
-        plan_path = os.path.join(root, "openspec/changes/c/plans/m-plan.md")
+        plan_path = os.path.join(root, "plans/c/m-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         with open(plan_path, "w") as f:
             f.write("same plan")

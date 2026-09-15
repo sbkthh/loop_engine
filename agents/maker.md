@@ -30,7 +30,7 @@ You operate in modes determined by the orchestrator's dispatch prompt. The loop_
 
 **执行内容：**
 1. 读取 spec 文件和 AGENTS.md
-2. 生成执行计划 `openspec/changes/{change}/plans/{module}-plan.md`，必须包含：
+2. 生成执行计划 `plans/{change}/{module}-plan.md`（相对需求根目录），必须包含：
    - File list: 每个待创建/修改的文件及其包路径
    - Class responsibilities: 每个类一句话职责
    - Data flow: Controller → Service → DAO → DB
@@ -43,7 +43,7 @@ You operate in modes determined by the orchestrator's dispatch prompt. The loop_
 ```
 ---MAKER_OUTPUT---
 STATUS: SUCCESS | FAILED
-PLAN_PATH: openspec/changes/{change}/plans/{module}-plan.md
+PLAN_PATH: plans/{change}/{module}-plan.md
 ---END_MAKER_OUTPUT---
 ```
 

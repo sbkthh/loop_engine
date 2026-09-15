@@ -191,7 +191,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm.save(state)
 
         plan_path = os.path.join(self.root,
-            "openspec/changes/test-change/plans/test-module-plan.md")
+            "plans/test-change/test-module-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         with open(plan_path, "w") as f:
             f.write("new plan content")
@@ -223,7 +223,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state["modules"][self.key]["status"] = READY
         # plan exists for the current spec; evidence claims cite real files
         plan_path = os.path.join(self.root,
-            "openspec/changes/test-change/plans/test-module-plan.md")
+            "plans/test-change/test-module-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         src_dir = os.path.join(self.root, "src/main/java/x")
         os.makedirs(src_dir, exist_ok=True)
@@ -257,7 +257,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
                                 "test-module", spec_hash="stale_spec_hash")
         state["modules"][self.key]["status"] = READY
         plan_path = os.path.join(self.root,
-            "openspec/changes/test-change/plans/test-module-plan.md")
+            "plans/test-change/test-module-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         with open(plan_path, "w") as f:
             f.write("- 已有功能，无需变更\n")
@@ -283,7 +283,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         sm.save(state)
 
         plan_path = os.path.join(self.root,
-            "openspec/changes/test-change/plans/test-module-plan.md")
+            "plans/test-change/test-module-plan.md")
         os.makedirs(os.path.dirname(plan_path), exist_ok=True)
         with open(plan_path, "w") as f:
             f.write("some plan content")
@@ -332,7 +332,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self._write_score()
         machine.commit()
         machine.next()
-        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_path = "plans/test-change/test-module-plan.md"
         plan_full = os.path.join(self.root, plan_path)
         os.makedirs(os.path.dirname(plan_full), exist_ok=True)
         open(plan_full, "w").close()
@@ -354,7 +354,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self._write_score()
         machine.commit()
         machine.next()
-        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_path = "plans/test-change/test-module-plan.md"
         plan_full = os.path.join(self.root, plan_path)
         os.makedirs(os.path.dirname(plan_full), exist_ok=True)
         with open(plan_full, "w") as f:
@@ -399,7 +399,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         r = machine.next()
         self.assertEqual(r["action"], "MAKER_STEP0")
 
-        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_path = "plans/test-change/test-module-plan.md"
         plan_full = os.path.join(self.root, plan_path)
         os.makedirs(os.path.dirname(plan_full), exist_ok=True)
         with open(plan_full, "w") as f:
@@ -1262,7 +1262,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         CLASSIFY_CHANGE 而不是全量 SCORE。钉的是「回填真的到了决策点」。"""
         self._init_module_ready()
         plan = os.path.join(
-            self.root, "openspec/changes/test-change/plans/test-module-plan.md")
+            self.root, "plans/test-change/test-module-plan.md")
         os.makedirs(os.path.dirname(plan), exist_ok=True)
         with open(plan, "w") as f:
             f.write("# plan\n")
@@ -1429,7 +1429,7 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self._write_score()
         machine.commit()
         machine.next()
-        plan_path = "openspec/changes/test-change/plans/test-module-plan.md"
+        plan_path = "plans/test-change/test-module-plan.md"
         plan_full = os.path.join(self.root, plan_path)
         os.makedirs(os.path.dirname(plan_full), exist_ok=True)
         with open(plan_full, "w") as f:

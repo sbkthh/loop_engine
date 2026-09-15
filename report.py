@@ -1,6 +1,5 @@
 """ReportGenerator: build LOOP_REPORT.md from state.json."""
 
-import os
 import datetime
 
 from constants import SYNCED
@@ -61,13 +60,5 @@ def generate(state, root_dir="."):
 
 
 def write(state, root_dir="."):
-    changes = set()
-    for m in state.get("modules", {}).values():
-        changes.add(m.get("change_id"))
-    for change_id in changes:
-        if not change_id:
-            continue
-        path = derive_report_path(change_id, root_dir)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(generate(state, root_dir))
+    with open(derive_report_path(root_dir), "w") as f:
+        f.write(generate(state, root_dir))

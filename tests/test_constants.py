@@ -60,6 +60,36 @@ def test_shipped_model_config_names_known_steps_only():
         assert not [v for v in section.values() if v], backend
 
 
+def test_engine_artifacts_are_written_outside_the_openspec_package():
+    """`openspec archive` moves the whole change dir into changes/archive/, so
+    a plan written inside it takes its own stored path down with it — and the
+    readers that fall back to the derived path then find nothing, silently.
+    The spec stays: it is the one artifact openspec itself owns."""
+    from constants import (PLAN_PATH_TEMPLATE, REPORT_PATH_TEMPLATE,
+                           SPEC_PATH_TEMPLATE)
+
+    assert not PLAN_PATH_TEMPLATE.startswith("openspec/")
+    assert not REPORT_PATH_TEMPLATE.startswith("openspec/")
+    assert SPEC_PATH_TEMPLATE.startswith("openspec/changes/")
+
+
+def test_maker_prompt_plan_path_matches_the_template():
+    """plan_path arrives as agent-authored prose from agents/maker.md. Move the
+    template without the prompt and the next MAKER writes plans back into the
+    package: nothing fails until an archive moves them away."""
+    import re
+
+    from constants import PLAN_PATH_TEMPLATE
+
+    with open(os.path.join(_REPO_ROOT, "agents", "maker.md")) as f:
+        src = f.read()
+    expected = (PLAN_PATH_TEMPLATE.replace("{change_id}", "{change}")
+                .replace("{module_name}", "{module}"))
+    found = re.findall(r"[^\s\"'`]*plans/[^\s\"'`]*plan\.md", src)
+    assert found, "maker.md no longer names where the plan goes"
+    assert set(found) == {expected}, found
+
+
 def test_data_dir_is_named_in_exactly_one_place():
     """The relocatability below only holds while one module spells the path. A
     second literal keeps pointing at ~/.qoder after the move, and the two ends

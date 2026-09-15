@@ -123,8 +123,8 @@ CONTEXT_FILE = ".loop/context.json"
 
 # Path templates (relative to root dir)
 SPEC_PATH_TEMPLATE = "openspec/changes/{change_id}/specs/{module_name}/spec.md"
-PLAN_PATH_TEMPLATE = "openspec/changes/{change_id}/plans/{module_name}-plan.md"
-REPORT_PATH_TEMPLATE = "openspec/changes/{change_id}/LOOP_REPORT.md"
+PLAN_PATH_TEMPLATE = "plans/{change_id}/{module_name}-plan.md"
+REPORT_PATH_TEMPLATE = "LOOP_REPORT.md"
 
 # Glob pattern for spec discovery
 SPEC_GLOB = "openspec/changes/*/specs/*/spec.md"

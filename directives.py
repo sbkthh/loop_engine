@@ -436,10 +436,15 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             '{"status": "SUCCESS",\n'
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
+            ' "files_created": ["/abs/path/NewTest.java"],\n'
+            ' "files_modified": ["/abs/path/Foo.java"],\n'
             ' "build_result": "BUILD SUCCESS"}\n'
             "status: SUCCESS or FAILED. "
             'build_result: exactly "BUILD SUCCESS" or "BUILD FAILURE", '
-            "no annotations."
+            "no annotations.\n"
+            "files_created / files_modified: every file this fix actually "
+            "edited, absolute paths, test files included — declare them even "
+            "when the plan does not list them."
         )
         d["context"]["hard_errors"] = hard_errors
         d["context"]["accepted_warnings"] = (accepted_drafts or [])
@@ -481,10 +486,16 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
             '{"status": "SUCCESS",\n'
             ' "fixed_items": ["fixed item description"],\n'
             ' "remaining_items": ["unfixed item description"],\n'
+            ' "files_created": ["/abs/path/NewTest.java"],\n'
+            ' "files_modified": ["/abs/path/Foo.java"],\n'
             ' "build_result": "BUILD SUCCESS"}\n'
             "status: SUCCESS or FAILED. "
             'build_result: exactly "BUILD SUCCESS" or "BUILD FAILURE", '
-            "no annotations."
+            "no annotations.\n"
+            "files_created / files_modified: every file this fix actually "
+            "edited, absolute paths, test files included — a review fix often "
+            "lands outside the plan, and undeclared files stay out of the "
+            "final test scope."
         )
         d["context"]["review_issues"] = review_issues
         d["context"]["test_command"] = test_cmd

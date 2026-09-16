@@ -120,6 +120,26 @@ class TestParseMakerOutputFixMode(unittest.TestCase):
             parse_maker_output(text)
         self.assertIn('build_result', str(ctx.exception))
 
+    def test_fix_mode_carries_declared_files(self):
+        text = ('{"status": "SUCCESS", '
+                '"fixed_items": ["NPE on null header"], '
+                '"remaining_items": [], '
+                '"files_created": ["/src/test/FooTest.java"], '
+                '"files_modified": ["/src/main/Foo.java"], '
+                '"build_result": "BUILD SUCCESS"}')
+        result = parse_maker_output(text)
+        self.assertEqual(result['mode'], 'fix')
+        self.assertEqual(result['files_created'], ['/src/test/FooTest.java'])
+        self.assertEqual(result['files_modified'], ['/src/main/Foo.java'])
+
+    def test_fix_mode_without_declared_files_still_parses(self):
+        """申报是可见性记账，不是新的硬契约：缺它的既有修复输出不能被拒收。"""
+        text = ('{"status": "SUCCESS", "fixed_items": [], '
+                '"remaining_items": [], "build_result": "BUILD SUCCESS"}')
+        result = parse_maker_output(text)
+        self.assertEqual(result['files_created'], [])
+        self.assertEqual(result['files_modified'], [])
+
 
 class TestParseCheckerOutput(unittest.TestCase):
     def test_consistent(self):

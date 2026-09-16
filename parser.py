@@ -89,6 +89,8 @@ def _maker_from_json(data):
         result["mode"] = "fix"
         result["fixed_items"] = data.get("fixed_items") or []
         result["remaining_items"] = data.get("remaining_items") or []
+        result["files_created"] = data.get("files_created") or []
+        result["files_modified"] = data.get("files_modified") or []
         br = data.get("build_result")
         if not isinstance(br, str) or not br:
             raise _format_error("missing field(s): build_result")

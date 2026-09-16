@@ -266,3 +266,34 @@ class TestMultiRepoDirectiveWire(unittest.TestCase):
         self.assertIn(self.repo_a, ins)
         self.assertIn(self.repo_b, ins)
         self.assertIn("Per-repo scoped commands:", ins)
+
+
+class TestFixStepDeclarationContract(unittest.TestCase):
+    """①：两个修复步的输出契约必须索要文件清单——越界修复今天不留痕。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _fmt(self, action):
+        m = {"change_id": "chg", "module_name": "m", "project_root": ".",
+             "spec_hash": "abc", "maker_attempt": 1,
+             "hard_errors": [], "review_issues": [],
+             "files_created": [], "files_modified": []}
+        return build(action, "chg/m", m, self.root)["directives"]["output_format"]
+
+    def test_both_fix_steps_ask_for_the_files_they_edited(self):
+        from constants import CODE_REVIEW_FIX, MAKER_FIX
+        for action in (MAKER_FIX, CODE_REVIEW_FIX):
+            fmt = self._fmt(action)
+            self.assertIn('"files_created"', fmt)
+            self.assertIn('"files_modified"', fmt)
+            self.assertIn("every file this fix actually edited", fmt)
+
+    def test_declaration_is_prompted_beyond_the_plan(self):
+        from constants import CODE_REVIEW_FIX, MAKER_FIX
+        self.assertIn("does not list them", self._fmt(MAKER_FIX))
+        self.assertIn("outside the plan", self._fmt(CODE_REVIEW_FIX))

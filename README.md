@@ -425,7 +425,9 @@ loop_engine manual-begin --root <path>
 loop_engine manual-end --root <path>
 ```
 
-> scope-audit 是**只读审计**：发现未申报改动时打印完整报告并自动推微信通知；工作区干净时静默无输出。检测基线是 git 未提交改动（含未跟踪文件），不含已提交历史。
+> scope-audit 是**只读审计**：发现未申报改动时打印完整报告并自动推聊天通知；工作区干净时静默无输出。检测基线是 git 未提交改动（含未跟踪文件），不含已提交历史。
+
+> `files_created` / `files_modified` 是**按轮累计**的并集：RED 写的测试、GREEN 的实现、MAKER_FIX 与 CODE_REVIEW_FIX 的改动（含计划之外的文件）都并进去，轮起点（spec/plan hash 变更）清零。它同时是 CHECKER/CODE_REVIEW 的读取清单和 SYNCED 闸 `-pl` 的范围来源——所以修复步漏报 = 那道闸漏测，不是单纯的记录不全。
 
 ---
 

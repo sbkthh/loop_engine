@@ -475,6 +475,63 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertEqual(len(issues), 3)
         self.assertEqual(issues[0]["severity"], "important")
 
+    def _maker_fix_block(self, files_modified, files_created=None):
+        return ("---MAKER_OUTPUT---\n" + json.dumps({
+            "status": "SUCCESS", "fixed_items": [], "remaining_items": [],
+            "files_created": files_created or [],
+            "files_modified": files_modified,
+            "build_result": "BUILD SUCCESS",
+        }) + "\n---END_MAKER_OUTPUT---")
+
+    def test_red_test_files_survive_the_green_commit(self):
+        """诊断出的孔洞：清单只有 GREEN 一个写手且是赋值，RED 写完测试就没人
+        记账，GREEN 再整体覆盖一次 —— 最终测试 scope 看不见 RED 的文件。"""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+        m = StateManager(self.root).load()["modules"][self.key]
+        self.assertEqual(m["files_created"], ["/m/Foo.java"])
+        self.assertEqual(m["files_modified"], ["/t/Foo.java"])
+
+    def test_fix_steps_add_to_the_footprint_instead_of_replacing_it(self):
+        """越界修复今天完全不可见（一轮 9 个脏文件 vs 3 个申报）。修复步必须把
+        自己改的文件并进同一份清单，供 CHECKER/CODE_REVIEW 与 SYNCED 闸使用。"""
+        from constants import CHECKER
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        state = StateManager(self.root).load()
+        module = state["modules"][self.key]
+        module["files_modified"] = ["/m/Foo.java"]
+        r = machine._commit_maker_fix(
+            state, self.key, module, self._maker_fix_block(["/m/Bar.java"]))
+        self.assertEqual(r, CHECKER)
+        r = machine._commit_code_review_fix(
+            state, self.key, module, self._maker_fix_block(
+                ["/m/Foo.java", "/t/BarTest.java"], ["/t/NewTest.java"]))
+        self.assertEqual(r, CHECKER)
+        self.assertEqual(module["files_modified"],
+                         ["/m/Foo.java", "/m/Bar.java", "/t/BarTest.java"])
+        self.assertEqual(module["files_created"], ["/t/NewTest.java"])
+
+    def test_new_round_clears_the_previous_footprint(self):
+        """清单按轮并集，轮起点（spec hash 变更）必须清零，否则上一轮的文件会
+        混进本轮的 -pl scope。"""
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = SYNCED
+        state["modules"][self.key]["ever_synced"] = True
+        state["modules"][self.key]["files_modified"] = ["/m/Old.java"]
+        sm.save(state)
+        spec_path = os.path.join(self.root,
+            "openspec/changes/test-change/specs/test-module/spec.md")
+        with open(spec_path, "a") as f:
+            f.write("\n## New Scenario\n")
+        StateMachine(self.root).next()
+        m = sm.load()["modules"][self.key]
+        self.assertEqual(m["files_modified"], [])
+        self.assertEqual(m["files_created"], [])
+
     def test_bedrock_code_review_fix_exhausted_blocks_not_synced(self):
         """CODE_REVIEW_FIX edits code; when the fix budget is exhausted it
         must go BLOCKED, never _SYNCED (that would merge the last edit with no
@@ -1890,6 +1947,23 @@ class TestExecuteSyncedMultiRepo(unittest.TestCase):
         seen, module = self._run_cmds()
         self.assertEqual([cwd for cwd, _ in seen], [self.repo_a])
         self.assertEqual(seen[0][1], "mvn clean test -pl inventory -am")
+        self.assertEqual(module["status"], "SYNCED")
+
+    def test_a_fix_step_file_in_the_sibling_repo_enters_the_gate(self):
+        """①的实际收益：修复步改了另一个仓，那份文件此前不进 -pl scope，
+        于是它所在仓整个被跳过 —— 现在两个仓都按各自模块跑。"""
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["files_modified"] = [
+            os.path.join(self.repo_a, "inventory/src/main/java/Foo.java"),
+            os.path.join(self.repo_b, "order/src/main/java/Bar.java")]
+        sm.save(state)
+        seen, module = self._run_cmds()
+        self.assertEqual(sorted(cwd for cwd, _ in seen),
+                         sorted([self.repo_a, self.repo_b]))
+        self.assertEqual({cmd for _, cmd in seen},
+                         {"mvn clean test -pl inventory -am",
+                          "mvn clean test -pl order -am"})
         self.assertEqual(module["status"], "SYNCED")
 
     def test_module_declaring_no_files_still_faces_full_gate(self):

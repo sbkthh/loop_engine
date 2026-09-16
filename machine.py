@@ -62,6 +62,17 @@ def _draft_fingerprints(drafts):
     return fps
 
 
+def _union_paths(kept, added):
+    """Order-preserving dedup union. A round's file footprint is accumulated,
+    never assigned: a fix step's declaration list must not erase what MAKER
+    already declared (or the SYNCED -pl scope goes blind to those files)."""
+    out = list(kept or [])
+    for p in added or []:
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
 def _gray_resumable_module(state, only_key=None):
     """Return the parked module whose gray-list drafts are all adjudicated.
 
@@ -206,6 +217,10 @@ class StateMachine:
                     module["status"] = PARTIAL
                     module["maker_attempt"] = 0
                     module["review_fix_attempt"] = 0
+                    # 足迹按轮并集，轮起点必须清空：上一轮申报的文件不属于本轮
+                    # 的 -pl 测试 scope 与 CHECKER/CODE_REVIEW 上下文
+                    module["files_created"] = []
+                    module["files_modified"] = []
                     # 入口分流：只有"曾经真正 SYNCED 过（磁盘有代码）"的模块，
                     # 才按"改动大小"CLASSIFY；从未实现的 spec（NEEDS_REFINEMENT
                     # 完善后、或首次登记）没有代码可比，一律回 SCORE 全量重判，
@@ -249,6 +264,8 @@ class StateMachine:
                         module["status"] = PARTIAL
                         module["maker_attempt"] = 0
                         module["review_fix_attempt"] = 0
+                        module["files_created"] = []
+                        module["files_modified"] = []
                         StateManager.set_current(state, key, MAKER_STEP1_RED)
                         self._trace(state, "SCAN", key,
                                     f"plan hash changed -> PARTIAL")
@@ -486,6 +503,14 @@ class StateMachine:
         module["plan_path"] = plan_path
         return MAKER_STEP1_RED
 
+    def _declare_files(self, module, parsed):
+        """Union agent-declared paths into this round's footprint. Every
+        consumer concatenates the two lists (CHECKER/CODE_REVIEW context, the
+        SYNCED -pl scope, scope_audit), so the created/modified split is
+        cosmetic — RED reports one list and it lands in files_modified."""
+        for field in ("files_created", "files_modified"):
+            module[field] = _union_paths(module.get(field), parsed.get(field))
+
     def _commit_maker_step1_red(self, state, key, module, text):
         parsed = parse_maker_output(text)
         if not parsed:
@@ -509,6 +534,8 @@ class StateMachine:
                 raise ValueError("RED not confirmed")
         if not evidence.get("test_files_written"):
             raise ValueError("No test files written")
+        self._declare_files(
+            module, {"files_modified": evidence["test_files_written"]})
         return MAKER_STEP2_GREEN
 
     def _check_gap_audit(self, parsed, module):
@@ -551,8 +578,7 @@ class StateMachine:
         tr = parsed.get("test_results", {})
         if (tr.get("passed") or 0) <= 0:
             raise ValueError("No tests passed")
-        module["files_created"] = parsed.get("files_created", [])
-        module["files_modified"] = parsed.get("files_modified", [])
+        self._declare_files(module, parsed)
         module["maker_attempt"] = 1
         return CHECKER
 
@@ -654,6 +680,7 @@ class StateMachine:
         br = (parsed.get("build_result") or "").strip()
         if not br.startswith("BUILD SUCCESS"):
             raise ValueError(f"Build failed: {parsed.get('build_result')}")
+        self._declare_files(module, parsed)
         if module.get("_pending_align"):
             del module["_pending_align"]
             return ALIGN_DOCS
@@ -710,6 +737,7 @@ class StateMachine:
             raise ValueError("Output format error: No MAKER_OUTPUT block found")
         if parsed.get("status") != "SUCCESS":
             raise ValueError(f"Review fix failed: {parsed.get('status')}")
+        self._declare_files(module, parsed)
         if module.get("review_fix_attempt", 0) > MAX_REVIEW_FIX_CYCLES:
             # CODE_REVIEW_FIX just edited code; a silent SYNCED here would
             # merge that edit with no CHECKER re-verify. Bedrock forbids it —

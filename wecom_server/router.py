@@ -54,8 +54,8 @@ _LLM_SYSTEM_PROMPT = (
     "gray_drafts = the real gray list; "
     "review_issues = CODE_REVIEW historical findings, not gray list items.\n\n"
     "Workflow skills (read when relevant):\n"
-    "- Requirement registration/PRD bootstrap → ~/.qoder/skills/requirement-register/SKILL.md\n"
-    "- Spec editing workflow → ~/.qoder/skills/spec-session/SKILL.md\n"
+    "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
+    "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
     "\n"
     "Runtime mode: each WeCom message is one --print turn; the session "
     "resumes on the user's next reply, so a multi-turn interview works "
@@ -66,7 +66,7 @@ _LLM_SYSTEM_PROMPT = (
     "\n"
     "Change boundary: ANY code change — bugfix, refactor, feature, or "
     "requirement-level — goes through the spec-session flow: read "
-    "~/.qoder/skills/spec-session/SKILL.md, run the grill-me interview "
+    "__SKILLS_DIR__/spec-session/SKILL.md, run the grill-me interview "
     "one question at a time to sharpen the spec, edit spec.md yourself, "
     "then SCORE. Do NOT edit code directly, do NOT just tell the user to "
     "do it, do NOT promise to implement later.\n"
@@ -1051,7 +1051,8 @@ def _llm_dispatch(message, registry, data_dir, user_id):
             or _classify_requirement(message, registry)
     _touch_recent(user_id, requirement)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
-    prompt = _LLM_SYSTEM_PROMPT.replace("__MESSAGE__", message, 1)
+    prompt = _LLM_SYSTEM_PROMPT.replace("__SKILLS_DIR__", _agent_cli().asset_dirs()[0])
+    prompt = prompt.replace("__MESSAGE__", message, 1)
     # Shared fact layer: real-time state injected into every session so
     # answers never depend on which session the message landed in.
     prompt += _system_state_snapshot(registry)

@@ -25,7 +25,7 @@ When the user says "给 XX 加项目" / "新增项目" / "补充项目":
 
 When creating or modifying spec files:
 
-1. Read ~/.qoder/skills/spec-session/SKILL.md and follow its workflow
+1. Read `../spec-session/SKILL.md` relative to this SKILL.md's directory (not the process cwd) and follow its workflow
 2. PRD bootstrap (no OpenSpec artifacts yet, user says "生成 spec" / "按 PRD 初始化"):
    - Run `loop_engine requirement-list` to get the root
    - Run `openspec new change <change_id>` in the root

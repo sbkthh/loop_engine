@@ -90,8 +90,18 @@ def _known_models(name):
         return None
     if r.returncode != 0:
         return None
-    names = {ln.strip().lower() for ln in r.stdout.splitlines() if ln.strip()}
-    names.discard("model")  # column header
+    if name == "pi":
+        providers = {}
+        for line in r.stdout.lower().splitlines():
+            cols = line.split()
+            if len(cols) == 6 and all(c in {"yes", "no"} for c in cols[-2:]):
+                providers.setdefault(cols[1], set()).add(cols[0])
+        names = {f"{provider}/{model}" for model, owners in providers.items()
+                 for provider in owners}
+        names.update(model for model, owners in providers.items() if len(owners) == 1)
+    else:
+        names = {ln.strip().lower() for ln in r.stdout.splitlines() if ln.strip()}
+        names.discard("model")  # column header
     return names or None
 
 

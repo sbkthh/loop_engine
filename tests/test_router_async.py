@@ -183,6 +183,61 @@ def test_dispatch_prompt_injects_state_snapshot(monkeypatch):
     assert "FAKE-STATE" in state["inputs"][0]
 
 
+@pytest.mark.parametrize("backend", ["qodercli", "pi"])
+def test_chat_uses_backend_skills_without_rewriting_user_text(backend, monkeypatch, tmp_path):
+    import agent_cli
+    from wecom_server import router
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LOOP_ENGINE_AGENT_CLI", backend)
+    binary = str(tmp_path / backend)
+    monkeypatch.setattr(agent_cli, f"_{backend}_binary", lambda: binary)
+    monkeypatch.setattr(agent_cli, f"_{backend}_model", lambda step=None: "")
+    monkeypatch.setattr(router, "_get_session_id", lambda *args: ("fixture-sid", True))
+    monkeypatch.setattr(router, "_system_state_snapshot", lambda registry: "FAKE-STATE")
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(tmp_path / "snaps"))
+    inputs = []
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[0] == binary
+        inputs.append(kwargs["input"])
+        return types.SimpleNamespace(stdout="普通回复", stderr="", returncode=0)
+
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    message = "查看 req __SKILLS_DIR__ __MESSAGE__"
+    dispatch(message, [{"name": "req", "root": str(tmp_path)}], str(tmp_path), "u1")()
+    prompt = inputs[0]
+    skills = agent_cli.asset_dirs()[0]
+    assert f"{skills}/requirement-register/SKILL.md" in prompt
+    assert prompt.count(f"{skills}/spec-session/SKILL.md") == 2
+    assert f"User: {message}\n" in prompt
+    assert prompt.count("__SKILLS_DIR__") == 1
+    assert "FAKE-STATE" in prompt
+    assert "~/.qoder/skills" not in prompt
+
+
+@pytest.mark.parametrize("backend", ["qodercli", "pi"])
+def test_installed_skills_resolve_siblings_without_production_registry(backend, monkeypatch, tmp_path):
+    import agent_cli
+    import cli
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LOOP_ENGINE_AGENT_CLI", backend)
+    monkeypatch.setattr(cli, "DATA_DIR", str(tmp_path / "data"))
+    cli.cmd_self_install(types.SimpleNamespace())
+    skills = Path(agent_cli.asset_dirs()[0])
+    registration = skills / "requirement-register" / "SKILL.md"
+    link = "../spec-session/SKILL.md"
+    assert link in registration.read_text()
+    spec_session = (registration.parent / link).resolve()
+    assert spec_session.is_relative_to(tmp_path)
+    content = spec_session.read_text()
+    assert "loop_engine requirement-list" in content
+    assert "~/.qoder/loop_engine/requirements.json" not in content
+    assert "~/.qoder/skills" not in registration.read_text()
+
+
 def test_unregistered_edits_missing_detection(monkeypatch, tmp_path):
     """Correction gap = edited modules minus registered spec_result modules;
     full registration yields an empty gap."""

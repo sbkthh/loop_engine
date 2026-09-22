@@ -1094,17 +1094,13 @@ def run_requirement(name, module=None):
             else:
                 sid = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                      f"{root}:{module_key}"))
+            result_path = os.path.join(root, ".loop", "result.md")
+            archive_path = os.path.join(root, ".loop", f"result-{action}.md")
             try:
-                # Remove this action's archive from a previous round before the
-                # spawn: a backend that finds result-<ACTION>.md readable may
-                # echo its verdict instead of re-deriving one from the spec,
-                # which is a false pass. Commit rewrites it after the step, so
-                # nothing that would have survived a round is lost — only the
-                # few minutes of a re-run in which a stale human-facing pointer
-                # (result-CHECKER.md) is absent.
-                stale = os.path.join(root, ".loop", f"result-{action}.md")
-                if os.path.exists(stale):
-                    os.unlink(stale)
+                # A failed spawn can leave a valid-looking result for an empty retry.
+                for stale in (result_path, archive_path):
+                    if os.path.exists(stale):
+                        os.unlink(stale)
                 cmd = agent_cli.build_cmd(root, sid, LOOP_AGENT_PROMPT,
                                           json.dumps(payload), action)
                 # cwd=root: the codegraph MCP child inherits this process's OS
@@ -1136,25 +1132,22 @@ def run_requirement(name, module=None):
                     continue  # state unchanged — same step replays idempotently
                 end = "qodercli_failed"
                 break
-            # capture result.md before commit consumes and clears it
-            result_text = ""
-            result_path = os.path.join(root, ".loop", "result.md")
-            if os.path.exists(result_path):
-                with open(result_path) as f:
-                    result_text = f.read()
-                archive_path = os.path.join(root, ".loop",
-                                            f"result-{action}.md")
-                try:
-                    with open(archive_path, "w") as f:
-                        f.write(result_text)
-                except OSError:
-                    pass
             # format errors are repaired in place (resume the same LLM
             # session to rewrite result.md) before falling back to a full
             # step replay; semantic errors skip straight to the retry path
             format_repairs = 0
             bad_commit_output = False
             while True:
+                # Commit clears the file, including on a successful repair.
+                result_text = ""
+                if os.path.exists(result_path):
+                    with open(result_path) as f:
+                        result_text = f.read()
+                    try:
+                        with open(archive_path, "w") as f:
+                            f.write(result_text)
+                    except OSError:
+                        pass
                 try:
                     c = subprocess.run(_engine_cmd("commit", "--root", root),
                                        capture_output=True, text=True,
@@ -1201,10 +1194,6 @@ def run_requirement(name, module=None):
                     break
             if bad_commit_output:
                 break
-            if "error" not in commit and format_repairs > 0:
-                # repair rewrote result.md — feed the fixed text forward
-                with open(result_path) as f:
-                    result_text = f.read()
             if "error" in commit:
                 _log(f"run {name}: commit error: {commit['error']}")
                 failure_detail = commit["error"]

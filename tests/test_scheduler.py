@@ -1240,20 +1240,19 @@ class TestRun(SchedulerBase):
             scheduler.run_requirement("req")
         self.assertEqual(actions, ["SCORE"])
 
-    def test_step_spawn_clears_the_previous_round_archive(self):
-        """A shared session plus a readable result-<ACTION>.md lets a backend
-        echo last round's verdict instead of re-deriving one — measured on pi,
-        where SCORE returned 72 unchanged against a spec that had grown. The
-        archive must be gone before the step starts."""
+    def test_step_spawn_clears_previous_result_and_current_archive_only(self):
         root = self._register_pending("req")
         archive = os.path.join(root, ".loop", "result-SCORE.md")
-        with open(archive, "w") as f:
-            f.write('{"score": 72}')
+        result_path = os.path.join(root, ".loop", "result.md")
+        other = os.path.join(root, ".loop", "result-CHECKER.md")
+        for path in (archive, result_path, other):
+            with open(path, "w") as f:
+                f.write('{"score": 72}')
         seen = []
         next_actions = ["SCORE", "IDLE"]
 
         def spy(root_, sid, system_prompt, user_text, action=None):
-            seen.append(os.path.exists(archive))
+            seen.append(tuple(os.path.exists(p) for p in (result_path, archive, other)))
             return ["/bin/true"]
 
         def fake_run(cmd, **kwargs):
@@ -1277,7 +1276,46 @@ class TestRun(SchedulerBase):
                 mock.patch.object(scheduler.subprocess, "run",
                                   side_effect=fake_run):
             scheduler.run_requirement("req")
-        self.assertEqual(seen, [False])
+        self.assertEqual(seen, [(False, False, True)])
+        with open(other) as f:
+            self.assertEqual(f.read(), '{"score": 72}')
+
+    def test_empty_retry_cannot_commit_output_left_by_failed_spawn(self):
+        root = self._register_pending("req")
+        result_path = os.path.join(root, ".loop", "result.md")
+        next_actions = ["SCORE", "SCORE", "IDLE"]
+        sids = []
+        submitted = []
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                sids.append(cmd[cmd.index("--session-id") + 1])
+                if len(sids) == 1:
+                    with open(result_path, "w") as f:
+                        f.write('{"score": 95, "cross_consistency": "PASS"}')
+                    return types.SimpleNamespace(stdout="", stderr="failed after write", returncode=1)
+                return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+            sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+            if sub == "next":
+                payload = {"action": next_actions.pop(0), "module": "c/m"}
+            else:
+                text = ""
+                if os.path.exists(result_path):
+                    with open(result_path) as f:
+                        text = f.read()
+                submitted.append(text)
+                payload = ({"action": "SCORE", "next_action": "MAKER_STEP0"}
+                           if text else {"error": "Result file is empty or missing"})
+            return types.SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(agent_cli, "_qodercli_model", return_value=""):
+            result = scheduler.run_requirement("req")
+        self.assertEqual(submitted, [""])
+        self.assertEqual(result["end"], "commit_error")
+        self.assertEqual(result["steps"], 0)
+        self.assertEqual(len(sids), 2)
+        self.assertNotEqual(sids[0], sids[1])
 
     def test_agent_prompt_declares_result_files_output_only(self):
         """Every step shares one prompt, so the ban on reading past verdicts
@@ -1519,61 +1557,69 @@ class TestRun(SchedulerBase):
         self.assertFalse(scheduler.is_locked(root))
 
     def test_run_repairs_format_error_in_place(self):
-        """Format errors resume the same LLM session to rewrite result.md,
-        then re-commit — no step replay."""
         from parser import parse
         root = self._register_pending("req")
+        result_path = os.path.join(root, ".loop", "result.md")
+        archive = os.path.join(root, ".loop", "result-SCORE.md")
+        broken = '{"cross_consistency": "PASS"}'
+        fixed = '{"score": 95, "cross_consistency": "PASS"}'
         next_actions = ["SCORE", "SCORE"]
         sids = []
+        payloads = []
+        submitted = []
         repaired = {"sids": [], "details": []}
 
         def fake_run(cmd, **kwargs):
             if any("qodercli" in part for part in cmd):
                 sids.append(cmd[cmd.index("--session-id") + 1])
-                with open(os.path.join(root, ".loop", "result.md"), "w") as f:
-                    f.write('{"cross_consistency": "PASS"}')  # missing score
-                return types.SimpleNamespace(stdout="", stderr="",
-                                             returncode=0)
-            if any("__main__.py" in part for part in cmd):
-                sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
-                if sub == "next":
-                    action = next_actions.pop(0) if next_actions else "IDLE"
-                    return types.SimpleNamespace(
-                        stdout=json.dumps({"action": action, "module": "c/m"}),
-                        stderr="", returncode=0)
-                if sub == "commit":
-                    with open(os.path.join(root, ".loop", "result.md")) as f:
-                        text = f.read()
-                    try:
-                        parse(text, "SCORE")
-                    except ValueError as e:
-                        return types.SimpleNamespace(
-                            stdout=json.dumps({"error": str(e)}),
-                            stderr="", returncode=0)
-                    return types.SimpleNamespace(
-                        stdout=json.dumps({"action": "SCORE",
-                                           "next_action": "MAKER_STEP0"}),
-                        stderr="", returncode=0)
-            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+                payloads.append(json.loads(cmd[-1]))
+                with open(result_path, "w") as f:
+                    f.write(broken)
+                return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+            sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+            if sub == "next":
+                action = next_actions.pop(0) if next_actions else "IDLE"
+                return types.SimpleNamespace(
+                    stdout=json.dumps({"action": action, "module": "c/m"}),
+                    stderr="", returncode=0)
+            with open(result_path) as f:
+                text = f.read()
+            submitted.append(text)
+            try:
+                parse(text, "SCORE")
+            except ValueError as e:
+                return types.SimpleNamespace(stdout=json.dumps({"error": str(e)}),
+                                             stderr="", returncode=0)
+            with open(result_path, "w") as f:
+                f.write("")
+            return types.SimpleNamespace(
+                stdout=json.dumps({"action": "SCORE", "next_action": "MAKER_STEP0"}),
+                stderr="", returncode=0)
 
         def fake_repair(root_, sid, detail, action=None):
             repaired["sids"].append(sid)
             repaired["details"].append(detail)
-            with open(os.path.join(root, ".loop", "result.md"), "w") as f:
-                f.write('{"score": 95, "cross_consistency": "PASS"}')
+            with open(result_path) as f:
+                self.assertEqual(f.read(), broken)
+            with open(result_path, "w") as f:
+                f.write(fixed)
             return True
 
-        with mock.patch.object(scheduler.subprocess, "run",
-                               side_effect=fake_run), \
-             mock.patch.object(scheduler, "_repair_result",
-                               side_effect=fake_repair):
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(scheduler, "_repair_result", side_effect=fake_repair), \
+                mock.patch.object(agent_cli, "_qodercli_model", return_value=""):
             result = scheduler.run_requirement("req")
 
         self.assertEqual(result["end"], "idle")
-        # each repair resumes the session that produced the broken output
+        self.assertEqual(result["steps"], 2)
         self.assertEqual(repaired["sids"], sids)
-        self.assertIn("Output format error: missing field(s): score",
-                      repaired["details"][0])
+        self.assertIn("Output format error: missing field(s): score", repaired["details"][0])
+        self.assertEqual(submitted, [broken, fixed, broken, fixed])
+        self.assertEqual(payloads[1]["directives"]["context"]["previous_result"], fixed)
+        with open(archive) as f:
+            self.assertEqual(f.read(), fixed)
+        with open(result_path) as f:
+            self.assertEqual(f.read(), "")
 
     def test_run_format_repair_exhausted_falls_back_to_retry(self):
         """Repair budget exhausted (2 per attempt) → full step replay with a

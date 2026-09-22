@@ -411,6 +411,10 @@ class ModelConfigTest(unittest.TestCase):
         warned = mock.patch.object(agent_cli, "_WARNED", set())
         warned.start()
         self.addCleanup(warned.stop)
+        agent_cli._known_models.cache_clear()
+        agent_cli._step_models.cache_clear()
+        self.addCleanup(agent_cli._known_models.cache_clear)
+        self.addCleanup(agent_cli._step_models.cache_clear)
 
     def _cfg(self, payload, known="__unset__"):
         """Point the resolver at a fixture file. Fresh directory per call:
@@ -491,18 +495,75 @@ class ModelConfigTest(unittest.TestCase):
         self.assertEqual(agent_cli._qodercli_model("CHECKER"), "mid")
 
     def test_catalog_is_one_call_per_backend_not_per_spawn(self):
-        """Validation runs a real CLI, so it has to be paid once. A per-spawn
-        lookup would add seconds to every step to re-derive an answer that
-        cannot change inside one process. The first call here is the genuine
-        one-off; everything after it must be a cache hit."""
-        real = agent_cli._known_models("qodercli")
+        outputs = [mock.Mock(returncode=0, stdout="MODEL\nDemo\n"),
+                   mock.Mock(returncode=0, stdout=(
+                       "provider model context max-out thinking images\n"
+                       "example demo 128K 8K yes no\n"))]
+        with mock.patch.object(agent_cli.subprocess, "run",
+                               side_effect=outputs) as run:
+            first = {name: agent_cli._known_models(name)
+                     for name in ("qodercli", "pi")}
+            for _ in range(3):
+                for name in first:
+                    self.assertEqual(agent_cli._known_models(name), first[name])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(first["qodercli"], {"demo"})
+        self.assertEqual(first["pi"], {"example/demo", "demo"})
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][1:], ["--list-models"])
 
-        def fail_run(cmd, **kwargs):
-            raise AssertionError(f"second lookup re-ran {cmd}")
+    def test_pi_catalog_parses_table_and_unique_bare_ids(self):
+        table = ("provider  model  context  max-out  thinking  images\n\n"
+                 "alpha  Demo  128K  8K  yes  no\n"
+                 "alpha  shared  128K  8K  no  yes\n"
+                 "beta   shared  256K  16K  yes  yes\n"
+                 "alpha  org/model:fast  128K  8K  yes  no\n"
+                 "alpha  Demo  128K  8K  yes  no\n"
+                 "Loading configured model catalogs from local files\n")
+        with mock.patch.object(agent_cli.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout=table)):
+            self.assertEqual(agent_cli._known_models("pi"), {
+                "alpha/demo", "demo", "alpha/shared", "beta/shared",
+                "alpha/org/model:fast", "org/model:fast"})
 
-        with mock.patch.object(agent_cli.subprocess, "run", fail_run):
-            again = agent_cli._known_models("qodercli")
-        self.assertEqual(again, real)
+    def test_pi_catalog_unavailable_remains_unknown(self):
+        cases = [mock.Mock(returncode=1, stdout="failure"),
+                 mock.Mock(returncode=0, stdout=""),
+                 mock.Mock(returncode=0, stdout=(
+                     "provider model context max-out thinking images\n"
+                     "No models found\n")),
+                 OSError("missing binary"),
+                 agent_cli.subprocess.TimeoutExpired("pi", 60)]
+        for result in cases:
+            with self.subTest(result=result):
+                agent_cli._known_models.cache_clear()
+                with mock.patch.object(agent_cli.subprocess, "run",
+                                       side_effect=[result]):
+                    self.assertIsNone(agent_cli._known_models("pi"))
+
+    def test_pi_table_config_reaches_loop_and_chat_argv(self):
+        self._cfg({"pi": {"default": "example/base",
+                          "CHECKER": "example/org/review:deep",
+                          "CHAT": "typo"}})
+        table = ("provider model context max-out thinking images\n"
+                 "example base 128K 8K no yes\n"
+                 "example org/review:deep 128K 8K yes yes\n")
+        with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}), \
+                mock.patch.object(agent_cli.subprocess, "run",
+                                  return_value=mock.Mock(returncode=0, stdout=table)):
+            loop = agent_cli.build_cmd("/tmp/fixture", "sid", "S", "U", CHECKER)
+            chat = agent_cli.build_chat_cmd("sid")
+        self.assertEqual(loop[loop.index("--model") + 1], "example/org/review:deep")
+        self.assertEqual(chat[chat.index("--model") + 1], "example/base")
+
+    def test_pi_ambiguous_bare_default_disables_section(self):
+        self._cfg({"pi": {"default": "shared"}})
+        table = ("provider model context max-out thinking images\n"
+                 "alpha shared 128K 8K no yes\n"
+                 "beta shared 128K 8K yes yes\n")
+        with mock.patch.object(agent_cli.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout=table)):
+            self.assertEqual(agent_cli._configured_model("pi", CHECKER), "")
 
     def test_corrupt_file_warns_once_and_stays_inert(self):
         self._cfg("{not json")

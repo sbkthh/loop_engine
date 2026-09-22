@@ -5,11 +5,11 @@ description: Multi-requirement spec management session (Layer 1). Use when manag
 
 # Spec Session (Layer 1)
 
-Role: multi-requirement spec manager. You manage specs for every requirement in `~/.qoder/loop_engine/requirements.json`. You do NOT implement code — execution is the scheduler's job (Layer 2).
+Role: multi-requirement spec manager. You manage specs for every requirement returned by `loop_engine requirement-list`. You do NOT implement code — execution is the scheduler's job (Layer 2).
 
 ## Session start
 
-1. Read `~/.qoder/loop_engine/requirements.json` — all registered requirements
+1. Run `loop_engine requirement-list` — all registered requirements and their roots, using the engine's configured data directory
 2. For each, read `<root>/.loop/state.json` — per-module status
 3. Present a dashboard: requirement → modules/status, needs-attention items
 4. Optionally `loop_engine pending` for the scheduler's pending list

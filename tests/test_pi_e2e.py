@@ -1,6 +1,6 @@
 # Opt in: LOOP_ENGINE_PI_E2E=1 python -m pytest -s tests/test_pi_e2e.py
 # Optional paths: LOOP_ENGINE_PI_E2E_NATIVE_BIN, LOOP_ENGINE_PI_E2E_ADAPTER.
-# Real inherited-env authentication and Maven downloads; temporary tree, NOT a sandbox.
+# Real Maven downloads; pi state = machine's existing login (auth.json symlinked, catalog/settings copied; contents never read). Temporary tree, NOT a sandbox.
 import contextlib
 import hashlib
 import json
@@ -10,6 +10,7 @@ import selectors
 import shlex
 import shutil
 import signal
+import site
 import subprocess
 import sys
 import tempfile
@@ -383,6 +384,8 @@ def _pi_wrapper(args):
 
 def _isolated_environment(base):
     old = os.environ.copy()
+    # pip --user packages resolve under the real HOME; captured before HOME moves below
+    native_user_site = Path(site.getusersitepackages())
     native = old.get("LOOP_ENGINE_PI_E2E_NATIVE_BIN") or old.get("LOOP_ENGINE_PI_BIN") or shutil.which("pi")
     native = native or str(Path.home() / ".nvm/versions/node/v22.22.0/bin/pi")
     candidates = [old.get("LOOP_ENGINE_PI_E2E_ADAPTER", ""),
@@ -404,6 +407,25 @@ def _isolated_environment(base):
     for key, path in dirs.items():
         path.mkdir(parents=True, exist_ok=True)
         os.environ[key] = str(path)
+    if native_user_site.is_dir():
+        os.environ["PYTHONPATH"] = str(native_user_site)
+    native_agent = Path(old.get("PI_CODING_AGENT_DIR") or "") if old.get("PI_CODING_AGENT_DIR") \
+        else Path(old.get("HOME") or "") / ".pi" / "agent"
+    linked = ""
+    if (native_agent / "auth.json").is_file():
+        os.symlink(str(native_agent / "auth.json"), str(home / ".pi/agent" / "auth.json"))
+        linked = "1"
+    os.environ["PI_E2E_NATIVE_AUTH"] = linked
+    # pi resolves its catalog from the agent dir; without these it fails with "No models available"
+    # even with valid credentials. Copied rather than symlinked so pi's cache refreshes stay in the tree.
+    carried = ""
+    for name in ("models.json", "models-store.json", "settings.json"):
+        if (native_agent / name).is_file():
+            target = home / ".pi/agent" / name
+            shutil.copyfile(native_agent / name, target)
+            os.chmod(target, 0o600)
+            carried = "1"
+    os.environ["PI_E2E_NATIVE_CATALOG"] = carried
     settings = _write(base / "maven-settings.xml", '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"/>\n')
     flags = ["-s", str(settings), "-gs", str(settings), f"-Dmaven.repo.local={base / 'm2-repository'}"]
     os.environ.update({"LOOP_ENGINE_PI_E2E": "1", "LOOP_ENGINE_AGENT_CLI": "pi",
@@ -436,9 +458,10 @@ class _Matrix:
         self.boundary = (
             f"This is an opt-in acceptance fixture, NOT a sandbox. All writes, generated files, "
             f"commands and working directories must stay under {base}. Source assets at {SOURCE} "
-            "are read-only. Never read/copy credentials or personal configuration, print environment "
+            "are read-only. Model access is preconfigured for this session: never open, read, print "
+            "or copy auth.json or any credential file, personal configuration, print environment "
             "values, access unrelated projects, change permissions/settings, approve work, or git commit/push. "
-            "Use inherited authentication only. Do not name models or output reasoning/metadata. "
+            "Do not name models or output reasoning/metadata. "
             "Use the native read tool to re-read current spec/plan, never .loop/result*.md as input. "
             "Use only local fixture code and Maven Central dependencies; no business network services. "
             "Do the exact current phase yourself; no nested agents or installers. Do not change specs, "
@@ -617,7 +640,13 @@ class _Matrix:
                         if isinstance(flag, str) and flag in _DIAGNOSTIC_PATTERNS})
         diagnostics = "; diagnostics=" + ",".join(flags) if flags else ""
         if result.returncode or not records or "ENV_AUTH_READY" not in result.stdout:
-            raise Blocked("pi preflight produced no authenticated visible probe; inherited-env auth/CLI/adapter may be unavailable; no credentials read" + diagnostics)
+            state_note = ("native pi login reused via symlink" if os.environ.get("PI_E2E_NATIVE_AUTH")
+                          else "no native pi login found; log in on this machine first")
+            if not os.environ.get("PI_E2E_NATIVE_CATALOG"):
+                state_note += "; no native model catalog/settings to copy"
+            raise Blocked("pi preflight produced no authenticated visible probe; "
+                          + state_note + "; CLI/adapter may be unavailable; credential contents never read"
+                          + diagnostics)
         try:
             self.check_read(records[-1], probe, _hash(probe))
             events = records[-1]["events"]

@@ -1317,11 +1317,79 @@ class TestRun(SchedulerBase):
         self.assertEqual(len(sids), 2)
         self.assertNotEqual(sids[0], sids[1])
 
+    def test_commit_error_log_carries_the_agent_output_tail(self):
+        """The agent exits 0 with prose instead of a contract, and the commit
+        error alone tells a human nothing. Its own words are the only evidence
+        left, so the log must carry a bounded tail of them."""
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "SCORE", "IDLE"]
+        agent_words = ("checked machine.py to work out the phase\n"
+                       "SCORE is 72, all good")
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                return types.SimpleNamespace(stdout=agent_words, stderr="",
+                                             returncode=0)
+            sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+            payload = ({"action": next_actions.pop(0), "module": "c/m"}
+                       if sub == "next" else {"error": "missing field(s): score"})
+            return types.SimpleNamespace(stdout=json.dumps(payload),
+                                         stderr="", returncode=0)
+
+        logs = []
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(agent_cli, "_qodercli_model", return_value=""), \
+                mock.patch.object(scheduler, "_log", side_effect=logs.append):
+            result = scheduler.run_requirement("req")
+        self.assertEqual(result["end"], "commit_error")
+        self.assertTrue(any("SCORE is 72" in m for m in logs), logs)
+
+    def test_repair_prompt_does_not_echo_the_agent_output(self):
+        """The repair turn resumes the same session. Feeding the model its own
+        prose back anchors it on repeating it (the session-anchoring defect),
+        so the stdout tail belongs in the log only, never in failure_detail."""
+        root = self._register_pending("req")
+        next_actions = ["SCORE", "SCORE", "IDLE"]
+        details = []
+
+        def fake_run(cmd, **kwargs):
+            if any("qodercli" in part for part in cmd):
+                return types.SimpleNamespace(
+                    stdout="SCORE is 72, all good", stderr="", returncode=0)
+            sub = cmd[cmd.index(next(p for p in cmd if "__main__.py" in p)) + 1]
+            payload = ({"action": next_actions.pop(0), "module": "c/m"}
+                       if sub == "next"
+                       else {"error": "Output format error: No SCORE block"})
+            return types.SimpleNamespace(stdout=json.dumps(payload),
+                                         stderr="", returncode=0)
+
+        def fake_repair(root_, sid, detail, action=None):
+            details.append(detail)
+            return False
+
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(agent_cli, "_qodercli_model", return_value=""), \
+                mock.patch.object(scheduler, "_repair_result",
+                                  side_effect=fake_repair):
+            result = scheduler.run_requirement("req")
+        self.assertEqual(result["end"], "commit_error")
+        self.assertTrue(details)
+        for detail in details:
+            self.assertIn("No SCORE block", detail)
+            self.assertNotIn("SCORE is 72", detail)
+
     def test_agent_prompt_declares_result_files_output_only(self):
         """Every step shares one prompt, so the ban on reading past verdicts
         belongs there rather than being repeated per action."""
         self.assertIn("result-*.md", scheduler.LOOP_AGENT_PROMPT)
         self.assertIn("never read them as", scheduler.LOOP_AGENT_PROMPT)
+
+    def test_agent_prompt_forbids_reconstructing_engine_state(self):
+        """Observed failure mode: a CLI error sent the agent into loop_engine's
+        own source, where it re-derived the phase, scored correctly, and
+        answered in prose — dropping the output contract entirely."""
+        self.assertIn("machine.py", scheduler.LOOP_AGENT_PROMPT)
+        self.assertIn("report", scheduler.LOOP_AGENT_PROMPT.lower())
 
     def test_run_refuses_while_gray_drafts_are_pending(self):
         """next() cannot reach _gray_resume until the drafts are adjudicated,

@@ -74,6 +74,10 @@ LOOP_AGENT_PROMPT = (
     "input. They hold some past round's verdict, and echoing one instead of "
     "re-deriving from the current files turns a re-run into a false pass. "
     "Re-read the spec/plan files themselves every time. "
+    "If a tool or CLI call fails, report the failure in your own output — "
+    "never read loop_engine's source (machine.py, scheduler.py) to reconstruct "
+    "the current phase or the expected verdict; that produces prose where a "
+    "machine-readable contract is required. "
     "If 'context.environment' is present, it lists this requirement's runtime "
     "endpoints (UAT databases, Nacos namespace/data_ids, API gateways); secret "
     "values are given as *_env variable NAMES, not plaintext — resolve them from "
@@ -1132,6 +1136,12 @@ def run_requirement(name, module=None):
                     continue  # state unchanged — same step replays idempotently
                 end = "qodercli_failed"
                 break
+            # The agent's own words are the only explanation left once it exits
+            # 0 but its output is rejected. Log tail only, never failure_detail:
+            # the repair turn resumes the same session, and re-reading its own
+            # prose anchors the model on repeating it instead of re-deriving.
+            agent_tail = " | ".join(
+                (q.stdout or "").strip().splitlines()[-3:])[:400]
             # format errors are repaired in place (resume the same LLM
             # session to rewrite result.md) before falling back to a full
             # step replay; semantic errors skip straight to the retry path
@@ -1195,7 +1205,8 @@ def run_requirement(name, module=None):
             if bad_commit_output:
                 break
             if "error" in commit:
-                _log(f"run {name}: commit error: {commit['error']}")
+                _log(f"run {name}: commit error: {commit['error']}"
+                     + (f" [agent output: {agent_tail}]" if agent_tail else ""))
                 failure_detail = commit["error"]
                 if retries < MAX_FAILURE_RETRIES:
                     retries += 1

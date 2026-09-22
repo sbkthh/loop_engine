@@ -24,8 +24,12 @@ AI Native 是一套 spec 驱动的开发编排系统，由三层组成：
 ### 前置条件
 
 - Python ≥ 3.9
-- Node.js (qodercli 依赖)
 - Git
+- **一个 agent 后端**：引擎每一步都要拉起一个非交互 agent 会话，这是唯一的运行时依赖。用哪个由
+  `LOOP_ENGINE_AGENT_CLI` 选择（默认 `qodercli`），两个都已实现：
+  - `qodercli`：需要 Node.js（CLI 本身按 qodercli 的安装方式装，引擎不代装它）
+  - `pi`：需要 pi CLI 可用**且已完成鉴权**，另需 `pi-mcp-adapter` 扩展包——`--mcp-config` 不是 pi 核心的
+    flag，而是这个包注册的。装法与全部可选 env 见「换到 pi 后端安装」
 
 ### 平台支持
 
@@ -41,7 +45,8 @@ cd ~/loop_engine
 
 # 2. 安装：生成 shim（~/.local/bin/loop_engine，指向当前代码目录）
 #    + 5 个 skill + maker/checker 子代理定义 + 数据目录（~/.qoder/loop_engine）
-#    skill/子代理的目标目录由 agent 后端决定，见「Agent 后端与资产目录」
+#    数据目录与后端无关；skill/子代理落在哪个目录由 agent 后端决定。
+#    这条命令装的是默认的 qodercli 后端，pi 见下一节
 python3 __main__.py self-install
 
 # 3. 验证
@@ -63,10 +68,86 @@ Agent-checker       OK       /Users/.../.qoder/agents/checker.md
 Agent-maker         OK       /Users/.../.qoder/agents/maker.md
 Data dir            OK       /Users/.../.qoder/loop_engine
 Registry            OK       0 requirement(s) registered
-Tests               OK       508 passed in 43.15s
+Tests               OK       640 passed, 1 skipped in 54.35s
 
 System ready.
 ```
+
+> 上面是**默认 qodercli 后端**下的样子。pi 后端下所有 `Skill-*` / `Agent-*` 行会指向 `~/.pi/agent/...`
+> （路径不对就是 env 没带在命令前面），`Data dir` 那行不变——它不跟着后端走。`Tests` 那行随测试增删浮动。
+
+### 换到 pi 后端安装
+
+`LOOP_ENGINE_AGENT_CLI` **每个进程启动时各读一次**（`agent_cli.backend()`），没有任何「写进配置文件」
+的形态。所以换后端不是装一次就完事，而是**凡是拉起 agent 的入口都要带上它**——漏一个，那个入口就
+静默跑在 qodercli 上：同一份代码两种结果，排查时最不容易想到这一层。
+
+```bash
+# 1. pi 就绪判据（引擎不代管凭证，列不出型号就别往下走）
+pi --list-models
+
+# 2. MCP 适配包。`--mcp-config` 不是 pi 核心的 flag，是 pi-mcp-adapter 注册的；
+#    没有它，循环步骤带的 minimal_mcp.json 没人解析，codegraph 进不了会话。
+pi install npm:pi-mcp-adapter        # 效果 = 往 ~/.pi/agent/settings.json 的 packages 数组加一行
+
+# 3. 带 env 安装：5 个 skill → ~/.pi/agent/skills/，maker/checker → ~/.pi/agent/agents/
+#    （qodercli 下是 ~/.qoder/{skills,agents}；pi 也扫共享的 ~/.agents/skills，我们刻意不往那里装）
+LOOP_ENGINE_AGENT_CLI=pi python3 __main__.py self-install
+LOOP_ENGINE_AGENT_CLI=pi loop_engine self-check
+#    self-check 的 Skill-* / Agent-* 行应指向 ~/.pi/agent/...；指向 ~/.qoder/... 就是 env 没带上
+
+# 4. 数据目录不随后端变：仍是 ~/.qoder/loop_engine（registry / runs / pending / audit.log /
+#    sessions / 本机 agent_models.json）。换后端不需要搬状态。
+```
+
+`pi-subagents` 是**可选**的：它提供 `~/.pi/agent/agents/**/*.md` 的递归读取，而循环的 MAKER/CHECKER
+步骤从不派发子代理（就是「普通会话 + 引擎拼的 system prompt」），所以不装不影响链路。装上也不代表
+maker/checker 能直接用——见「Agent 后端与资产目录」里 frontmatter 不兼容那条。
+
+**必须带 env 的四个入口**（缺一个就是「半台机器在跑 pi」）：
+
+| 入口 | 写法 | 为什么单独列 |
+|---|---|---|
+| crontab 轮询 / 会话清理 | `*/10 * * * * LOOP_ENGINE_AGENT_CLI=pi ~/.local/bin/loop_engine poll` | cron **不读 `~/.bashrc`**，在 profile 里 `export` 对它无效，env 必须写在命令前面 |
+| WeCom 守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine wecom start` | G 问答是它的子进程，env 从它继承 |
+| 飞书守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine feishu start` | 同上 |
+| 手动 `run` / `next` | 同一 shell 里 `export`，或逐条前缀 | 手跑一次很容易忘了带 |
+
+**换后端要重启守护进程**：常驻的 wecom / feishu 进程带的是它启动那一刻的 env，改 env 不重启就是旧后端。
+`next` / `run` 由 cron 和 `dispatch` 每次 fork 新进程，改完即生效。重启守护进程是生产动作——先确认没有
+在飞步骤（`ps` 查 `loop_engine run`），并知道飞书那条 WS 长连接断开的几秒内**用户消息不补推**。
+
+| 可选 env | 作用 | 默认值 |
+|---|---|---|
+| `LOOP_ENGINE_PI_BIN` | pi 可执行文件 | `which pi`，再退到 `~/.nvm/versions/node/v22.22.0/bin/pi` —— 兜底路径**写死了 node 版本**，换版本且没进 PATH 时靠这个 env 救 |
+| `LOOP_ENGINE_PI_TOOLS` | 循环步骤的 `--tools` 白名单 | `read,grep,find,ls,bash,edit,write,mcp` |
+| `LOOP_ENGINE_PI_CHAT_TOOLS` | G 问答的白名单（少一个 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复） | `read,grep,find,ls,bash,edit,write` |
+| `LOOP_ENGINE_PI_CHAT_EXTENSION` | 审计桥 `.ts` 的路径 | 仓库内 `wecom_server/hooks/pi_audit_bridge.ts` |
+
+**G 问答的审计链在 pi 下是一个扩展文件**。qodercli 每次调用可以收 `--settings` JSON，pi 的对应物
+（扩展侧事件 `tool_call`）只能来自**已加载的扩展**，所以 chat argv 上会多一个 `-e <pi_audit_bridge.ts>`：
+它把 pi 的工具事件映射成 `audit_hook.sh` 的 stdin 契约，再 `spawnSync` 同一个 shell 钩子——**守卫逻辑
+只有一份**，改 `audit_hook.sh` 两个后端同时生效。安装面有两个坑：
+
+- **非 editable 安装要确认 `.ts` 真的进了包**：`pyproject.toml` 的 `package-data` 里 `wecom_server = ["hooks/*.sh", "hooks/*.ts"]`，老 wheel 没有 `.ts`。
+- **文件缺失时不挂 `-e`**：pi 对加载失败的扩展是 rc=1 **硬失败**，一个打包缺漏不该让整个微信问答瘫痪。`agent_cli.chat_audit_mode()` 因此是三态——`"settings"` / `"extension"` / `""`，`.ts` 不在时报 `""` 并由 router 首轮打一条 warning：问答照常可用，只是**没有守卫**（漏登记纠正链也随之失效）。这条 warning 值得看一眼再开跑。
+
+**装完验一次（真实 pi + 真实 Maven，不碰生产）**：
+
+```bash
+LOOP_ENGINE_PI_E2E=1 python3 -m pytest -s tests/test_pi_e2e.py
+```
+
+显式 opt-in，默认不跑（普通 CI 里真假执行不混）。harness 自己建隔离树：`HOME` / XDG /
+`PI_CODING_AGENT_DIR` / `LOOP_ENGINE_DATA_DIR` / `MAVEN_*` / `GIT_CONFIG_*` 全部指进临时目录，
+`skills/` 与 `agents/` 从仓库拷进去；凭证只把 `auth.json` **符号链接**过去、型号目录按文件复制，
+全程不读不打印内容。找不到 pi 可执行文件或 MCP 适配包时判 **blocked 并说明原因**，不算通过也不算失败。
+可选覆盖：`LOOP_ENGINE_PI_E2E_NATIVE_BIN`、`LOOP_ENGINE_PI_E2E_ADAPTER`。整体预算约 59 分钟。
+
+> **临时目录不是沙箱**：pi 没有逐工具确认、也没有沙箱，`--tools` 白名单就是全部的收敛手段。
+> 同理，需求 root 路径必须 `realpath(root) == root`——macOS 的 `/tmp`、`mktemp -d` 都在符号链接后面，
+> qodercli 按解析后的真实路径存会话目录，未解析的 root 会让第二步对着已存在的 sid 传 `--session-id`
+> 而 **rc=42 硬失败**。
 
 ### 定时轮询（crontab，每台机器手动配置）
 
@@ -75,6 +156,9 @@ crontab -e
 */10 * * * * ~/.local/bin/loop_engine poll
 0 3 * * 1 ~/.local/bin/loop_engine session-clean
 ```
+
+> 用 pi 后端时这两行都要把 env 写在命令前面（`*/10 * * * * LOOP_ENGINE_AGENT_CLI=pi ~/.local/bin/loop_engine poll`），
+> cron 不读 `~/.bashrc`。见「换到 pi 后端安装」。
 
 ### WeCom Bot（可选）
 
@@ -352,17 +436,23 @@ crontab -e
 0 3 * * 1 ~/.local/bin/loop_engine session-clean
 ```
 
+> pi 后端下两条命令前面都要写 `LOOP_ENGINE_AGENT_CLI=pi`（见「换到 pi 后端安装」）。
+> `session-clean` 本身就扫两个后端的会话目录，不需要 env 也不会漏清；**poll 需要**。
+
 ---
 
 ## 六、Layer 1 Spec Session（AI 管理会话）
 
-### 终端路径（qodercli）
+### 终端路径（agent CLI 内）
 
 在 qodercli 中唤起 spec-session skill：
 
 ```
 @spec-session 查看所有需求状态
 ```
+
+pi 后端下同样的 5 个 skill 在 pi 自己的 TUI 里用——`self-install` 把它们装进 `~/.pi/agent/skills/`
+而不是 `~/.qoder/skills/`，落在哪边由**安装时那个进程的 env** 决定（`LOOP_ENGINE_AGENT_CLI=pi`）。
 
 > 从 PRD 注册的新需求（`requirement-add --prd`）没有 spec 文件，先运行 `/prd-to-spec` 生成 OpenSpec artifacts，再进入本会话。
 
@@ -376,7 +466,7 @@ Skill 会自动：
 
 ### 微信路径（推荐，spec 全程在微信完成）
 
-微信侧 G（qodercli 子进程）已内置同样的 spec 管理规则，无需手动唤起 skill：
+微信侧 G（agent 后端子进程，默认 qodercli，见「换到 pi 后端安装」）已内置同样的 spec 管理规则，无需手动唤起 skill：
 
 1. **注册**：发 PRD 路径 + 需求参数（缺啥 G 问啥）→ G 执行 `requirement-add --prd`
 2. **生成 artifacts**：说"按 PRD 生成 spec"→ G 按 prd-to-spec 流程生成 proposal/design/specs/tasks
@@ -635,6 +725,13 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 - **全有或全无**：某后端段里只要有一个非空值，该段每个 step 都必须能解析出具体名字（step 留空取
   `default`）；`default` 缺失或不可用 ⇒ **整段视为不存在**，warn 一条，行为回到「全程一个默认模型」。
   半填配置不再被允许，原因见下面的实测。
+- **pi 段填什么写法**：`pi --list-models` 打的是**六列表格**（`provider model context max-out thinking
+  images`），`agent_cli` 取前两列拼成 `provider/model` 作为合法名单——整行不是型号名。所以填
+  `provider/model` 一定可以；只填裸 model id 仅当它在名单里**只属于一个 provider** 时才被接受
+  （跨 provider 重名必须写全名）。比对时大小写归一。名单拉不到（查询失败 / 没有可解析的数据行）时
+  跳过校验，配置照常生效。
+- **pi 也支持分步**：仓库模板里 `pi` 段只列了 `default`，那是省事不是限制——步骤键与 qodercli **完全同名**
+  （`SCORE`/`CHECKER`/`CHAT`/…），照抄一份填进 `pi` 段即可分档。
 - **型号要在校验名单内**：配置里的名字必须出现在该后端 `--list-models` 的输出里（每进程查一次并缓存）。
   不在名单 ⇒ 该值按未填处理并 warn。查不到名单（后端没有这个 flag）则跳过校验。
 - **回落链**：`agent_models.json` 的 step 键 → 该后端 `default` → 后端自身默认（qodercli 读
@@ -783,7 +880,10 @@ loop_engine feishu stop
 | B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 双超时 + 心跳；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
 | F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → JSON 动作块 → handler 进程内执行 |
-| G | qodercli | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种动作触发不同 handler |
+| G | agent CLI 子进程（qodercli / pi） | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种动作触发不同 handler |
+
+> 上图里 D/G 写的是 qodercli，那是**默认后端**下的形状。pi 后端下同一批槽位是 pi 子进程：argv 少
+> `--cwd`/`--strict-mcp-config`、多 `--tools`，stdout 没有启动噪声要剥——差异清单在「Agent 后端与资产目录」。
 
 ```
 ~/loop_engine/                  # 代码目录（git 主仓库，开发在此进行）
@@ -796,6 +896,8 @@ loop_engine feishu stop
 ├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
 ├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
 ├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 每步模型解析）
+├── agent_models.json           # 每步模型配置**模板**（值全空，本机填数据目录那份，见「模型」）
+├── minimal_mcp.json            # 循环步骤的 MCP 白名单（只有 codegraph）
 ├── scope_audit.py              # 未申报改动审计（声明 vs git 实际，可推微信）
 ├── setup.py                    # Phase 0 初始化
 ├── registry.py                 # 需求注册表
@@ -811,7 +913,8 @@ loop_engine feishu stop
 │   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理（平台无关，飞书复用）
 │   ├── wecom_api.py            # 企业微信 API（推送/下载）
 │   ├── crypto.py               # 回调消息加解密
-│   └── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子
+│   ├── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子（守卫逻辑唯一的一份，两后端共用）
+│   └── hooks/pi_audit_bridge.ts # pi 侧适配器：tool_call → 上面这个钩子的 stdin 契约（-e 加载）
 ├── feishu_server/              # 飞书机器人（与 WeCom 平行，复用 router.dispatch）
 │   ├── server.py               # WebSocket 长连接（官方 SDK）+ 去重 + 串行队列
 │   └── feishu_api.py           # 飞书 API（app_access_token/推送）
@@ -825,7 +928,10 @@ loop_engine feishu stop
     ├── test_router_async.py    ├── test_server.py
     ├── test_feishu_server.py   ├── test_feishu_api.py
     ├── test_wecom_api.py       ├── test_wecom_crypto.py
-    └── test_agent_cli.py
+    ├── test_scope_audit.py     ├── test_report.py
+    ├── test_agent_cli.py       ├── test_pi_audit_bridge.py
+    ├── test_hermeticity.py     ├── conftest.py
+    └── test_pi_e2e.py          # 真实 pi + Maven，默认不跑（opt-in）
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）；LOOP_ENGINE_DATA_DIR 可整体搬到别处
 ├── requirements.json           # 需求注册表
@@ -849,16 +955,25 @@ loop_engine feishu stop
 └── manual-loop/                # 手动循环执行（已废弃，用 approve 替代）
 
 ~/.local/bin/loop_engine        # 命令行 shim
+~/.qoder/agents/{maker,checker}.md   # 子代理定义（self-install 从仓库 agents/ 拷来）
+
+# 以上两个目录（skills / agents）跟着后端走：pi 下同一批文件落在
+# ~/.pi/agent/skills/ 与 ~/.pi/agent/agents/。数据目录不跟着走。
 ```
 
 ### Agent 后端与资产目录
 
 循环每一步由 `agent_cli` 拉起一个非交互 agent 会话。不同后端的**启动参数**和**资产目录**记在同一张档案表 `agent_cli._BACKENDS` 里，由环境变量 `LOOP_ENGINE_AGENT_CLI` 选择（默认 `qodercli`）；`self-install` / `self-check` 只查这张表，不再各自拼 `~/.qoder/...`。
 
-| 后端 | skills 目录 | 子代理目录 | argv 构造 |
-|---|---|---|---|
-| `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | 已实现 |
-| `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 已实现（flag 集为本机实测） |
+| 后端 | skills 目录 | 子代理目录 | 会话目录 | argv 构造 |
+|---|---|---|---|---|
+| `qodercli`（默认） | `~/.qoder/skills/` | `~/.qoder/agents/` | `~/.qoder/projects/` | 已实现 |
+| `pi` | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | `~/.pi/agent/sessions/` | 已实现（flag 集为本机实测） |
+
+- **会话清理不按当前后端过滤**：`agent_cli.session_dirs()` 返回**所有**后端的会话存储，
+  `loop_engine session-clean` 逐个扫（pi 的文件名是 `<cwd-slug>/<ISO>_<sid>.jsonl`，与 qodercli 的
+  `<cwd-slug>/<sid>.jsonl` 不同）。换过后端的机器如果只清当前后端，另一边的 jsonl 会无界增长——
+  实测一条模块链就 400KB。这条是 crontab 里那行周清理不依赖 env 也能覆盖两后端的原因。
 
 - **数据目录不随后端变，且可整体搬迁**：`~/.qoder/loop_engine/` 是引擎自己的账本（state / registry / runs /
   sessions / spec-snapshots / audit.log / 本机 `agent_models.json`），与用哪个 agent CLI 无关；换后端不需要

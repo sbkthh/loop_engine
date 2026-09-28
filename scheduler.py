@@ -487,6 +487,14 @@ _GRAY_REF_RE = re.compile(
 # WeCom text messages cap at 2048 bytes; keep the list skimmable.
 _GRAY_EVIDENCE_MAX = 6
 _GRAY_SUMMARY_MAX = 120
+_BLOCK_ISSUE_MAX = 3
+_BLOCK_ISSUE_TEXT_MAX = 160
+_SCORE_DIM_MAX = 3
+# 100, not the gray list's 120: it matches the SCORE directive's per-gap
+# contract, so compliant output is never truncated and the cap only bites on
+# over-long prose — and this rides inside the run-end message, which must stay
+# under WeCom's 1800-byte split.
+_SCORE_DIM_TEXT_MAX = 100
 
 
 def _format_gray_draft(d, summary_max=_GRAY_SUMMARY_MAX, prefix=""):
@@ -877,26 +885,98 @@ _SCORE_DIM_LABELS = {
 }
 
 
-def _score_gap_text(module):
-    """SCORE 评分不足的明细：分数、一致性门禁、各维度具体缺口。"""
-    parts = []
+# 未达标/不达标 both contain 达标 — the lookbehind stops the pass-claim filter
+# from eating a real gap.
+# ponytail: heuristic with a known ceiling — a real gap that merely mentions
+# 达标 without 未/不 in front of it gets dropped. Upgrade path is making the
+# SCORE agent emit dimensions as {verdict, detail} so no parsing is needed.
+_PASS_CLAIM_RE = re.compile(
+    r"(?<![未不])达标|本维度\s*ok|^\s*(ok|strong|pass|good|fine|none)\s*$",
+    re.I)
+
+
+def _score_gaps(module):
+    """[(dim label, gap text)] for the dimensions that actually have a gap.
+
+    The SCORE contract says a strong dimension is exactly "ok", but agents also
+    emit prose ending in 达标 — split on ；and drop the sentences that claim a
+    pass, so the push carries only text that needs action.
+    """
+    out = []
+    for k, v in (module.get("score_dimensions") or {}).items():
+        if not isinstance(v, str):
+            continue  # ambiguity_markers is an int count, not prose
+        items = [s.strip() for s in re.split(r"[；;]", v)]
+        items = [s for s in items if s and not _PASS_CLAIM_RE.search(s)]
+        if items:
+            out.append((_SCORE_DIM_LABELS.get(k, k), "；".join(items)))
+    return out
+
+
+def _score_gap_text(module, dim_max=_SCORE_DIM_MAX,
+                    dim_text_max=_SCORE_DIM_TEXT_MAX):
+    """SCORE shortfall as multi-line chat text: score, the cross-consistency
+    gate, then one line per dimension that needs work.
+    dim_max/dim_text_max=None keep everything (the 查看评分 reply)."""
+    head = []
     score = module.get("last_score")
     if score is not None:
-        parts.append(f"{score}/100")
+        head.append(f"SCORE 评分不足（{score}/100）")
     if module.get("score_cross") == "FAIL":
-        parts.append("跨模块一致性 FAIL")
-    dims = module.get("score_dimensions") or {}
-    gaps = []
-    for k, v in dims.items():
-        if not isinstance(v, str) or not v.strip():
+        cross = "跨模块一致性 FAIL（封顶 85）"
+        detail = module.get("cross_consistency_detail")
+        if detail:
+            detail = re.sub(r"\s+", " ", str(detail)).strip()
+            if dim_text_max and len(detail) > dim_text_max:
+                detail = detail[:dim_text_max].rstrip() + "…"
+            cross = f"{cross}：{detail}"
+        head.append(cross)
+    lines = ["，".join(head) or "SCORE 评分不足（<90）"]
+    gaps = _score_gaps(module)
+    for label, text in gaps[:dim_max]:
+        text = re.sub(r"\s+", " ", text).strip()
+        if dim_text_max and len(text) > dim_text_max:
+            text = text[:dim_text_max].rstrip() + "…"
+        lines.append(f"  - {label}：{text}")
+    if dim_max is not None and len(gaps) > dim_max:
+        lines.append(f"  …另有 {len(gaps) - dim_max} 个维度未达标")
+    return "\n".join(lines)
+
+
+def _read_state(root):
+    try:
+        with open(os.path.join(root, STATE_FILE)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _blocked_module_lines(key, m):
+    """One BLOCKED module as chat text: which, why, what's still open, and the
+    only lever that re-drives it (「批准执行」 cannot — next() re-scans just
+    SYNCED/NEEDS_REFINEMENT, so a blocked module needs a real spec edit)."""
+    reason = m.get("block_reason") or "未记录原因（旧版本阻塞，详见 LOOP_REPORT/trace）"
+    lines = [f"{md_bold('阻塞模块')}：{key}", f"  原因：{reason}"]
+    issues = [(i.get("severity") or "?", i.get("text"))
+              for i in (m.get("review_issues") or [])]
+    if not issues:
+        issues = [("hard_error", d.get("description"))
+                  for d in (m.get("hard_errors") or [])]
+    shown = 0
+    for severity, raw in issues:
+        if shown >= _BLOCK_ISSUE_MAX:
+            break
+        text = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not text:
             continue
-        if v.strip().lower() in ("ok", "strong", "pass", "good", "fine", "none"):
-            continue
-        label = _SCORE_DIM_LABELS.get(k, k)
-        gaps.append(f"{label}: {v.strip()}")
-    if gaps:
-        parts.append("；".join(gaps))
-    return f"SCORE 评分不足（{', '.join(parts)}）" if parts else "SCORE 评分不足（<90）"
+        if len(text) > _BLOCK_ISSUE_TEXT_MAX:
+            text = text[:_BLOCK_ISSUE_TEXT_MAX].rstrip() + "…"
+        lines.append(f"  - [{severity}] {text}")
+        shown += 1
+    if len(issues) > shown:
+        lines.append(f"  …另有 {len(issues) - shown} 条")
+    lines.append("  建议：人工修复代码或调整 spec；处理完成后回复「完善spec」重新驱动")
+    return "\n".join(lines)
 
 
 def _no_advance_reason(root, module=None):
@@ -904,10 +984,8 @@ def _no_advance_reason(root, module=None):
     a pinned run must not report other modules' status as if it had been asked
     about them. A pin matching nothing falls back to the whole requirement —
     an empty set would read as "所有模块已同步"."""
-    try:
-        with open(os.path.join(root, STATE_FILE)) as f:
-            state = json.load(f)
-    except (OSError, ValueError):
+    state = _read_state(root)
+    if state is None:
         return "状态机未推进"
     modules = state.get("modules", {})
     if module:
@@ -915,6 +993,16 @@ def _no_advance_reason(root, module=None):
                   if k == module or k.endswith(f"/{module}")}
         modules = picked or modules
     statuses = [m.get("status") for m in modules.values()]
+    # BLOCKED first: it needs a human, and a sibling awaiting spec refinement
+    # must not be able to mask it (that's how a blocked module went unreported)
+    blocked = [(k, m) for k, m in modules.items() if m.get("status") == BLOCKED]
+    if blocked:
+        parts = ["存在阻塞模块，需要人工处理"]
+        parts += [_blocked_module_lines(k, m) for k, m in blocked]
+        refined = [s for s in statuses if s == NEEDS_REFINEMENT]
+        if refined:
+            parts.append(f"另有 {len(refined)} 个模块待完善 spec（SCORE 未达标）")
+        return "\n".join(parts)
     for key, m in modules.items():
         if m.get("hard_errors") and m.get("maker_attempt", 0) >= MAX_MAKER_ATTEMPTS:
             return (f"Checker 硬性偏差未解决且 MAKER_FIX 已用尽 "
@@ -923,10 +1011,18 @@ def _no_advance_reason(root, module=None):
     if NEEDS_REFINEMENT in statuses:
         refined = [(k, m) for k, m in modules.items()
                    if m.get("status") == NEEDS_REFINEMENT]
-        detail = "；".join(f"{k}: {_score_gap_text(m)}" for k, m in refined)
-        return f"需要完善 spec：{detail}"
-    if BLOCKED in statuses:
-        return "存在阻塞模块，需要人工处理"
+        if len(refined) == 1:
+            key, m = refined[0]
+            return f"需要完善 spec：{key}\n{_score_gap_text(m)}"
+        lines = [f"需要完善 spec（{len(refined)} 个模块）"]
+        for key, m in refined:
+            score = m.get("last_score")
+            gaps = _score_gaps(m)
+            top = re.sub(r"\s+", " ", gaps[0][1])[:60] if gaps else ""
+            lines.append(f"  - {key} {score if score is not None else '?'}/100"
+                         + (f"：{top}" if top else ""))
+        lines.append("  回复「查看评分 <模块名>」看某个模块的全部明细")
+        return "\n".join(lines)
     if DRAFT in statuses:
         return "存在未完成 spec 的新模块"
     if statuses and all(s == SYNCED for s in statuses):
@@ -945,10 +1041,17 @@ def _end_message(name, end, steps, elapsed_min, failure_detail, root, module=Non
                 f"回复「查看灰名单」了解详情")
     if end == "no_advance":
         reason = _no_advance_reason(root, module)
-        next_hint = ("处理完成后回复「批准执行 {name}」继续"
-                     if reason != "所有模块已同步"
-                     else "无需进一步操作")
-        return (f"{base}{md_color('执行暂停', 'comment')}：{reason}，共 {steps} 步，耗时 {elapsed_min} 分钟。"
+        if reason == "所有模块已同步":
+            next_hint = "无需进一步操作"
+        elif reason.startswith("存在阻塞模块"):
+            next_hint = ""  # 明细末行已给「完善spec」建议，别重复
+        else:
+            next_hint = f"处理完成后回复「批准执行 {name}」继续"
+        head = f"{base}{md_color('执行暂停', 'comment')}："
+        if "\n" in reason:
+            return (f"{head}{reason}\n共 {steps} 步，耗时 {elapsed_min} 分钟。"
+                    f"{next_hint}")
+        return (f"{head}{reason}，共 {steps} 步，耗时 {elapsed_min} 分钟。"
                 f"{next_hint}")
     if end in ("qodercli_failed", "commit_error",
                "bad_next_output", "bad_commit_output"):
@@ -1216,13 +1319,24 @@ def run_requirement(name, module=None):
                 break
             steps += 1
             retries = 0  # per-step retry counter, sid formula depends on it
+            # before the progress notify: a red final test run still returns
+            # next_action=_SYNCED_, so status is the only trustworthy signal
+            if commit.get("status") == BLOCKED:
+                mkey = commit.get("module") or module_key
+                m = (_read_state(root) or {}).get("modules", {}).get(mkey, {})
+                _log(f"run {name}: module {mkey} BLOCKED, notifying")
+                notify_text(
+                    f"[调度] {md_bold(name)} 第 {steps} 步 {action} 后进入阻塞\n"
+                    + _blocked_module_lines(mkey, m), user_id)
+                end = "no_advance"
+                break
             if not commit.get("next_action"):
                 _log(f"run {name}: no state advance, stopping")
                 end = "no_advance"
                 break
             step_min = max(1, int((time.monotonic() - step_start) // 60))
             notify_text(f"[调度] {md_bold(name)} 第 {steps} 步 {action} 完成"
-                        f"（{step_min} 分钟）→ "
+                        f"（{step_min} 分钟 · 模块 {module_key.rsplit('/', 1)[-1]}）→ "
                         f"{commit['next_action'].strip('_')}", user_id)
             if commit.get("next_action") == "_GRAY_LIST_":
                 _log(f"run {name}: gray-listed, stopping for human review")

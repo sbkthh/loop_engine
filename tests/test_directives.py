@@ -297,3 +297,30 @@ class TestFixStepDeclarationContract(unittest.TestCase):
         from constants import CODE_REVIEW_FIX, MAKER_FIX
         self.assertIn("does not list them", self._fmt(MAKER_FIX))
         self.assertIn("outside the plan", self._fmt(CODE_REVIEW_FIX))
+
+
+class TestScoreOutputContract(unittest.TestCase):
+    """SCORE 的输出纪律。指令被无声改回，通知就会重新膨胀到近 2000 字节被企微截断。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.abspath(self.tmp.name)
+        from constants import SCORE
+        m = {"change_id": "chg", "module_name": "m", "project_root": ".",
+             "spec_hash": "abc", "maker_attempt": 1,
+             "hard_errors": [], "review_issues": [],
+             "files_created": [], "files_modified": []}
+        self.fmt = build(SCORE, "chg/m", m,
+                         self.root)["directives"]["output_format"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_output_format_asks_for_cross_detail(self):
+        """FAIL 是把分数封顶到 85 的硬闸，却从来没有明细可渲染。"""
+        self.assertIn('"cross_consistency_detail"', self.fmt)
+
+    def test_output_format_enforces_gap_discipline(self):
+        self.assertIn("do NOT restate", self.fmt)
+        self.assertIn("100 chars", self.fmt)
+        self.assertIn("spec.md line", self.fmt)

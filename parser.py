@@ -169,8 +169,12 @@ def _score_from_json(data):
     score = data.get("score")
     if not isinstance(score, int) or isinstance(score, bool):
         raise _format_error("'score' must be an integer")
+    detail = data.get("cross_consistency_detail")
     return {"score": score,
             "cross_consistency": data.get("cross_consistency"),
+            # optional: never raise (a SCORE raise is a commit_error loop)
+            "cross_consistency_detail":
+                detail if isinstance(detail, str) and detail.strip() else None,
             "dimensions": data.get("dimensions")}
 
 

@@ -35,6 +35,7 @@ _LLM_SYSTEM_PROMPT = (
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
     "Actions: approve | run_spec(requirement+module) | "
     "spec_result(requirement+module) | history | "
+    "score_view(requirement[+module]) | "
     "gray_list | adjudicate(requirement+target+decision, "
     "decision=accept|reject, target=all or draft ids e.g. \"28 29\")\n"
     "Do NOT add __JSON_ACTION__ when no action is needed — EXCEPT: "
@@ -53,6 +54,12 @@ _LLM_SYSTEM_PROMPT = (
     "the backend has the correct display logic. "
     "gray_drafts = the real gray list; "
     "review_issues = CODE_REVIEW historical findings, not gray list items.\n\n"
+    "Score rule: when the user asks to view a module's SCORE detail "
+    "(e.g. '查看评分 <module>'), you MUST output __JSON_ACTION__ "
+    "{\"action\": \"score_view\", \"requirement\": \"<name>\", "
+    "\"module\": \"<module>\"}. "
+    "Do NOT read score_dimensions from state.json and answer directly — "
+    "the backend owns the two-tier rendering (push summary vs full detail).\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
     "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
@@ -305,6 +312,49 @@ def _execute_gray_list_view(name, registry, data_dir):
         lines.append("")
     lines.append("多条可一起处理：「全部接受」/「全部拒绝」，"
                  "或混合：「接受 1，拒绝 2 3」")
+    return "\n".join(lines)
+
+
+# ponytail: 不复用 _pending_gray_drafts —— 它遍历的是待裁决的灰名单草稿文件，
+# 这里要的是 state.json 里带 SCORE 判定的模块，数据源与过滤条件都不同。
+def _scored_modules(registry, name="ALL"):
+    """[(req_name, module_key, module)] for modules carrying a SCORE verdict."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from state import StateManager
+    found = []
+    for req in registry:
+        if name != "ALL" and req.get("name") != name:
+            continue
+        try:
+            st = StateManager(req.get("root", "")).load()
+        except Exception:
+            continue
+        for key, m in st.get("modules", {}).items():
+            if m.get("last_score") is not None:
+                found.append((req.get("name", "?"), key, m))
+    return found
+
+
+def _execute_score_view(name, module, registry, data_dir):
+    """Full, untruncated SCORE detail — the second tier behind the push summary."""
+    found = _scored_modules(registry, name or "ALL")
+    if module:
+        found = [f for f in found
+                 if f[1] == module or f[1].endswith(f"/{module}")]
+    if not found:
+        return f"没有找到评分记录：{module or name or '(全部)'}"
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import scheduler
+    # NEEDS_REFINEMENT first: those are the ones needing a spec edit
+    found.sort(key=lambda f: f[2].get("status") != scheduler.NEEDS_REFINEMENT)
+    lines = []
+    for req_name, key, m in found:
+        lines.append(f"「{req_name}」{scheduler.md_bold(key)}"
+                     f" [{m.get('status')}]")
+        lines.append(scheduler._score_gap_text(
+            m, dim_max=None, dim_text_max=None))
+        lines.append("")
+    lines.append("修改 spec.md 后回复「完善spec」重新评分")
     return "\n".join(lines)
 
 
@@ -870,6 +920,9 @@ def _dispatch_json_action(payload, registry, data_dir, user_id):
     if action == "gray_list":
         return _execute_gray_list_view(payload.get("requirement") or "ALL",
                                        registry, data_dir)
+    if action == "score_view":
+        return _execute_score_view(payload.get("requirement") or "ALL",
+                                   payload.get("module"), registry, data_dir)
     if action == "history":
         return _execute_history(payload.get("requirement") or "ALL",
                                 registry, data_dir)

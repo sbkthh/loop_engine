@@ -409,6 +409,60 @@ loop_engine run strategic-stockup-system-upgrade
 > `machine.next()` 在草稿未裁决前拿不到 `_gray_resume`，硬跑会退回 SCORE 把整链
 > 重付一遍。先 `resolve-draft` 裁决，再 run。
 
+### run 的通知流
+
+| 时机 | 内容 |
+|---|---|
+| 每步 commit 成功 | `第 N 步 <ACTION> 完成（M 分钟 · 模块 <name>）→ <下一动作>` |
+| 模块转入 BLOCKED | **立即**一条：模块 key、`block_reason`、最多 3 条未清零问题（每条截断 160 字）、建议 |
+| run 结束 | 成功 / 暂停（灰名单、无推进）/ 失败，附步数与耗时 |
+
+阻塞通知的判定看**模块真实 status**，不看 `next_action`：最终测试红灯时
+`_execute_synced` 会阻塞模块，但 `commit()` 丢弃了它的返回值，`next_action`
+仍是 `_SYNCED_`——只看 `next_action` 会推一条假的「→ SYNCED」并把 run 报成
+「执行完成（成功）」。同理 `next_action` 为 `None` 也不等于阻塞（SCORE 评分
+不足同样返回 `None`，那是 NEEDS_REFINEMENT）。
+
+run 结束消息里 **BLOCKED 优先于 NEEDS_REFINEMENT**：只要有一个模块被阻塞，
+就展开阻塞明细，其余待完善 spec 的模块压成一行计数——否则评分不足的模块会
+把阻塞信息整个盖掉（曾经 13 步 70 分钟的 run 结束后完全没提被阻塞的模块）。
+
+> **BLOCKED 不能靠「批准执行」重新驱动**：`machine.next()` 的重扫只捞
+> SYNCED / NEEDS_REFINEMENT，BLOCKED 的可接受前缀只有 `SPEC_RESULT`。唯一
+> 杠杆是**真实修改 spec** 后回复「完善spec」（`router._execute_spec_result`
+> 校验 hash 变化 → 置 PARTIAL 并把 `maker_attempt` / `review_fix_attempt`
+> 归零），或者人工修好代码后手动改状态。
+>
+> `block_reason` 字段自本轮起写入 state.json；此前被阻塞的存量模块没有该
+> 字段，通知里显示「未记录原因（旧版本阻塞，详见 LOOP_REPORT/trace）」。
+
+**评分明细是两层**（与灰名单同一套设计）：
+
+| 层 | 内容 | 出处 |
+|---|---|---|
+| 推送 | 分数 + 一致性门禁 + **最多 3 个**未达标维度，每维 **≤100 字**，自动剥掉「…达标 / 本维度 ok」这类不需要动手的句子 | `_score_gap_text()` |
+| 全量 | 全部维度、不截断 | 回复 `查看评分 <模块名>` |
+
+硬预算：整条 run 结束消息必须 **< 1800 字节**（`wecom_api._MAX_BYTES`），
+否则 `split_segments` 会把它拦腰切成两条——本机用生产载荷实测改前 1875 字节 /
+2 段（测试快照 1984 字节），断点落在半句话中间；改后 791 字节 / 1 段。
+
+每维 **100 字**这个上限首先是为了对齐 SCORE 指令里的「每条缺口 ≤100 字」：
+合规输出永远不会被截断，上限只咬不合规的长文。其次才是字节余量——实测当前
+载荷 100 字比 120 字省 135 字节（827 vs 962）；按全中文最坏情况估算，120 字
+会落到约 1680 字节，离 1800 只剩一百多字节余量。
+
+`cross_consistency: FAIL` 会把分数封顶到 85（`machine._commit_score`），这是
+最硬的一道闸，所以 SCORE 输出新增可选字段 `cross_consistency_detail`——一句话
+点名矛盾双方并带 spec.md 行号。只在 FAIL 时渲染；存量 state.json 没有该字段，
+通知里就只显示「封顶 85」不带明细，下一次评分自动补上。
+
+> **生效方式分两种**：`_score_gap_text` / `_no_advance_reason` 的改动随下一次
+> `loop_engine poll` 或 `run`（都 fork 新进程跑工作树源码）**立即生效**；
+> `score_view` 动作与 LLM 提示词改动在**常驻守护进程**里，需要
+> `loop_engine wecom start` 重启才生效。飞书侧复用同一个
+> `wecom_server.router.dispatch`，改一处两边同时生效。
+
 ### 调度器配置
 
 ```bash
@@ -630,9 +684,10 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 - 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
 - `查看执行历史` — 各需求的运行历史（runs.json）
 - `查看灰名单` / `接受 1 拒绝 2` — 列出待裁决草稿 / 混合裁决（支持 `全部接受`、`全部拒绝`）
+- `查看评分 <模块名>` — 该模块 SCORE 的**全量**明细（不带模块名则列全部已评分模块，NEEDS_REFINEMENT 排前）；模块名可写裸名或 `change-id/模块名`
 - 其他自然语言问题 — LLM 自动理解并回答
 
-动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）。
+动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）、`score_view`（评分全量明细，requirement 可选、module 可选）。
 
 ### 配置
 
@@ -707,13 +762,20 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
 
 ### 模型
 
-每一步（含企业微信的两类轮次）都可以单独指定模型，配置在仓库根 `agent_models.json`
-（与 `minimal_mcp.json` 同级，由 `agent_cli` 读取）：
+每一步（含企业微信的两类轮次）都可以单独指定**模型**与**上下文窗口**，配置在仓库根
+`agent_models.json`（与 `minimal_mcp.json` 同级，由 `agent_cli` 读取）：
 
 ```json
-{ "qodercli": { "default": "", "CHECKER": "", "CHAT": "", "CLASSIFY_REQUIREMENT": "" },
-  "pi":       { "default": "" } }
+{ "qodercli": { "default": {"model": "", "context": ""},
+                "CHECKER":  {"model": "", "context": ""},
+                "CHAT":     {"model": "", "context": ""},
+                "CLASSIFY_REQUIREMENT": {"model": "", "context": ""} },
+  "pi":       { "default": {"model": "", "context": ""} } }
 ```
+
+`model` 是型号名；`context` 是**正整数 token 数**（`"1000000"`），留空 = 不传
+`--context-window`。老写法（步骤值直接是型号字符串）仍被读成 `{"model": 老值}`——
+别人的本机配置文件已经在盘上，引擎不能要求每台机器同步改文件。
 
 - **步骤键** = `constants.ALL_STEP_KEYS`：10 个 loop action（`SCORE`/`CLASSIFY_CHANGE`/
   `MAKER_STEP0`/`MAKER_STEP1_RED`/`MAKER_STEP2_GREEN`/`CHECKER`/`MAKER_FIX`/
@@ -745,6 +807,27 @@ autossh -M 0 -N -o ServerAliveInterval=30 \
   会按 ① 粘住后续轮——所以「填错必须响着失败」在这两个后端上做不到，能做的只有事前拒收。
   反过来，续跑时**显式**给 `--model` 是有效的（实测同一段会话内出现两种模型），所以「共会话」与
   「按步骤分档」可以叠加。
+- **上下文窗口是 2026-09-28 新加的一维（qodercli 1.1.62，判据 = 会话 jsonl 里的
+  `runtime-config.contextWindow`，非 `None` 才算真的按指定窗口在服务）**：
+  - **flag 盖过 CLI 自己的存储**：不传 flag 时 `~/.qoder/settings.json` 的
+    `model.preferences.<内部id>.contextWindow` 会在 spawn 生效（实测默认模型 = 400000），显式传
+    `1000000` 则以 flag 为准。这正是走引擎侧透传的理由——那份存储按内部 id 分开、会被 `/model` 面板整体重写，
+    不能当配置真相。
+  - **非正整数是硬失败，不是静默忽略**：`1M`、`abc` ⇒ rc=1 `Invalid context window … Must be a
+    positive integer`，连会话文件都不生成（与 `--model` 的静默降级相反）。所以 `agent_cli` 自己先校验，
+    不合格 warn + 不传：一步的笔误不该毁掉该类型的每一次 spawn。
+  - **合法格式 = 纯 token 数**：档位串不支持；`999999999999` 这种整数被接受（rc=0）但窗口回落到
+    `None`，连 preferences 里的值也不用了——填大到没边的数等于没填，且不留错误。
+  - **窗口在同一会话内是粘的**：带 `1000000` 跑一轮，下一轮**省略 flag 仍是 1000000**；显式改 `200000`
+    之后又粘成 200000。因此 `context` 与 `model` 用同一套解析：步骤留空取该段 `default`。把 `default`
+    也留空才会出现「某步窗口取决于上一步」，那是配置选择，不是引擎行为。
+  - **只对 qodercli 成立**：pi 没有对应物（`--no-context-files` 只是禁用 AGENTS.md/CLAUDE.md 发现，
+    名字撞车而已），`pi` 段填了 context ⇒ **warn 一次 + 忽略**，pi 的 argv 不出现该 flag。
+  - **型号半边整段失效时 context 跟着失效**：一个段一个开关，不会留下「模型静默跑在 auto、窗口却按配置」
+    这种半条决策。
+  - **没配就等于今天**：模板与个人文件的 context 全空时，argv 连 `--context-window` 都不带
+    （`tests/test_agent_cli.py` 的等值断言钉住）；此时窗口完全由后端决定，实测同一台机器上
+    `qfmodel` = 400000、`qmodel_38max` 与 `dfmodel` = `None`。
 - **`CHAT` 键的含义受 ① 约束**：G 问答是续跑的长会话，`CHAT` 实际等于「该会话第一次发言时用的模型」；
   真正每轮独立的只有 `CLASSIFY_REQUIREMENT`（一次性 uuid 会话）。
 - **查找顺序**：`LOOP_ENGINE_MODEL_CONFIG` → `<数据目录>/agent_models.json`（存在就读）→ 仓库根的那份。
@@ -895,8 +978,8 @@ loop_engine feishu stop
 ├── report.py                   # 报告生成
 ├── spec_utils.py               # spec 工具函数 + PRD 解析 + 双层哈希
 ├── scheduler.py                # Layer 2 调度器（poll/dispatch/run/flock 锁）
-├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 每步模型解析）
-├── agent_models.json           # 每步模型配置**模板**（值全空，本机填数据目录那份，见「模型」）
+├── agent_cli.py                # Agent 后端收口（argv 构造 / 会话探测 / 每步模型与窗口解析）
+├── agent_models.json           # 每步模型+上下文配置**模板**（值全空，本机填数据目录那份，见「模型」）
 ├── minimal_mcp.json            # 循环步骤的 MCP 白名单（只有 codegraph）
 ├── scope_audit.py              # 未申报改动审计（声明 vs git 实际，可推微信）
 ├── setup.py                    # Phase 0 初始化
@@ -938,7 +1021,7 @@ loop_engine feishu stop
 ├── pending.json                # poll 待执行清单
 ├── schedule.json               # 调度器配置（max_concurrency）
 ├── runs.json                   # 执行历史（requirement → 起止/轮次/结局）
-├── agent_models.json           # 本机每步模型配置（放这里就不需要任何 env）
+├── agent_models.json           # 本机每步模型与上下文配置（放这里就不需要任何 env）
 ├── wecom.json                  # WeCom 应用配置（密钥）
 ├── feishu.json                 # 飞书应用配置（密钥）
 ├── audit.log                   # 敏感命令审计日志
@@ -982,7 +1065,7 @@ loop_engine feishu stop
   循环不会分家。在 WSL / 那台跑 pi 的 Linux 机器上，`~` 是 Linux 家目录（`/home/<user>/.qoder/loop_engine`），
   与 Windows 侧的 `C:\Users\<name>\.qoder` 是两份互不可见的状态；想共用就把 env 指到同一个可访问路径
 - **pi 的启动参数与 qodercli 有四处结构性差异**（`_pi_cmd` 逐条实测）：① 没有 `--cwd`，工作目录就是子进程的 OS cwd（`scheduler` 已经 `cwd=root`）；② 没有逐工具确认，`-p` 下 bash/edit 直接执行，所以也不需要 `--dangerously-skip-permissions` 的对应物——代价是**没有沙箱**，唯一收敛手段是 `--tools` 白名单（默认放行 `read,grep,find,ls,bash,edit,write,mcp`，把 `subagent`/`web_search` 这类扩展工具挡在外面；MCP 走适配器的单个 `mcp` 元工具，白名单里必须写 `mcp` 而不是 `codegraph_*`）；③ `--session-id` 是「没有就创建」，因此不需要 qodercli 那套磁盘探测 + `--resume` 二段式；④ 没有 `--strict-mcp-config` 的对应物，`--mcp-config` 只替换 pi-global 那一层，`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<cwd>/.mcp.json`、`<cwd>/.pi/mcp.json` 仍会合并进来；`PI_MCP_CONFIG_MODE=exclusive` 看着像答案但实测会让 `--mcp-config` 一起失效（0 servers），故**不使用**
-- **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值。这一层是**后端默认**，在它之前还有一层按步骤的 `agent_models.json`（见「模型」小节）；实测续跑时显式带 `--model` 有效，所以「一个模块共用一段会话」与「每步不同模型」可以叠加
+- **模型来源不同**：qodercli 读 `~/.qoder/settings.json` 的 `model.name`；pi 的默认模型在 `~/.pi/agent/settings.json` 的 `defaultProvider`/`defaultModel`，本机两者都没设 → pi 自行落到「首个配好鉴权的模型」（deepseek-v4-pro，非 flash）。`_pi_model()` 取不到就**不传** `--model`，不猜默认值。这一层是**后端默认**，在它之前还有一层按步骤的 `agent_models.json`（见「模型」小节）；实测续跑时显式带 `--model` 有效，所以「一个模块共用一段会话」与「每步不同模型」可以叠加。**上下文窗口则是 qodercli 专属维度**：pi 没有 `--context-window` 对应物（它的 `--no-context-files` 只是禁用 AGENTS.md/CLAUDE.md 发现，名字撞车），`pi` 段里填 context 会被忽略并 warn 一次，pi 的 argv 保持原样
 - **两个 pi 目录都是本机实测**（pi 0.85.1 + pi-subagents 0.66.0），不是抄文档：pi 同时扫 `~/.pi/agent/skills/` 与共享的 `~/.agents/skills/`，我们只往前者装，避免把 5 个 skill 混进用户自己的 skill 集；子代理是 pi-subagents 的概念（pi 核心没有），它递归读 `~/.pi/agent/agents/**/*.md`
 - **装过去 ≠ 能直接用**：`agents/*.md` 目前是 qodercli 的 frontmatter 格式（`tools: Read, Write, ...` + `mcpServers:`），pi-subagents 用同一套「YAML + 系统提示词」形状但字段名不同（`tools: read, grep, bash, mcp:<server>/<tool>`），未知 tool 名会被静默忽略 → 子代理拿到空工具集。在改写成 pi 格式之前，pi 侧的 maker/checker 只在交互式用法下有影响；循环的 MAKER/CHECKER 步骤从不派发子代理（就是「普通会话 + 引擎拼的 system prompt」），所以 spawn 路径不依赖这两个文件
 - **后端名填错一律报错**：不在档案表里的值，spawn / self-install / self-check 三处都直接失败，不静默回落到 qodercli

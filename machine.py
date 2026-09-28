@@ -417,11 +417,9 @@ class StateMachine:
             # Tripwire: a code edit landed on SYNCED with no CHECKER re-verify
             # in between. Refuse the merge; a non-converging loop goes to a
             # human, never silently ships (bedrock: no inconsistency merges).
-            self._trace(state, action, module_key,
-                        "基石守卫:代码变更后未经 CHECKER 复验,拒绝 SYNCED -> BLOCKED",
-                        "❌")
-            module["status"] = BLOCKED
-            next_action = None
+            next_action = self._block(
+                state, action, module_key, module,
+                "基石守卫:代码变更后未经 CHECKER 复验,拒绝 SYNCED")
 
         if next_action == _SYNCED:
             self._execute_synced(state, module_key, module)
@@ -450,6 +448,8 @@ class StateMachine:
             "module": module_key,
             "result": "committed",
             "next_action": next_action,
+            # next_action can't signal a block: _execute_synced's return is discarded
+            "status": module.get("status"),
         }
 
     def _commit_score(self, state, key, module, text):
@@ -464,6 +464,9 @@ class StateMachine:
             score = min(score, 85)
         module["last_score"] = score
         module["score_cross"] = cross
+        # unconditional: a conditional write would leave a stale FAIL detail
+        module["cross_consistency_detail"] = parsed.get(
+            "cross_consistency_detail")
         dims = parsed.get("dimensions")
         module["score_dimensions"] = dims if isinstance(dims, dict) else None
         if score >= SCORE_THRESHOLD and cross != "FAIL":
@@ -657,11 +660,10 @@ class StateMachine:
             # burns all 200 steps. BLOCKED is terminal until the user edits
             # the spec (spec_result → PARTIAL + maker_attempt=0) or fixes the
             # code; poll notifies "请处理阻塞问题后回复「完善spec」".
-            module["status"] = BLOCKED
-            self._trace(state, CHECKER, key,
-                        f"hard errors persist after {MAX_MAKER_ATTEMPTS} "
-                        f"MAKER_FIX attempts -> BLOCKED")
-            return None
+            return self._block(
+                state, CHECKER, key, module,
+                f"hard errors persist after {MAX_MAKER_ATTEMPTS} "
+                f"MAKER_FIX attempts")
         if soft > 0:
             return _GRAY_LIST
         # 轻量路径：MAKER 没运行过（代码未改动），CHECKER 通过后直接 SYNCED
@@ -707,6 +709,8 @@ class StateMachine:
         to SYNCED — stop and surface to a human (bedrock: no inconsistency
         merges). Returns None so commit() clears current; BLOCKED has no auto
         next-action until the user edits the spec."""
+        # the scheduler reads state.json, not the capped trace ring
+        module["block_reason"] = reason
         module["status"] = BLOCKED
         self._trace(state, action, key, f"{reason} -> BLOCKED", "❌")
         return None

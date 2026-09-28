@@ -72,6 +72,71 @@ def _module(change_id, name, status, spec_hash=None, spec_norm_hash=None):
     }
 
 
+def _blocked(change_id="c", name="m",
+             reason="code review 仍有 1 critical/0 important，2 轮修复未清零",
+             issues=None):
+    """A BLOCKED module as machine._block leaves it on disk."""
+    m = _module(change_id, name, "BLOCKED")
+    m["block_reason"] = reason
+    if issues is not None:
+        m["review_issues"] = issues
+    else:
+        m["review_issues"] = [
+            {"severity": "critical",
+             "text": "导出文件名取 authUser.getNickname()，spec 要求 req.getPmId()"},
+        ]
+    return m
+
+
+# Frozen snapshot of the live ai-recommendation-engine payload (score 84,
+# cross FAIL). Kept verbatim rather than shortened because the shape is what
+# breaks: scenario_coverage opens with a 「整体达标」 pass clause before the real
+# gaps, exception_coverage is 100% pass-restatement, ambiguity_markers is an int.
+# Rendered as-is the run-end message is 1984 UTF-8 bytes -> 2 WeCom segments.
+_REAL_DIMS = {
+    "scenario_coverage": (
+        "36 个 Scenario、10 个 Requirement，整体达标；仍缺两个边界场景："
+        "spec.md:248 的 `POST /stock-strategy/ai-calculate` 未定义"
+        "「`aiStatus` 已为 CALCULATING 时重复触发」的服务端行为"
+        "（现仅由 spec.md:252 前端页锁约束）与「taskId 不存在」的错误响应"
+        "（实现已抛 BusinessException，spec 未覆盖）"),
+    "field_completeness": (
+        "「建议未税销售价」来源双轨未收敛：spec.md:69 由 CC "
+        "`companySalePriceQry` 计算，spec.md:73 的 BI 字段清单又列出"
+        "「SKU建议未税销售价」，未定义素材表最终落哪一列、两者冲突时的优先级；"
+        "spec.md:76/:428 的 70 列仅以 docs/战略备货-素材表.csv 外部引用承载，"
+        "spec 内无列级字段表可核对"),
+    "api_contract": (
+        "Step 3 导入校验规则集合与列计数口径不完整：spec.md:479 声明"
+        "「the following 4 validation rules」，但 spec.md:485/:492 依赖本 spec "
+        "从未定义的「必填字段校验 / 价格 / 数量 / 物料组一致性」类别；"
+        "spec.md:438「5 editable fields」、spec.md:445「5 starred columns」与 "
+        "spec.md:449「4 editable fields」三处计数不一致且未说明「备货SKU\\*」"
+        "是否计入；`GET /stock-strategy/{taskId}/status`（spec.md:262）"
+        "未枚举响应字段（FAILED 分支要展示的 `aiFailureReason` 无字段定义）"),
+    "exception_coverage": (
+        "异常/降级类场景约 11/36（BI 取数失败 spec.md:35、库存报表不可用 :87、"
+        "直销销售价查询失败 :94、提交业务错误 :233、回调失败 :342/:366、"
+        "素材表与明细无数据 :430/:440、导入重复键 :490、整体拒绝 :496、"
+        "清单部分/全部异常 :533/:553）≈ 31%，达标"),
+    "ambiguity_markers": 0,
+}
+
+_REAL_REQ = "strategic-stockup-system-upgrade"
+_REAL_KEY = f"{_REAL_REQ}/ai-recommendation-engine"
+
+
+def _refined(change_id="c", name="m", score=82, cross="FAIL",
+             dims=None, detail=None):
+    """A NEEDS_REFINEMENT module carrying a real SCORE payload."""
+    m = _module(change_id, name, "NEEDS_REFINEMENT")
+    m["last_score"] = score
+    m["score_cross"] = cross
+    m["score_dimensions"] = _REAL_DIMS if dims is None else dims
+    m["cross_consistency_detail"] = detail
+    return m
+
+
 class TestStatusTableSemantics(unittest.TestCase):
     def test_auto_exec_matches_old_trigger_semantics(self):
         """STATUS_TABLE auto_exec preserves old AUTO_EXECUTABLE coverage:
@@ -1002,7 +1067,7 @@ class TestRun(SchedulerBase):
 
     def test_run_notifies_per_committed_step(self):
         """Each successfully committed step pushes a WeCom progress notice
-        (step number, action, duration, next action)."""
+        (step number, action, duration, current module, next action)."""
         self._register_pending("req")
         next_actions = ["SCORE", "MAKER_STEP0"]
         commit_results = [
@@ -1035,6 +1100,86 @@ class TestRun(SchedulerBase):
         self.assertIn("MAKER_STEP0", step_notes[0])
         self.assertIn("MAKER_STEP0 完成", step_notes[1])
         self.assertIn("SYNCED", step_notes[1])
+        self.assertIn("模块 m", step_notes[0])
+        self.assertIn("模块 m", step_notes[1])
+
+    def _fake_commit_run(self, root, commit_payload, state_modules,
+                         action="CHECKER"):
+        """next always offers `action`; commit rewrites state.json the way
+        machine.commit() does, then returns `commit_payload`."""
+        def fake_run(cmd, **kwargs):
+            if any("__main__.py" in part for part in cmd):
+                sub = cmd[cmd.index(
+                    next(p for p in cmd if "__main__.py" in p)) + 1]
+                if sub == "next":
+                    return types.SimpleNamespace(
+                        stdout=json.dumps({"action": action, "module": "c/m"}),
+                        stderr="", returncode=0)
+                if sub == "commit":
+                    _make_state(root, state_modules)
+                    return types.SimpleNamespace(
+                        stdout=json.dumps(commit_payload),
+                        stderr="", returncode=0)
+            return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+        return fake_run
+
+    def test_run_notifies_step_blocked(self):
+        root = self._register_pending("req")
+        fake = self._fake_commit_run(
+            root,
+            {"action": "CHECKER", "module": "c/m",
+             "next_action": None, "status": "BLOCKED"},
+            {"c/m": _blocked()})
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            result = scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        blocked = [m for m in messages if "进入阻塞" in m]
+        self.assertEqual(len(blocked), 1)
+        self.assertIn("第 1 步 CHECKER", blocked[0])
+        self.assertIn("c/m", blocked[0])
+        self.assertIn("code review 仍有 1 critical", blocked[0])
+        self.assertIn("导出文件名", blocked[0])
+        self.assertIn("完善spec", blocked[0])
+        self.assertEqual(result["end"], "no_advance")
+
+    def test_run_blocked_notice_suppresses_false_synced(self):
+        """A red final test run blocks the module, but commit() discards that
+        return and still reports next_action=_SYNCED_ — the run must not push
+        a fake 「→ SYNCED」 step notice nor a fake 「执行完成（成功）」."""
+        root = self._register_pending("req")
+        fake = self._fake_commit_run(
+            root,
+            {"action": "CHECKER", "module": "c/m",
+             "next_action": "_SYNCED_", "status": "BLOCKED"},
+            {"c/m": _blocked(reason="final mvn test failed in 1/1 repo(s): .")})
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            result = scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        self.assertFalse(any("→ SYNCED" in m for m in messages))
+        self.assertFalse(any("执行完成（成功）" in m for m in messages))
+        self.assertTrue(any("进入阻塞" in m for m in messages))
+        self.assertEqual(result["end"], "no_advance")
+
+    def test_run_no_blocked_notice_on_needs_refinement(self):
+        """next_action is also None when SCORE falls below threshold; that is
+        NEEDS_REFINEMENT, not a block, and must keep the score-gap wording."""
+        root = self._register_pending("req")
+        refined = _module("c", "m", "NEEDS_REFINEMENT")
+        refined["last_score"] = 82
+        fake = self._fake_commit_run(
+            root,
+            {"action": "SCORE", "module": "c/m",
+             "next_action": None, "status": "NEEDS_REFINEMENT"},
+            {"c/m": refined}, action="SCORE")
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+             mock.patch.object(scheduler, "notify_text") as mock_notify:
+            result = scheduler.run_requirement("req")
+        messages = [c.args[0] for c in mock_notify.call_args_list]
+        self.assertFalse(any("进入阻塞" in m for m in messages))
+        self.assertEqual(result["end"], "no_advance")
+        self.assertTrue(any("SCORE 评分不足" in m for m in messages))
 
     def test_run_passes_previous_result_to_next_step(self):
         root = self._register_pending("req")
@@ -2127,6 +2272,98 @@ class TestNotify(SchedulerBase):
         self.assertNotIn("批准执行 req", msg)
         self.assertNotIn("gray_list", msg)
 
+    def test_score_gap_text_splits_dims_into_lines(self):
+        """One wall joined by ；is unreadable — and ；is also the separator
+        inside each dimension's own prose, so boundaries collide."""
+        out = scheduler._score_gap_text(_refined())
+        self.assertIn("\n", out)
+        self.assertIn("  - 场景覆盖：", out)
+        self.assertIn("  - 字段定义：", out)
+        self.assertIn("  - API 契约：", out)
+        self.assertNotIn("异常场景", out)  # pure 达标 dimension dropped
+        self.assertNotIn("未决标记", out)  # int count, not prose
+        self.assertTrue(out.startswith("SCORE 评分不足（82/100）"))
+
+    def test_score_gap_text_drops_pass_claim_sentences(self):
+        out = scheduler._score_gap_text(_refined())
+        self.assertNotIn("整体达标", out)
+        self.assertNotIn("36 个 Scenario", out)
+        self.assertIn("spec.md:248", out)
+        self.assertIn("companySalePriceQry", out)
+
+    def test_score_gap_text_keeps_negative_claim(self):
+        """未达标/不达标 both contain 达标 — the pass filter must not eat them."""
+        m = _refined(dims={"scenario_coverage":
+                           "spec.md:12 覆盖率未达标；spec.md:20 异常场景不达标"})
+        out = scheduler._score_gap_text(m)
+        self.assertIn("未达标", out)
+        self.assertIn("不达标", out)
+
+    def test_score_gap_text_caps_dims_and_length(self):
+        dims = {f"d{i}": "缺" + "口" * 300 for i in range(5)}
+        out = scheduler._score_gap_text(_refined(dims=dims))
+        self.assertEqual(out.count("  - "), 3)
+        self.assertIn("另有 2 个维度未达标", out)
+        for line in out.splitlines():
+            if line.startswith("  - "):
+                body = line.split("：", 1)[1]
+                self.assertLessEqual(len(body), 101)
+                self.assertTrue(body.endswith("…"))
+
+    def test_score_gap_text_full_tier_keeps_everything(self):
+        """查看评分 passes dim_max=None: no cap, and no TypeError on len>None."""
+        dims = {f"d{i}": "缺口" + "x" * 300 for i in range(5)}
+        out = scheduler._score_gap_text(_refined(dims=dims),
+                                        dim_max=None, dim_text_max=None)
+        self.assertEqual(out.count("  - "), 5)
+        self.assertNotIn("另有", out)
+        self.assertNotIn("…", out)
+
+    def test_score_gap_text_shows_cross_fail_detail(self):
+        m = _refined(detail="spec.md:342 的分支判定依赖 callbackType，"
+                            "但 :338 请求体表未定义该字段")
+        out = scheduler._score_gap_text(m)
+        self.assertIn("跨模块一致性 FAIL（封顶 85）：spec.md:342", out)
+
+    def test_score_gap_text_cross_fail_without_detail(self):
+        """Today's live state: FAIL with no detail field recorded at all."""
+        out = scheduler._score_gap_text(_refined())
+        self.assertIn("跨模块一致性 FAIL（封顶 85）", out)
+        self.assertNotIn("封顶 85）：", out)
+
+    def test_end_message_refined_fits_one_wecom_segment(self):
+        """Headline regression: the live payload renders a 1984-byte message,
+        which WeCom splits into 2 segments mid-sentence."""
+        from wecom_server.wecom_api import split_segments
+        root = self.register(_REAL_REQ,
+                             os.path.join(self.tmp.name, "stockup"))
+        _make_state(root, {_REAL_KEY: _refined(
+            change_id=_REAL_REQ, name="ai-recommendation-engine", score=84,
+            detail="spec.md:342 的分支判定依赖 callbackType，"
+                   "但 :338 请求体表未定义该字段")})
+        msg = scheduler._end_message(
+            _REAL_REQ, "no_advance", 13, 70, None, root)
+        self.assertLess(len(msg.encode()), 1800)
+        self.assertEqual(len(split_segments(msg)), 1)
+        self.assertIn("ai-recommendation-engine", msg)
+
+    def test_no_advance_reason_multi_refined_collapses(self):
+        """Two modules needing spec work must not double the payload."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {
+            "c/alpha": _refined(name="alpha", score=82),
+            "c/beta": _refined(name="beta", score=78, cross="PASS"),
+        })
+        reason = scheduler._no_advance_reason(root)
+        self.assertIn("需要完善 spec（2 个模块）", reason)
+        self.assertIn("c/alpha 82/100", reason)
+        self.assertIn("c/beta 78/100", reason)
+        self.assertIn("查看评分", reason)
+        self.assertIn("spec.md:248", reason)  # first gap survives the 60-char cut
+        self.assertNotIn("BusinessException", reason)  # beyond the cut
+        self.assertNotIn("companySalePriceQry", reason)  # a later dim, not shown
+        self.assertEqual(reason.count("\n"), 3)
+
     def test_end_message_no_advance_reports_reason(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {"c/m": _module("c", "m", "NEEDS_REFINEMENT")})
@@ -2190,6 +2427,90 @@ class TestNotify(SchedulerBase):
         _make_state(root, {"c/carton": pinned,
                            "c/evm-exempt-weighing": other})
         return scheduler._no_advance_reason(root, module)
+
+    def test_blocked_module_lines_full_shape(self):
+        out = scheduler._blocked_module_lines("c/m", _blocked())
+        self.assertIn("c/m", out)
+        self.assertIn("code review 仍有 1 critical", out)
+        self.assertIn("[critical]", out)
+        self.assertIn("导出文件名", out)
+        self.assertIn("完善spec", out)
+
+    def test_blocked_module_lines_caps_issues_and_length(self):
+        m = _module("c", "m", "BLOCKED")
+        m["block_reason"] = "hard errors persist after 3 MAKER_FIX attempts"
+        m["hard_errors"] = [{"severity": "HARD_ERROR", "description": "x" * 300}
+                            for _ in range(5)]
+        out = scheduler._blocked_module_lines("c/m", m)
+        bullets = [ln for ln in out.splitlines() if ln.strip().startswith("- [")]
+        self.assertEqual(len(bullets), 3)
+        self.assertIn("另有 2 条", out)
+        for ln in bullets:
+            body = ln.split("] ", 1)[1]
+            self.assertLessEqual(len(body), 161)
+            self.assertTrue(body.endswith("…"))
+
+    def test_blocked_module_lines_missing_reason_fallback(self):
+        """Modules blocked before block_reason existed must not raise."""
+        out = scheduler._blocked_module_lines(
+            "c/m", _module("c", "m", "BLOCKED"))
+        self.assertIn("未记录原因", out)
+        self.assertIn("c/m", out)
+        self.assertIn("完善spec", out)
+
+    def test_no_advance_reason_blocked_outranks_needs_refinement(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        refined = _module("c", "ai-recommendation-engine", "NEEDS_REFINEMENT")
+        refined["last_score"] = 82
+        _make_state(root, {"c/sku-management": _blocked(name="sku-management"),
+                           "c/ai-recommendation-engine": refined})
+        reason = scheduler._no_advance_reason(root)
+        self.assertTrue(reason.startswith("存在阻塞模块"))
+        self.assertIn("c/sku-management", reason)
+        self.assertIn("code review 仍有 1 critical", reason)
+        self.assertIn("导出文件名", reason)
+        self.assertIn("另有 1 个模块待完善 spec", reason)
+        self.assertNotIn("ai-recommendation-engine", reason)
+        self.assertNotIn("SCORE 评分不足", reason)
+
+    def test_no_advance_reason_blocked_scoped_to_pin(self):
+        """A --module pin must not surface another module's block detail."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        refined = _module("c", "carton", "NEEDS_REFINEMENT")
+        refined["last_score"] = 85
+        _make_state(root, {
+            "c/sku-management": _blocked(name="sku-management",
+                                         reason="code review 未清零"),
+            "c/carton": refined})
+        pinned = scheduler._no_advance_reason(root, "carton")
+        self.assertNotIn("sku-management", pinned)
+        self.assertNotIn("存在阻塞模块", pinned)
+        self.assertIn("85/100", pinned)
+        other = scheduler._no_advance_reason(root, "sku-management")
+        self.assertIn("存在阻塞模块", other)
+        self.assertIn("code review 未清零", other)
+        self.assertNotIn("carton", other)
+
+    def test_end_message_blocked_hint_is_spec_not_approve(self):
+        """「批准执行」 cannot re-drive BLOCKED (next() only re-scans
+        SYNCED/NEEDS_REFINEMENT) — the only lever is a real spec edit."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _blocked(
+            reason="final mvn test failed in 1/1 repo(s): .")})
+        msg = scheduler._end_message("req", "no_advance", 13, 70, None, root)
+        self.assertIn("执行暂停", msg)
+        self.assertIn("完善spec", msg)
+        self.assertNotIn("批准执行", msg)
+        self.assertNotIn("{name}", msg)
+
+    def test_end_message_needs_refinement_hint_interpolates_name(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        m = _module("c", "m", "NEEDS_REFINEMENT")
+        m["last_score"] = 88
+        _make_state(root, {"c/m": m})
+        msg = scheduler._end_message("req", "no_advance", 2, 5, None, root)
+        self.assertIn("批准执行 req", msg)
+        self.assertNotIn("{name}", msg)
 
     def test_run_notifies_approved_user(self):
         root = self._register_pending("req")

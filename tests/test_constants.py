@@ -55,9 +55,16 @@ def test_shipped_model_config_names_known_steps_only():
         if backend == "_comment":
             continue
         assert set(section) <= set(ALL_STEP_KEYS) | {"default"}, backend
-        # nothing committed but the shape: a vendor name here would be pushed
-        # into every mirror checkout and be wrong on most of them
-        assert not [v for v in section.values() if v], backend
+        for step, entry in section.items():
+            # one entry per step, both halves present: a typo'd field name here
+            # would read as an empty half rather than as a mistake
+            assert set(entry) <= {"model", "context"}, (backend, step)
+            # nothing committed but the shape: a vendor name here would be
+            # pushed into every mirror checkout and be wrong on most of them
+            assert not entry.get("model"), (backend, step)
+            # qodercli exits 1 on a non-integer, so the template may not ship one
+            ctx = entry.get("context", "")
+            assert not ctx or (ctx.isdigit() and int(ctx) > 0), (backend, step, ctx)
 
 
 def test_engine_artifacts_are_written_outside_the_openspec_package():

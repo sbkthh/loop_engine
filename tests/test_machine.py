@@ -17,8 +17,11 @@ from constants import (READY, SYNCED, NEEDS_REFINEMENT, DRAFT, RESULT_FILE,
 import registry
 
 
-def _score_json(score, cross):
-    return json.dumps({"score": score, "cross_consistency": cross})
+def _score_json(score, cross, detail=None):
+    payload = {"score": score, "cross_consistency": cross}
+    if detail is not None:
+        payload["cross_consistency_detail"] = detail
+    return json.dumps(payload)
 
 
 def _maker_step0_json(plan_path):
@@ -304,8 +307,8 @@ class TestMachineFullRoundTrip(unittest.TestCase):
     def _result_path(self):
         return os.path.join(self.root, RESULT_FILE)
 
-    def _write_score(self, score=95, cross="PASS"):
-        self._write_result(_score_json(score, cross))
+    def _write_score(self, score=95, cross="PASS", detail=None):
+        self._write_result(_score_json(score, cross, detail))
 
     def _write_maker_step0(self, plan_path):
         self._write_result(
@@ -603,6 +606,134 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertTrue(any(
             "基石守卫" in (t.get("output") or "") for t in state["trace"]))
 
+    def test_block_persists_reason_on_module(self):
+        """The reason must land on the module (state.json), not only in the
+        20-entry trace ring — the scheduler reads state.json to tell the user
+        *why* a module is blocked."""
+        from constants import BLOCKED, CODE_REVIEW, MAX_REVIEW_FIX_CYCLES
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["review_fix_attempt"] = MAX_REVIEW_FIX_CYCLES
+        StateManager.set_current(state, self.key, CODE_REVIEW, 0)
+        sm.save(state)
+        self._write_result(json.dumps(
+            {"issues": [{"severity": "critical", "text": "Foo.java:9 — NPE"}]}))
+        r = StateMachine(self.root).commit()
+        self.assertIsNone(r["next_action"])
+        m = sm.load()["modules"][self.key]
+        self.assertEqual(m["status"], BLOCKED)
+        self.assertEqual(
+            m["block_reason"],
+            f"code review 仍有 1 critical/0 important，"
+            f"{MAX_REVIEW_FIX_CYCLES} 轮修复未清零")
+
+    def test_tripwire_persists_block_reason(self):
+        """The tripwire writes BLOCKED inline; it must record the same reason
+        the trace line carries, and keep the trace text unchanged."""
+        from constants import BLOCKED, MAKER_FIX, PARTIAL
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["status"] = PARTIAL
+        StateManager.set_current(state, self.key, MAKER_FIX)
+        sm.save(state)
+        self._write_maker_step2_green(["/m/Foo.java"], plan_path="/p.md")
+        machine._handlers[MAKER_FIX] = lambda s, k, m, t: "_SYNCED_"
+        machine.commit()
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], BLOCKED)
+        self.assertEqual(m["block_reason"],
+                         "基石守卫:代码变更后未经 CHECKER 复验,拒绝 SYNCED")
+        entry = next(t for t in state["trace"]
+                     if "基石守卫" in (t.get("output") or ""))
+        self.assertTrue(entry["output"].endswith("-> BLOCKED"))
+        self.assertEqual(entry["result"], "❌")
+
+    def test_checker_hard_errors_persist_block_reason_with_marker(self):
+        """CHECKER's exhausted-budget block writes status inline and forgets
+        the ❌ marker; route it through _block so reason + marker are uniform."""
+        from constants import BLOCKED, CHECKER, MAX_MAKER_ATTEMPTS
+        self._init_module_ready()
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["maker_attempt"] = MAX_MAKER_ATTEMPTS
+        StateManager.set_current(state, self.key, CHECKER, MAX_MAKER_ATTEMPTS)
+        sm.save(state)
+        checker_json = json.dumps({
+            "status": "INCONSISTENT",
+            "discrepancy_count": 1,
+            "hard_error_count": 1,
+            "soft_warning_count": 0,
+            "info_count": 0,
+            "discrepancies": [
+                {"severity": "HARD_ERROR", "type": "A",
+                 "description": "missing field"},
+            ],
+            "test_results": {"class_name": "FooTest", "total": 5,
+                             "passed": 4, "failed": 1, "errors": 0},
+            "coverage": {"tested": 1, "total": 1},
+        })
+        self._write_result(
+            f"---CHECKER_OUTPUT---\n{checker_json}\n---END_CHECKER_OUTPUT---")
+        r = StateMachine(self.root).commit()
+        self.assertIsNone(r["next_action"])
+        state = sm.load()
+        m = state["modules"][self.key]
+        self.assertEqual(m["status"], BLOCKED)
+        self.assertEqual(
+            m["block_reason"],
+            f"hard errors persist after {MAX_MAKER_ATTEMPTS} MAKER_FIX attempts")
+        entry = next(t for t in state["trace"]
+                     if "hard errors persist" in (t.get("output") or ""))
+        self.assertTrue(entry["output"].endswith("-> BLOCKED"))
+        self.assertEqual(entry["result"], "❌")
+
+    def _commit_clean_review_with_rc(self, rc):
+        """Drive READY→…→CODE_REVIEW, commit a clean review, and return
+        commit()'s dict with the final test run stubbed to `rc`."""
+        machine = StateMachine(self.root)
+        self._drive_to_green(machine)
+        self._write_checker_consistent()
+        r = machine.commit()
+        self.assertEqual(r["next_action"], "CODE_REVIEW")
+        machine.next()
+        # the declared /m/Foo.java maps to no maven module under this temp
+        # root, which makes the gate skip the run; clear it so the repo-wide
+        # command executes (same fixture shape as TestExecuteSyncedMultiRepo)
+        sm = StateManager(self.root)
+        state = sm.load()
+        state["modules"][self.key]["files_created"] = []
+        state["modules"][self.key]["files_modified"] = []
+        sm.save(state)
+        self._write_result(json.dumps({"issues": []}))
+        fake = types.SimpleNamespace(returncode=rc, stdout="boom", stderr="")
+        with _mock.patch("machine.subprocess.run", return_value=fake):
+            return machine.commit()
+
+    def test_commit_returns_blocked_status_when_final_tests_red(self):
+        """_execute_synced blocks on a red final test run, but commit()
+        discards that return and still reports next_action=_SYNCED_. The real
+        post-step status must also be returned, else the scheduler pushes a
+        false 「→ SYNCED」 and a false 「执行完成（成功）」."""
+        from constants import BLOCKED
+        self._init_module_ready()
+        r = self._commit_clean_review_with_rc(1)
+        self.assertEqual(r["next_action"], "_SYNCED_")
+        self.assertEqual(r["status"], BLOCKED)
+        self.assertEqual(StateManager(self.root).load()["modules"][self.key]
+                         ["status"], BLOCKED)
+
+    def test_commit_returns_status_synced_on_clean_sync(self):
+        """Guard against over-reporting: a green final test run still reports
+        status=SYNCED, so the new field cannot turn every step into a block."""
+        self._init_module_ready()
+        r = self._commit_clean_review_with_rc(0)
+        self.assertEqual(r["next_action"], "_SYNCED_")
+        self.assertEqual(r["status"], SYNCED)
+
     def test_score_clears_stale_review_fix_attempt(self):
         """review_fix_attempt left over from a run that died mid-fix must
         reset on the next cycle's SCORE commit, else the
@@ -653,6 +784,36 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state = sm.load()
         self.assertEqual(state["modules"][self.key]["status"], NEEDS_REFINEMENT)
         self.assertEqual(state["modules"][self.key]["last_score"], 85)
+
+    def test_score_persists_cross_consistency_detail(self):
+        """The FAIL gate caps the score at 85 but explains nothing today —
+        the detail has to reach state.json for the scheduler to show it."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        machine.next()
+        self._write_score(score=95, cross="FAIL",
+                          detail="spec.md:342 依赖 callbackType，:338 未定义")
+        machine.commit()
+
+        state = StateManager(self.root).load()
+        self.assertEqual(
+            state["modules"][self.key]["cross_consistency_detail"],
+            "spec.md:342 依赖 callbackType，:338 未定义")
+
+    def test_score_absent_detail_persists_none(self):
+        """Written as None, not skipped: a conditional write would leave the
+        previous cycle's FAIL detail behind on a later PASS."""
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        machine.next()
+        self._write_score(score=95, cross="PASS")
+        machine.commit()
+
+        state = StateManager(self.root).load()
+        self.assertIsNone(
+            state["modules"][self.key]["cross_consistency_detail"])
 
     def test_checker_hard_error_retry(self):
         self._init_module_ready()

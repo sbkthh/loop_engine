@@ -1,21 +1,21 @@
 {
-  "_comment": "每个步骤用哪个模型。留空 = 不覆盖；default 解析不出具体名字时整段不生效（见 agent_cli._step_models）。仓库里刻意不写任何型号名：两个后端拼写不同，且这会随镜像推到别人机器上（tests/test_constants.py 钉住这份全空）。本机要填的值写到 <数据目录>/agent_models.json（默认 ~/.qoder/loop_engine/agent_models.json，存在就自动读，无需 env）。填本机 `qodercli --list-models` / `pi --list-models` 里的名字。",
+  "_comment": "每个步骤用哪个模型、多大上下文。每步是对象 {\"model\": \"\", \"context\": \"\"}：model 留空 = 不覆盖；context 写正整数 token 数（如 \"1000000\"），留空 = 不传 --context-window，非正整数会告警并按留空处理（这个值传下去 qodercli 直接退出 1，不会静默忽略）。default 解析不出具体名字时整段不生效，context 也跟着不生效（见 agent_cli._step_models）。仓库里刻意不写任何型号名或档位：两个后端拼写不同，且这会随镜像推到别人机器上（tests/test_constants.py 钉住这份全空）。本机要填的值写到 <数据目录>/agent_models.json（默认 ~/.qoder/loop_engine/agent_models.json，存在就自动读，无需 env）。型号名取本机 `qodercli --list-models` / `pi --list-models`；context 这个维度只有 qodercli 支持，pi 段里填了会被忽略并告警一次。",
   "qodercli": {
-    "default": "",
-    "SCORE": "",
-    "CLASSIFY_CHANGE": "",
-    "MAKER_STEP0": "",
-    "MAKER_STEP1_RED": "",
-    "MAKER_STEP2_GREEN": "",
-    "CHECKER": "",
-    "MAKER_FIX": "",
-    "CODE_REVIEW": "",
-    "CODE_REVIEW_FIX": "",
-    "ALIGN_DOCS": "",
-    "CHAT": "",
-    "CLASSIFY_REQUIREMENT": ""
+    "default": {"model": "", "context": ""},
+    "SCORE": {"model": "", "context": ""},
+    "CLASSIFY_CHANGE": {"model": "", "context": ""},
+    "MAKER_STEP0": {"model": "", "context": ""},
+    "MAKER_STEP1_RED": {"model": "", "context": ""},
+    "MAKER_STEP2_GREEN": {"model": "", "context": ""},
+    "CHECKER": {"model": "", "context": ""},
+    "MAKER_FIX": {"model": "", "context": ""},
+    "CODE_REVIEW": {"model": "", "context": ""},
+    "CODE_REVIEW_FIX": {"model": "", "context": ""},
+    "ALIGN_DOCS": {"model": "", "context": ""},
+    "CHAT": {"model": "", "context": ""},
+    "CLASSIFY_REQUIREMENT": {"model": "", "context": ""}
   },
   "pi": {
-    "default": ""
+    "default": {"model": "", "context": ""}
   }
 }

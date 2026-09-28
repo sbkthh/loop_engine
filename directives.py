@@ -108,15 +108,24 @@ def build(action, module_key, module, root_dir=".", rejected_drafts=None,
         d["output_format"] = (
             "Write to .loop/result.md ONLY a single JSON object — no markdown, "
             "no code fences, no commentary:\n"
-            '{"score": 87, "cross_consistency": "PASS|FAIL", '
-            '"dimensions": {"scenario_coverage": "只 3 个场景，缺支付失败场景", '
+            '{"score": 87, "cross_consistency": "FAIL", '
+            '"cross_consistency_detail": "spec.md:342 的分支判定依赖 '
+            'callbackType，但 :338 请求体表未定义该字段", '
+            '"dimensions": {"scenario_coverage": "spec.md:101 未定义取数失败'
+            '时的降级口径；spec.md:434 未定义 SKU+仓位 键冲突的处置", '
             '"field_completeness": "ok", "api_contract": "ok", '
             '"exception_coverage": "ok", "ambiguity_markers": 3}}\n'
             "score: 0-100 integer. cross_consistency: PASS or FAIL "
             "(FAIL when any cross-ref check fails; score is then capped at 85).\n"
+            "cross_consistency_detail: omit when PASS. When FAIL, ONE sentence "
+            "naming both sides of the contradiction with their spec.md line "
+            "refs — this is the only explanation of the cap the user ever sees.\n"
             "dimensions: for every dimension below strong, state the CONCRETE "
             "gap in Chinese (exactly which scenario/field/API/edge case is "
             "missing or contradicts); write \"ok\" when strong. "
+            "Gap discipline — do NOT restate what passed (no 达标 / 本维度 ok "
+            "clauses); start each gap with its spec.md line ref; keep each gap "
+            "under 100 chars; separate gaps with ；.\n"
             "ambiguity_markers: count of TBD/TODO/待定/待确认 markers."
         )
 

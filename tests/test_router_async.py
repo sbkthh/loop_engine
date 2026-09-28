@@ -993,6 +993,99 @@ def test_gray_list_view_empty(monkeypatch, tmp_path):
     assert "没有待裁决" in reply
 
 
+# Five dimensions, each longer than the 100-char push cap and each ending in a
+# unique marker: the full tier must show every marker (no cap, no ellipsis).
+_SCORE_DIMS = {
+    k: f"spec.md:{i} 缺口" + "补" * 120 + f"<END{i}>"
+    for i, k in enumerate(
+        ["scenario_coverage", "field_completeness", "api_contract",
+         "exception_coverage", "extra_dim"], start=1)
+}
+
+
+def _seed_score(root, key, score=82, cross="FAIL",
+                status="NEEDS_REFINEMENT", dims=None, detail=None):
+    from state import StateManager
+    sm = StateManager(root)
+    st = sm.load()
+    m = st["modules"][key]
+    m["status"] = status
+    m["last_score"] = score
+    m["score_cross"] = cross
+    m["score_dimensions"] = _SCORE_DIMS if dims is None else dims
+    if detail is not None:
+        m["cross_consistency_detail"] = detail
+    sm.save(st)
+
+
+def _score_test(monkeypatch, tmp_path, payload, registry_root):
+    from wecom_server import router
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply(f"__JSON_ACTION__ {payload}"))
+    return dispatch("查看评分", [{"name": "req", "root": registry_root}],
+                    "/tmp", "u1")
+
+
+def test_score_view_returns_full_detail(monkeypatch, tmp_path):
+    """The push is a summary; 查看评分 is the tier that loses nothing."""
+    root, _ = _make_spec_root(tmp_path)
+    _seed_score(root, "chg1/m1")
+
+    reply = _score_test(monkeypatch, tmp_path,
+                        '{"action":"score_view","requirement":"ALL"}', root)()
+
+    for i in range(1, 6):
+        assert f"<END{i}>" in reply
+    assert "…" not in reply
+    assert "另有" not in reply
+    assert "chg1/m1" in reply
+    assert "完善spec" in reply
+
+
+def test_score_view_resolves_bare_module_name(monkeypatch, tmp_path):
+    """Users type the module name, not the change_id/module key."""
+    root, _ = _make_spec_root(tmp_path)
+    _seed_score(root, "chg1/m1")
+
+    reply = _score_test(monkeypatch, tmp_path,
+                        '{"action":"score_view","requirement":"req",'
+                        '"module":"m1"}', root)()
+
+    assert "chg1/m1" in reply and "<END1>" in reply
+
+
+def test_score_view_no_record(monkeypatch, tmp_path):
+    """A module never scored must report cleanly, not raise."""
+    root, _ = _make_spec_root(tmp_path)
+
+    reply = _score_test(monkeypatch, tmp_path,
+                        '{"action":"score_view","requirement":"ALL",'
+                        '"module":"nope"}', root)()
+
+    assert "没有找到评分记录" in reply
+
+
+def test_score_view_needs_refinement_first(monkeypatch, tmp_path):
+    """The module needing a spec edit is the one the user came to look at."""
+    from state import StateManager
+    import spec_utils
+    root, spec_path = _make_spec_root(tmp_path)
+    sm = StateManager(root)
+    st = sm.load()
+    sm.add_module(st, "chg1/m2", "chg1", "m2",
+                  spec_hash=spec_utils.compute_spec_hash(spec_path))
+    sm.save(st)
+    _seed_score(root, "chg1/m2", score=95, cross="PASS", status="SYNCED")
+    _seed_score(root, "chg1/m1", score=82)
+
+    reply = _score_test(monkeypatch, tmp_path,
+                        '{"action":"score_view","requirement":"ALL"}', root)()
+
+    assert "82/100" in reply and "95/100" in reply
+    assert reply.index("82/100") < reply.index("95/100")
+
+
 def test_adjudicate_accept_marks_draft(monkeypatch, tmp_path):
     """adjudicate accept marks the draft and reports remaining."""
     from state import StateManager

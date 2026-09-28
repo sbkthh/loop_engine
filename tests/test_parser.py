@@ -231,6 +231,27 @@ class TestParseScore(unittest.TestCase):
         self.assertEqual(result['score'], 75)
         self.assertEqual(result['cross_consistency'], 'FAIL')
 
+    def test_keeps_cross_consistency_detail(self):
+        result = parse_score(
+            '{"score": 82, "cross_consistency": "FAIL", '
+            '"cross_consistency_detail": "spec.md:342 依赖 callbackType，'
+            ':338 请求体表未定义"}')
+        self.assertEqual(result['cross_consistency_detail'],
+                         'spec.md:342 依赖 callbackType，:338 请求体表未定义')
+
+    def test_cross_detail_absent_is_none(self):
+        result = parse_score('{"score": 92, "cross_consistency": "PASS"}')
+        self.assertIsNone(result['cross_consistency_detail'])
+
+    def test_non_string_cross_detail_becomes_none(self):
+        """LLM output is a trust boundary: a dict must not land in state.json,
+        and must not raise either — a SCORE raise becomes a commit_error."""
+        result = parse_score(
+            '{"score": 80, "cross_consistency": "FAIL", '
+            '"cross_consistency_detail": {"a": 1}}')
+        self.assertIsNone(result['cross_consistency_detail'])
+        self.assertEqual(result['score'], 80)
+
 
 class TestParseClassifyChange(unittest.TestCase):
     def test_lightweight(self):

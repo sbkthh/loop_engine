@@ -127,8 +127,8 @@ def _qodercli_model(step=None):
 
 @lru_cache(maxsize=None)
 def _step_models(name, path):
-    """step → model for backend `name`; {} means "no usable config, behave as
-    before this file existed".
+    """step → {"model": …, "context": …} for backend `name`; {} means "no usable
+    config, behave as before this file existed".
 
     All-or-nothing on purpose. Omitting --model on a resumed session does not
     re-read settings.json — measured 2026-09-09, qodercli keeps serving that
@@ -145,6 +145,14 @@ def _step_models(name, path):
     A name the CLI does not list drops the section rather than being passed
     through: an unknown --model exits 0 (see _known_models), so the typo would
     surface as a differently-priced run, not as a failure.
+
+    The value is {"model": …, "context": …} — the context window rides the same
+    section because a step is one decision. Measured 2026-09-28 (qodercli
+    1.1.62, read back from runtime-config.contextWindow in the session jsonl):
+    --context-window wins over the CLI's own per-model store
+    (model.preferences.<internal-id>.contextWindow), a non-integer makes it exit
+    1 instead of ignoring the value, a resumed turn that omits the flag keeps the
+    previous turn's window, and pi has no equivalent flag at all.
     """
     try:
         with open(path) as f:
@@ -156,7 +164,14 @@ def _step_models(name, path):
         return {}
     if not isinstance(section, dict):
         return {}
-    wanted = {str(k): str(v).strip() for k, v in section.items() if str(v).strip()}
+    # A step's value is either {"model": …, "context": …} or, as it was written
+    # before the context dimension existed, the bare model name. Personal files
+    # live on other people's machines and the mirror ships this code to them, so
+    # refusing the old spelling would silently drop their model tiers.
+    entries = {str(k): (v if isinstance(v, dict) else {"model": v})
+               for k, v in section.items()}
+    wanted = {k: str(v.get("model", "")).strip() for k, v in entries.items()}
+    wanted = {k: v for k, v in wanted.items() if v}
     if not wanted:
         return {}
     known = _known_models(name)
@@ -176,17 +191,58 @@ def _step_models(name, path):
                        f"{name} 段配了步骤级模型但没有 default：整段不生效。"
                        "省略 --model 会沿用上一轮的模型，未配的步骤不能留空")
         return {}
-    resolved = {"default": default}
+    contexts = {k: _usable_context(name, k, str(v.get("context", "")).strip())
+                for k, v in entries.items()}
+    if name != "qodercli" and any(contexts.values()):
+        _warn_once(f"context:{name}",
+                   f"{name} 没有 --context-window 对应物，配置里的 context 一律忽略"
+                   "（这个维度只有 qodercli 能吃）")
+    default_ctx = contexts.get("default", "")
+    resolved = {"default": {"model": default, "context": default_ctx}}
     for step in ALL_STEP_KEYS:
         model = wanted.get(step) or default
-        resolved[step] = model if usable(model) else default
+        # the context half falls back the same way, and it is not a nicety:
+        # measured 2026-09-28, a resumed turn that omits --context-window keeps
+        # serving the previous turn's window, so a step left blank would take
+        # whichever step ran before it in the module's shared session
+        resolved[step] = {"model": model if usable(model) else default,
+                          "context": contexts.get(step) or default_ctx}
     return resolved
 
 
+def _usable_context(name, step, value):
+    """The window as the CLI will accept it, or "" for "pass no flag".
+
+    Validation is protective, not cosmetic: --context-window is parsed as an
+    integer and anything else exits 1 ("Must be a positive integer", measured
+    2026-09-28), so a mistyped value would stop every step of that kind. An
+    integer the backend finds absurd is accepted with rc=0 and served as no
+    explicit window at all, which is the silent half of the same story.
+    """
+    if not value:
+        return ""
+    if not value.isdigit() or int(value) <= 0:
+        _warn_once(f"context:{name}:{step}:{value}",
+                   f"{name} 步骤 {step} 的 context {value!r} 不是正整数 token 数，"
+                   "按不传 --context-window 处理（这个值传下去 qodercli 会直接退出 1）")
+        return ""
+    return value
+
+
 def _configured_model(name, step):
+    entry = _configured_entry(name, step)
+    return entry["model"] if entry else ""
+
+
+def _configured_context(name, step):
+    entry = _configured_entry(name, step)
+    return entry["context"] if entry else ""
+
+
+def _configured_entry(name, step):
     models = _step_models(name, _model_config_path())
     if not models:
-        return ""
+        return None
     return models.get(step) or models["default"]
 
 
@@ -218,6 +274,9 @@ def _qodercli_cmd(root, sid, system_prompt, user_text, action=None):
     model = _qodercli_model(action)
     if model:
         cmd += ["--model", model]
+    ctx = _configured_context("qodercli", action)
+    if ctx:
+        cmd += ["--context-window", ctx]
     cmd.append(user_text)
     return cmd
 
@@ -290,6 +349,9 @@ def _qodercli_chat_cmd(session_id, is_new, audit_settings, step=CHAT_STEP):
     model = _qodercli_model(step)
     if model:
         cmd += ["--model", model]
+    ctx = _configured_context("qodercli", step)
+    if ctx:
+        cmd += ["--context-window", ctx]
     cmd.append("--dangerously-skip-permissions")
     if audit_settings:
         cmd += ["--settings", audit_settings]

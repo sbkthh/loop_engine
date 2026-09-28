@@ -132,7 +132,8 @@ class PiCmdTest(unittest.TestCase):
         lacks the flag: loop steps carry no guard on either backend."""
         cmd = self._cmd(return_value="")
         for flag in ("--cwd", "--resume", "--strict-mcp-config",
-                     "--dangerously-skip-permissions", "--settings", "-e"):
+                     "--dangerously-skip-permissions", "--settings", "-e",
+                     "--context-window"):
             self.assertNotIn(flag, cmd)
         self.assertNotIn("--model", cmd)
 
@@ -679,6 +680,142 @@ class ChatStepTest(unittest.TestCase):
                  "--dangerously-skip-permissions", "--settings", "SET"])
             self.assertEqual(agent_cli.build_chat_cmd("sid-1", True, "SET"),
                              classify)
+
+
+class PerStepContextWindowTest(unittest.TestCase):
+    """The context half of each step, measured 2026-09-28 on qodercli 1.1.62 by
+    reading `runtime-config.contextWindow` out of the session jsonl:
+
+    * --context-window overrides the CLI's own per-model store
+      (model.preferences.<internal-id>.contextWindow served 400000, the flag's
+      1000000 won) — which is the whole reason the engine passes it.
+    * a non-integer is a hard failure (rc=1, "Must be a positive integer"),
+      unlike --model which degrades silently: a typo here would kill every
+      step, so the engine validates before appending.
+    * within one shared session an omitted flag **inherits the previous
+      turn's window** (1000000, then 200000, then omitted → still 200000), so
+      an unconfigured step must not fall through to nothing.
+    """
+
+    def setUp(self):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("LOOP_ENGINE_")}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        warned = mock.patch.object(agent_cli, "_WARNED", set())
+        warned.start()
+        self.addCleanup(warned.stop)
+        agent_cli._known_models.cache_clear()
+        agent_cli._step_models.cache_clear()
+        self.addCleanup(agent_cli._known_models.cache_clear)
+        self.addCleanup(agent_cli._step_models.cache_clear)
+
+    def _cfg(self, payload, known="__unset__"):
+        path = os.path.join(tempfile.mkdtemp(), "agent_models.json")
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        patcher = mock.patch.dict(os.environ,
+                                  {"LOOP_ENGINE_MODEL_CONFIG": path})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        if known != "__unset__":
+            kn = mock.patch.object(agent_cli, "_known_models",
+                                   return_value=known)
+            kn.start()
+            self.addCleanup(kn.stop)
+        return path
+
+    def _loop_cmd(self, step):
+        with mock.patch.object(agent_cli, "_session_file_exists",
+                               return_value=False):
+            return agent_cli.build_cmd("/root/x", "sid-1", "S", "U", step)
+
+    def test_configured_context_appends_the_flag(self):
+        self._cfg({"qodercli": {"default": {"model": "mid", "context": "400000"},
+                                "CHECKER": {"model": "deep",
+                                            "context": "1000000"}}},
+                  known={"mid", "deep"})
+        cmd = self._loop_cmd(CHECKER)
+        self.assertEqual(cmd[cmd.index("--context-window") + 1], "1000000")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "deep")
+
+    def test_empty_context_omits_the_flag(self):
+        self._cfg({"qodercli": {"default": {"model": "mid", "context": ""},
+                                "CHECKER": {"model": "deep", "context": ""}}},
+                  known={"mid", "deep"})
+        self.assertNotIn("--context-window", self._loop_cmd(CHECKER))
+
+    def test_step_without_context_inherits_the_sections_default(self):
+        """Not convenience but containment: the window is sticky inside the
+        module's shared session, so a step that carries no value of its own has
+        to be given the section's default instead of whatever ran last."""
+        self._cfg({"qodercli": {"default": {"model": "mid", "context": "200000"},
+                                "CHECKER": {"model": "deep"}}},
+                  known={"mid", "deep"})
+        self.assertEqual(self._loop_cmd(CHECKER)[
+            self._loop_cmd(CHECKER).index("--context-window") + 1], "200000")
+
+    def test_non_integer_context_is_dropped_with_a_warning(self):
+        """The CLI exits 1 on these, which would stop the step rather than
+        quietly ignore the setting — so dropping it here is the safe half."""
+        for bad in ("1M", "abc", "-1", "0", "1 000"):
+            agent_cli._WARNED.clear()
+            agent_cli._step_models.cache_clear()
+            self._cfg({"qodercli": {"default": {"model": "mid",
+                                                 "context": bad}}},
+                      known={"mid"})
+            with self.assertLogs("agent_cli", level="WARNING") as logs:
+                cmd = self._loop_cmd(CHECKER)
+            self.assertNotIn("--context-window", cmd)
+            self.assertEqual(cmd[cmd.index("--model") + 1], "mid")
+            self.assertEqual(len(logs.output), 1, bad)
+
+    def test_a_scalar_step_value_is_read_as_a_model_only(self):
+        """Other machines' personal files were written before this dimension
+        existed; the engine cannot ask their owners to retype them."""
+        self._cfg({"qodercli": {"default": "mid", "CHECKER": "deep"}},
+                  known={"mid", "deep"})
+        self.assertEqual(self._loop_cmd(CHECKER).count("--model"), 1)
+        self.assertNotIn("--context-window", self._loop_cmd(CHECKER))
+        self.assertEqual(agent_cli._configured_context("qodercli", CHECKER), "")
+
+    def test_an_inert_model_half_drops_the_context_with_it(self):
+        """One section, one gate. A section whose names cannot be validated is
+        dead, and a context window served by a model nobody chose would be the
+        only surviving half of a decision that failed."""
+        self._cfg({"qodercli": {"default": {"model": "Typo",
+                                            "context": "1000000"}}})
+        with mock.patch.object(agent_cli, "_known_models",
+                               return_value={"mid"}), \
+                mock.patch.object(agent_cli, "_qodercli_settings_model",
+                                  return_value="mid"):
+            cmd = self._loop_cmd(CHECKER)
+        self.assertNotIn("--context-window", cmd)
+
+    def test_chat_turn_carries_the_context_of_its_step(self):
+        self._cfg({"qodercli": {"default": {"model": "mid", "context": ""},
+                                "CHAT": {"model": "deep",
+                                         "context": "1000000"}}},
+                  known={"mid", "deep"})
+        cmd = agent_cli.build_chat_cmd("sid-1", True, None, step=agent_cli.CHAT_STEP)
+        self.assertEqual(cmd[cmd.index("--context-window") + 1], "1000000")
+        self.assertNotIn("--context-window",
+                         agent_cli.build_chat_cmd("sid-1", True, None,
+                                                  step=agent_cli.CLASSIFY_STEP))
+
+    def test_pi_never_gets_the_flag_and_says_so_once(self):
+        """pi has no counterpart — `--no-context-files` only disables AGENTS.md
+        discovery. Silently ignoring a value the operator typed is the failure
+        mode to avoid; a second warning per spawn is noise."""
+        self._cfg({"pi": {"default": {"model": "p", "context": "1000000"}}},
+                  known={"p"})
+        with mock.patch.dict(os.environ, {"LOOP_ENGINE_AGENT_CLI": "pi"}), \
+                self.assertLogs("agent_cli", level="WARNING") as logs:
+            cmd = self._loop_cmd(CHECKER)
+            cmd = cmd + self._loop_cmd("SCORE")
+        self.assertNotIn("--context-window", cmd)
+        self.assertEqual(len(logs.output), 1)
 
 
 class SessionProbeTest(unittest.TestCase):

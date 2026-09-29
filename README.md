@@ -463,6 +463,73 @@ run 结束消息里 **BLOCKED 优先于 NEEDS_REFINEMENT**：只要有一个模�
 > `loop_engine wecom start` 重启才生效。飞书侧复用同一个
 > `wecom_server.router.dispatch`，改一处两边同时生效。
 
+### 最终门禁的超时预算
+
+SYNCED 之前引擎会**自己**再跑一遍仓库的测试命令（`machine._execute_synced`），
+逐个绑定仓库串行执行——基石是不信任 agent 自报的测试数字。三个预算都定义在
+`constants.py` / `scheduler.py`：
+
+| 预算 | 值 | 作用域 |
+|------|-----|--------|
+| `FINAL_TEST_TIMEOUT_SECONDS` | 1800（30min） | 门禁里**每个仓库**的那一次 mvn |
+| `MAX_GATE_REPOS` | 3 | 单模块绑定仓库数的天花板（数据事实，非强制约束） |
+| `COMMIT_TIMEOUT_SECONDS` | `MAX_GATE_REPOS × 1800 + 300` = 5700（95min） | 包住整个 commit 子进程 |
+
+**耦合不变式：内层必须先触发。** 只有内层（逐仓）超时会留下诊断；外层 kill
+更糟——它会孤儿化 mvn（`subprocess.run` 只回收直接子进程）、什么都不落盘
+（`sm.save` 在门禁之后），且重试路径会删掉 agent 刚写的 `result-<ACTION>.md`
+归档。`tests/test_scheduler.py::TestTimeoutBudgets` 钉住这条不等式：两个常量之间
+除它以外没有任何东西绑在一起，把 `FINAL_TEST_TIMEOUT_SECONDS` 调大而忘了外层
+就会静默重现「外层杀内层」。
+
+1800 是**留余量**的字面量，不是从失败里反推的：2026-09-28
+`zkh-opc-sna-stock-strategy` 的门禁被当时硬编码的 600s SIGKILL，**一份 surefire 报告
+都没写**；2026-09-29 对逐字节相同的代码重跑同一条命令，端到端只用 **116s**
+（`clean` + 编译 ~100s，23 个报告 / 299 个测试集中在最后 ~14s）。所以那次事故是资源
+争用或挂死，不是测试量长上来——1800 相对健康一次约 15x 余量。**不提供环境变量覆盖**：
+cron 环境是裸的，在 shell 里设的覆盖对定时的 run 静默失效。
+
+超时与真失败在 `block_reason` 里分开写，因为「test failed」会让人去追一个不存在的
+红测——被 SIGKILL 的 mvn 一份 surefire 报告都没写：
+
+- 真失败：`final mvn test failed in 1/2 repo(s): <路径>`
+- 超时：`final mvn test TIMED OUT after 1800s in 1/2 repo(s): <路径>`
+- 混合（3 仓模块真实存在，不能把真红测藏进超时措辞里）：超时那句后追加
+  `；另有 N repo 测试失败`
+
+mvn 输出尾**不进** `block_reason`（它在 `scheduler.py:959` 原样不截断渲染，还要挤进
+< 1800 字节的企微消息），只进 `module["sync_test_report"][repo]`：
+`{ok, rc, timed_out, timeout, tail}`，`tail` 首行是 `str(TimeoutExpired)`
+（带确切 argv 与预算），后接 stdout/stderr 各 500 字节。解码用
+`errors="replace"` 而非 `os.fsdecode`：后者的 surrogateescape 会让
+`state.py` 的 `json.dump(ensure_ascii=False)` 抛 `UnicodeEncodeError`，
+mvn 打一行 GBK 就够触发。门禁转绿时整个 `sync_test_report` 会被 pop 掉。
+
+同时修掉了 trace 的谎报：门禁拒绝合并时 `next_action` 仍是 `_SYNCED_` 路由令牌，
+于是 `_block` 打过 `CHECKER ❌ … -> BLOCKED` 之后，`commit()` 又打一行
+`CODE_REVIEW ✅ committed -> SYNCED`——正是它把这次事故读成「CODE_REVIEW 阶段阻塞」。
+现在这一行按 `module["status"]` 渲染成 `committed -> BLOCKED ❌`
+（`next_action` 本身不动，它是路由契约）。
+
+> **已知缺口**：基础设施原因（超时、磁盘、网络）导致的 BLOCKED **没有自动重试入口**。
+> BLOCKED 是终态（`STATUS_TABLE[BLOCKED].next = None`），而 `set-status READY`
+> 会因 plan 存在被路由到 `MAKER_STEP1_RED` = 重做整个实现。恢复手法是利用
+> `next()` 里 `find_mid_progress` 先于状态路由这一点，给模块设上 `current`
+> 让引擎从该步精确续跑（`status` 保持 BLOCKED，门禁只在 `prev_status == SYNCED`
+> 时才跳过）：
+>
+> ```bash
+> /usr/local/bin/python3 -c 'import sys; sys.path.insert(0,"/Users/chuan.li/loop_engine"); \
+> from state import StateManager; sm=StateManager("<需求 root>"); st=sm.load(); \
+> StateManager.set_current(st,"<change>/<module>","CODE_REVIEW",0); sm.save(st)'
+> caffeinate -i loop_engine run <需求名> --module <change>/<module>
+> ```
+>
+> 用 `set_current` 而不是手改 JSON 文本：不可解析的 state.json 会被隔离成
+> `state.json.corrupt-<ts>` 并从 `.bak` 静默回滚，看起来像「改了没生效」。
+> `caffeinate -i` 是必需的——`subprocess.run(timeout=)` 走墙钟，Mac 睡眠会白烧预算。
+> 若这类阻塞再来两次，就该把它做成命令。
+
 ### 调度器配置
 
 ```bash
@@ -915,9 +982,11 @@ loop_engine feishu stop
 ┌────────────────────────────────────────────────────────────────────┐
 │  B: run_requirement 子进程（G 或 A fork，start_new_session）        │
 │     循环: next → qodercli → commit → next → ... → IDLE             │
-│     持有 .loop/lock（fcntl.flock 独占锁）；步骤/心跳双超时：         │
-│     LLM 步骤 6h 上限（STEP_TIMEOUT）、本地命令 30s（QUICK_TIMEOUT）、 │
-│     锁心跳 60s 刷新；重试 1 次；步数/重复上限；同需求串行            │
+│     持有 .loop/lock（fcntl.flock 独占锁）；三层超时预算：           │
+│     LLM 步骤 6h（STEP_TIMEOUT）、本地命令 30s（QUICK_TIMEOUT）、    │
+│     最终门禁 mvn 30min/仓（FINAL_TEST_TIMEOUT=1800s，串行）、       │
+│     commit 兜底 95min（= MAX_GATE_REPOS × 门禁 + 300）；            │
+│     重试 1 次；步数/重复上限；同需求串行                            │
 └──────┬──────────────────────────────────────┬──────────────────────┘
        │ 每步 fork 一次性子进程                 │
        ▼                                       │
@@ -960,7 +1029,7 @@ loop_engine feishu stop
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
 | A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end（废弃）；scheduler.poll() 只检测不启动 |
-| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 双超时 + 心跳；并发上限 max_concurrency |
+| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 三层超时（步骤/命令/门禁）；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
 | F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → JSON 动作块 → handler 进程内执行 |
 | G | agent CLI 子进程（qodercli / pi） | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种动作触发不同 handler |
@@ -1077,7 +1146,7 @@ loop_engine feishu stop
 - **G 路径（企业微信直接回复）同样在收口里**：`wecom_server/router.py` 的三处 spawn（需求归属分类、每轮问答、漏登记纠正）原先自己拼 qodercli argv、自己读 `~/.qoder/settings.json` 的模型、自己剥启动噪声，现已全部改走 `agent_cli`——router 里不再出现任何二进制名或模型来源。两条路径的契约差异记在 `agent_cli` 顶部：G 的 prompt 从 **stdin** 进、回复从 **stdout** 出，所以 chat argv 不带任何提示词参数。pi 的 chat `--tools` 比 loop 更窄（去掉 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复）。**审计钩子的投放**：qodercli 能按次收 `--settings` JSON，pi 的对应物（扩展侧事件 `tool_call`）只能来自**加载的扩展**，所以本仓库带了一个 ~47 行的适配器 `wecom_server/hooks/pi_audit_bridge.ts`——它把 pi 的工具事件映射成 `audit_hook.sh` 的 stdin 契约（`bash{command}` / `edit|write{path}` → `file_path`，按 `ctx.cwd` 绝对化并镜像 pi 的 `~` 展开，否则相对 `pending.json` 会漏过要求前导斜杠的 Guard 1），再 `spawnSync` 同一个 shell 钩子，rc==1 就把 stdout 当 block reason 回喂模型。**守卫逻辑只有一份**：改 `audit_hook.sh` 两个后端同时生效。`agent_cli.chat_audit_mode()` 报告投放方式——`"settings"` / `"extension"` / `""`，其中 `""`（后端不支持按值注入**或** `.ts` 没被打进包）才是审计链真的断了，router 首轮显式打一条 warning；扩展路径缺失时**不加** `-e`，因为 pi 对加载失败的扩展是 rc=1 硬失败，打包问题不该变成整个微信问答不可用。**两个后端共有的孔洞**：Guard 2 只认 `tool=Edit`，G 若用 Write 整体覆盖 spec.md 就不会留快照（新建 spec.md 也因 `[ -f ]` 跳过），此时 `spec_result` 报不出变更规模、纠正循环也读不到东西。另：G 的模型回落值（原硬编码 `DeepSeek-V4-Flash`）一并去掉了——取不到就不传 `--model`，与 loop 同一口径
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
-- **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s 双超时、锁心跳 60s、hard_errors 用尽 3 次转 BLOCKED
+- **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s / 最终门禁 mvn 30min·仓（commit 兜底 95min）三层超时、hard_errors 用尽 3 次转 BLOCKED
 - **双层哈希**：spec_hash（内容）+ spec_norm_hash（忽略注释/格式），纯注释变更跳过 loop
 - **plan_hash 变更检测**：编辑 plan 后自动从 MAKER_STEP1_RED 重跑，实现始终对齐最新方案
 - **状态真值表**：状态语义收敛在 constants.py 的 STATUS_TABLE 单点定义，调度/路由/微信三处共用，消除语义漂移

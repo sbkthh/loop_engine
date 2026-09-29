@@ -21,7 +21,8 @@ import uuid
 import requests  # noqa: E402 — used by notify_pending()
 
 import agent_cli
-from constants import DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE
+from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE,
+                       FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS)
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
                         discover_modules, coerce_roots)
@@ -93,9 +94,14 @@ MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite r
 # Per-step caps are hung-call backstops, not task budgets.
 STEP_TIMEOUT_SECONDS = 6 * 3600  # one agent-CLI step
 QUICK_TIMEOUT_SECONDS = 30       # local next CLI calls (pure Python, <1s)
-# commit may run the final full test suite (_execute_synced, mvn bounded
-# at 600s internally), so it gets a wider backstop than next()
-COMMIT_TIMEOUT_SECONDS = 900
+# commit 会跑最终门禁（_execute_synced）：每个绑定仓库一次 mvn，各自受
+# FINAL_TEST_TIMEOUT_SECONDS 约束且串行执行。外层必须活得比内层最坏情况久 ——
+# 只有内层超时会留下诊断。外层 kill 会孤儿化 mvn（run() 只收直接子进程）、
+# 不落盘（sm.save 在门禁之后）、且 :1206 的重试会删掉 agent 结果归档。
+# +300 覆盖 commit 自身开销（哈希刷新、报告、fsync）。
+# ponytail: 95 分钟的外层兜底会占住 max_concurrency=2 的一半机队；这是刻意换
+# 「诊断永远优先于 kill」的代价，别为了并发把它调小。
+COMMIT_TIMEOUT_SECONDS = MAX_GATE_REPOS * FINAL_TEST_TIMEOUT_SECONDS + 300
 
 
 # ---------- file helpers ----------

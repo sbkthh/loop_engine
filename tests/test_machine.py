@@ -691,9 +691,9 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         self.assertTrue(entry["output"].endswith("-> BLOCKED"))
         self.assertEqual(entry["result"], "❌")
 
-    def _commit_clean_review_with_rc(self, rc):
-        """Drive READY→…→CODE_REVIEW, commit a clean review, and return
-        commit()'s dict with the final test run stubbed to `rc`."""
+    def _drive_to_clean_review(self):
+        """Drive READY→…→CODE_REVIEW and write a clean review result, leaving
+        commit() ready to run the final gate. Returns the machine."""
         machine = StateMachine(self.root)
         self._drive_to_green(machine)
         self._write_checker_consistent()
@@ -709,8 +709,25 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         state["modules"][self.key]["files_modified"] = []
         sm.save(state)
         self._write_result(json.dumps({"issues": []}))
+        return machine
+
+    def _commit_clean_review_with_rc(self, rc):
+        """Commit a clean review with the final test run stubbed to `rc`."""
+        machine = self._drive_to_clean_review()
         fake = types.SimpleNamespace(returncode=rc, stdout="boom", stderr="")
         with _mock.patch("machine.subprocess.run", return_value=fake):
+            return machine.commit()
+
+    def _commit_clean_review_with_timeout(self):
+        """Commit a clean review whose final test run is killed by the budget
+        — the 2026-09-28 incident's exact shape."""
+        import subprocess
+        from constants import FINAL_TEST_TIMEOUT_SECONDS
+        machine = self._drive_to_clean_review()
+        exc = subprocess.TimeoutExpired(["mvn", "clean", "test"],
+                                        FINAL_TEST_TIMEOUT_SECONDS,
+                                        output=b"OUT-TAIL", stderr=b"ERR-TAIL")
+        with _mock.patch("machine.subprocess.run", side_effect=exc):
             return machine.commit()
 
     def test_commit_returns_blocked_status_when_final_tests_red(self):
@@ -733,6 +750,38 @@ class TestMachineFullRoundTrip(unittest.TestCase):
         r = self._commit_clean_review_with_rc(0)
         self.assertEqual(r["next_action"], "_SYNCED_")
         self.assertEqual(r["status"], SYNCED)
+
+    def test_commit_trace_shows_blocked_not_synced_when_gate_blocks(self):
+        """The gate refused the merge, but next_action still carries the
+        routing token, so the raw display claimed 「committed -> SYNCED ✅」
+        right after _block's ❌ line — which reads as 「CODE_REVIEW 阶段阻塞」."""
+        from constants import BLOCKED
+        self._init_module_ready()
+        r = self._commit_clean_review_with_rc(1)
+        self.assertEqual(r["next_action"], "_SYNCED_")  # routing contract
+        entry = StateManager(self.root).load()["trace"][-1]
+        self.assertEqual(entry["output"], f"committed -> {BLOCKED}")
+        self.assertEqual(entry["result"], "❌")
+
+    def test_commit_trace_shows_blocked_on_gate_timeout(self):
+        """The 2026-09-28 incident: green code, mvn killed by the budget,
+        trace still claiming SYNCED."""
+        from constants import BLOCKED
+        self._init_module_ready()
+        r = self._commit_clean_review_with_timeout()
+        self.assertEqual(r["status"], BLOCKED)
+        entry = StateManager(self.root).load()["trace"][-1]
+        self.assertEqual(entry["output"], f"committed -> {BLOCKED}")
+        self.assertEqual(entry["result"], "❌")
+
+    def test_commit_trace_still_shows_synced_when_gate_passes(self):
+        """Guard against over-correcting: a green gate must not look blocked.
+        Green before and after the fix by design."""
+        self._init_module_ready()
+        self._commit_clean_review_with_rc(0)
+        entry = StateManager(self.root).load()["trace"][-1]
+        self.assertEqual(entry["output"], "committed -> SYNCED")
+        self.assertEqual(entry["result"], "✅")
 
     def test_score_clears_stale_review_fix_attempt(self):
         """review_fix_attempt left over from a run that died mid-fix must
@@ -2197,6 +2246,100 @@ class TestExecuteSyncedMultiRepo(unittest.TestCase):
         module = self._run({self.repo_a: 1})
         self.assertEqual(module["status"], "BLOCKED")
         self.assertIn(self.repo_a, module.get("sync_test_report", {}))
+
+    def _run_gate(self, timeout=(), red=(), out=b"OUT-TAIL", err=b"ERR-TAIL"):
+        """Run the gate with the given repos killed by the budget / exiting
+        red; every other repo stays green. Returns the module dict."""
+        import subprocess
+        from unittest import mock
+        machine = StateMachine(self.root)
+        state = machine.sm.load()
+        module = state["modules"][self.key]
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            if cwd in timeout:
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"],
+                                                output=out, stderr=err)
+            rc = 1 if cwd in red else 0
+            return types.SimpleNamespace(returncode=rc, stdout=f"out:{cwd}",
+                                         stderr=f"err:{cwd}" if rc else "")
+
+        with mock.patch("machine.subprocess.run", side_effect=fake_run):
+            machine._execute_synced(state, self.key, module)
+        return module
+
+    def test_gate_passes_the_configured_budget_to_mvn(self):
+        """1800 is pinned on purpose. The 2026-09-28 gate was SIGKILLed at a
+        hardcoded 600s having written zero surefire reports; the same command
+        re-run on byte-identical code took 116s, so 1800 is headroom over a
+        known-good run rather than a figure derived from the failure."""
+        from unittest import mock
+        machine = StateMachine(self.root)
+        state = machine.sm.load()
+        module = state["modules"][self.key]
+        timeouts = []
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch("machine.subprocess.run", side_effect=fake_run):
+            machine._execute_synced(state, self.key, module)
+        self.assertEqual(timeouts[0], 1800)
+        self.assertEqual(timeouts, [1800] * len(timeouts))
+
+    def test_gate_timeout_records_decoded_tail_and_budget(self):
+        """TimeoutExpired.stdout/.stderr stay bytes even under text=True, and
+        the old `except Exception` kept only str(e) — throwing away the mvn
+        output that distinguishes a budget kill from a red suite. The GBK
+        payload is the point of errors="replace": os.fsdecode's
+        surrogateescape makes state.py's json.dump(ensure_ascii=False) raise
+        UnicodeEncodeError, so a non-UTF8 line would corrupt the save."""
+        module = self._run_gate(timeout={self.repo_b})
+        entry = module["sync_test_report"][self.repo_b]
+        self.assertTrue(entry["timed_out"])
+        self.assertIsNone(entry["rc"])
+        self.assertEqual(entry["timeout"], 1800)
+        # str(e) is the tail's first line: it carries the exact argv (as a list
+        # repr) and the budget, which the last 500 bytes of a killed mvn rarely do
+        self.assertIn("mvn", entry["tail"])
+        self.assertIn("timed out after 1800 seconds", entry["tail"])
+        self.assertIn("OUT-TAIL", entry["tail"])
+        self.assertIn("ERR-TAIL", entry["tail"])
+
+        gbk = self._run_gate(timeout={self.repo_a}, out=b"ok-\xff\xfe-gbk")
+        report = gbk["sync_test_report"]
+        self.assertIn("ok-", report[self.repo_a]["tail"])
+        json.dumps(report, ensure_ascii=False)
+
+    def test_gate_timeout_reason_is_diagnosable(self):
+        """「test failed」 sends a human hunting a red test that does not
+        exist: a SIGKILLed mvn writes zero surefire reports."""
+        module = self._run_gate(timeout={self.repo_a, self.repo_b})
+        reason = module["block_reason"]
+        self.assertIn("TIMED OUT", reason)
+        self.assertIn("1800", reason)
+        self.assertIn("2/2", reason)
+        self.assertNotIn("test failed", reason)
+        self.assertIn(self.repo_a, reason)
+
+    def test_gate_timeout_reason_does_not_hide_a_real_red(self):
+        """3-repo modules exist: 「TIMED OUT in 1/2」 must not silently drop
+        the sibling that genuinely failed."""
+        module = self._run_gate(timeout={self.repo_a}, red={self.repo_b})
+        reason = module["block_reason"]
+        self.assertIn("TIMED OUT", reason)
+        self.assertIn("1/2", reason)
+        self.assertIn("另有 1 repo 测试失败", reason)
+        self.assertEqual(sorted(module["sync_test_report"]),
+                         sorted([self.repo_a, self.repo_b]))
+
+    def test_gate_red_reason_string_is_unchanged(self):
+        """Characterization pin — green before and after the fix by design.
+        Its job is to stop timeout wording leaking into the failure path."""
+        module = self._run_gate(red={self.repo_b})
+        self.assertEqual(module["block_reason"],
+                         f"final mvn test failed in 1/2 repo(s): {self.repo_b}")
 
 
 class TestCommitMakerFixBuildResult(unittest.TestCase):

@@ -2550,5 +2550,19 @@ class TestNotify(SchedulerBase):
         self.assertIn("SYNCED", done[0])
 
 
+class TestTimeoutBudgets(unittest.TestCase):
+    """COMMIT_TIMEOUT_SECONDS wraps the whole commit subprocess; inside it the
+    final gate runs one mvn per bound repo serially, each bounded by
+    FINAL_TEST_TIMEOUT_SECONDS. Only the inner timeout leaves a diagnosis — an
+    outer kill orphans mvn (subprocess.run reaps just the direct child),
+    writes no state (sm.save sits after the gate) and the retry deletes the
+    agent's archived result-<ACTION>.md."""
+
+    def test_commit_backstop_outlives_the_worst_gate(self):
+        from constants import FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS
+        self.assertGreater(scheduler.COMMIT_TIMEOUT_SECONDS,
+                           MAX_GATE_REPOS * FINAL_TEST_TIMEOUT_SECONDS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -111,6 +111,20 @@ SCORE_THRESHOLD = 90
 MAX_MAKER_ATTEMPTS = 3
 MAX_REVIEW_FIX_CYCLES = 2
 
+# Timeout budgets (seconds). FINAL_TEST_TIMEOUT_SECONDS bounds the one mvn run
+# _execute_synced does per bound repo before SYNCED. Hung-call backstop, not a
+# task budget: on 2026-09-28 the stock-strategy gate was SIGKILLed at the old
+# hardcoded 600s having written zero surefire reports, turning green code into
+# a terminal BLOCKED. Its re-run on byte-identical code took 116s end to end
+# (clean+compile ~100s, 299 tests in the last ~14s), so the incident was
+# contention or a hang, not suite growth — 1800 is headroom (~15x) over the
+# measured healthy run, not a figure derived from the failure.
+FINAL_TEST_TIMEOUT_SECONDS = 1800
+# ponytail: 数据天花板，非强制约束 —— 3 是今日所有已注册模块绑定仓库数的最大值
+# （outbound-optimization-v1/special-paper-print）。用来给 scheduler.COMMIT_TIMEOUT_SECONDS
+# 定尺寸，保证内层（可诊断）超时永远先于外层 kill 触发；tests 钉住该不变式。
+MAX_GATE_REPOS = 3
+
 # Retention limits
 TRACE_RETENTION = 20
 AUDIT_RETENTION = 30

@@ -15,6 +15,7 @@ from constants import (
     ALIGN_DOCS, STATUS_TABLE,
     SCORE_THRESHOLD, MAX_MAKER_ATTEMPTS, MAX_REVIEW_FIX_CYCLES,
     TRACE_RETENTION, AUDIT_RETENTION, MAX_GRAY_DRAFTS, RESULT_FILE,
+    FINAL_TEST_TIMEOUT_SECONDS,
 )
 from state import StateManager
 from spec_utils import (discover_modules, compute_spec_hash,
@@ -435,10 +436,17 @@ class StateMachine:
             StateManager.clear_current(state)
 
         display = (next_action or 'IDLE').replace('_', '')
+        mark = "✅"
+        if next_action == _SYNCED and module.get("status") == BLOCKED:
+            # 门禁拒绝了合并，但 next_action 仍带路由令牌，于是原始 display 在
+            # ❌ BLOCKED 行之后又声称「committed -> SYNCED」绿灯 —— 被读成
+            # 「CODE_REVIEW 阶段阻塞」。next_action 本身不动：它是路由契约
+            # （test_machine.py:724 钉住），scheduler.py:1324 已改读 status。
+            display, mark = BLOCKED, "❌"
         if action == SCORE and module.get("last_score") is not None:
             display = f"{display} (SCORE {module['last_score']}/100)"
         self._trace(state, action, module_key,
-                     f"committed -> {display}")
+                    f"committed -> {display}", mark)
         self.sm.save(state)
         report.write(state, self.root_dir)
         self._clear_result()
@@ -794,7 +802,8 @@ class StateMachine:
                 try:
                     result = subprocess.run(
                         cmd.split(), cwd=repo,
-                        capture_output=True, text=True, timeout=600)
+                        capture_output=True, text=True,
+                        timeout=FINAL_TEST_TIMEOUT_SECONDS)
                     if result.returncode != 0:
                         failures[repo] = {
                             "ok": False, "rc": result.returncode,
@@ -806,16 +815,45 @@ class StateMachine:
                     else:
                         print(f"[OK] Final test run passed for {key} @ {repo}",
                               file=sys.stderr)
+                except subprocess.TimeoutExpired as e:
+                    # text=True 不会解码 TimeoutExpired 的载荷：.stdout/.stderr 仍是
+                    # bytes（3.14.3 实测），旧的 except Exception 只留了消息、把 mvn
+                    # 输出全扔了。必须 errors="replace" —— os.fsdecode 的 surrogateescape
+                    # 会让 state.py:135 的 json.dump(ensure_ascii=False) 抛
+                    # UnicodeEncodeError（mvn 打一行 GBK 就够）。
+                    out = (e.stdout or b"").decode("utf-8", "replace")
+                    err = (e.stderr or b"").decode("utf-8", "replace")
+                    failures[repo] = {
+                        "ok": False, "rc": None, "timed_out": True,
+                        "timeout": FINAL_TEST_TIMEOUT_SECONDS,
+                        "tail": f"{e}\n{out[-500:]}\n{err[-500:]}",
+                    }
+                    print(f"[TIMEOUT] Final test run killed after "
+                          f"{FINAL_TEST_TIMEOUT_SECONDS}s for {key} @ {repo}",
+                          file=sys.stderr)
                 except Exception as e:
                     failures[repo] = {"ok": False, "rc": None, "tail": str(e)}
                     print(f"[FAIL] Final test run error for {key} @ {repo}: {e}",
                           file=sys.stderr)
             if failures:
                 module["sync_test_report"] = failures
-                return self._block(state, CHECKER, key, module,
-                                   f"final mvn test failed in {len(failures)}/"
-                                   f"{len(roots)} repo(s): "
-                                   + ", ".join(sorted(failures)))
+                timed_out = sorted(r for r in failures
+                                   if failures[r].get("timed_out"))
+                if timed_out:
+                    # 「test failed」会让人去追一个不存在的红测：被 SIGKILL 的 mvn
+                    # 一份 surefire 报告都没写
+                    reason = (f"final mvn test TIMED OUT after "
+                              f"{FINAL_TEST_TIMEOUT_SECONDS}s in "
+                              f"{len(timed_out)}/{len(roots)} repo(s): "
+                              + ", ".join(timed_out))
+                    if len(timed_out) < len(failures):
+                        reason += (f"；另有 {len(failures) - len(timed_out)}"
+                                   f" repo 测试失败")
+                else:
+                    reason = (f"final mvn test failed in {len(failures)}/"
+                              f"{len(roots)} repo(s): "
+                              + ", ".join(sorted(failures)))
+                return self._block(state, CHECKER, key, module, reason)
             module.pop("sync_test_report", None)
         if module.get("maker_attempt", 0) > 0:
             # 只有本轮确实跑过 MAKER（写过代码并绿测）才认定"已实现"。

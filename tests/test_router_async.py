@@ -43,6 +43,9 @@ def test_system_prompt_has_prd_bootstrap_rules():
         "G must be required to emit spec_result in the SAME reply after editing spec.md"
     assert "spec_result MANDATORY" in router._LLM_SYSTEM_PROMPT, \
         "Actions list must mark spec_result as mandatory exception after spec edits"
+    assert "未生效" in router._LLM_SYSTEM_PROMPT and \
+        "modules[key].spec_hash" in router._LLM_SYSTEM_PROMPT, \
+        "G must verify hash evidence before claiming a registration is 未生效"
     assert "Change boundary" in router._LLM_SYSTEM_PROMPT, \
         "G must know all code changes go through spec-session, no bugfix exception"
     assert "grill-me" in router._LLM_SYSTEM_PROMPT, \
@@ -752,7 +755,29 @@ def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
 
 
 def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
-    """Same hash on a registered (non-DRAFT) module → no registration."""
+    """Same hash on a module still needing work → no registration; the
+    generic message asks for a spec edit first."""
+    from wecom_server import router
+    from state import StateManager
+
+    root, _ = _make_spec_root(tmp_path)
+    st = StateManager(root).load()
+    st["modules"]["chg1/m1"]["status"] = "NEEDS_REFINEMENT"
+    StateManager(root).save(st)
+    monkeypatch.setattr(router, "_get_session_id", lambda uid, req="global": ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply('__JSON_ACTION__ {"action":"spec_result","requirement":"req","module":"chg1/m1"}'))
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+
+    fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
+    reply = fn()
+
+    assert "没有变化" in reply
+
+
+def test_spec_result_synced_module_reports_registered(monkeypatch, tmp_path):
+    """Same hash on a SYNCED module → already registered and closed; no
+    re-registration, no misleading '请先修改 spec.md'."""
     from wecom_server import router
     from state import StateManager
 
@@ -768,7 +793,9 @@ def test_spec_result_unchanged_spec(monkeypatch, tmp_path):
     fn = dispatch("改 spec", [{"name": "req", "root": root}], "/tmp", "u1")
     reply = fn()
 
-    assert "没有变化" in reply
+    assert "已登记且已同步" in reply and "无需补登记" in reply
+    assert "没有变化" not in reply and "请先修改" not in reply
+    assert StateManager(root).load()["modules"]["chg1/m1"]["status"] == "SYNCED"
 
 
 def test_spec_result_duplicate_registration_returns_registered(monkeypatch, tmp_path):

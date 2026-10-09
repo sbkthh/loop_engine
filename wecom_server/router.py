@@ -90,6 +90,14 @@ _LLM_SYSTEM_PROMPT = (
     "spec_result (requirement + module) at the end of that SAME reply, "
     "before any other action. Never reply about a spec edit without the "
     "registration.\n"
+    "- Before claiming a spec_result '未生效' or re-registering, verify "
+    "with hash evidence: compute the spec file's md5 and compare against "
+    "`modules[key].spec_hash` in state.json. Equal = already registered — "
+    "SYNCED means the change is implemented and closed (check audit_trail "
+    "/ last_synced); never ask the user to re-send 批准执行, and never "
+    "tell the user to edit spec.md when nothing is unregistered. PARTIAL "
+    "means awaiting 批准执行. Only a different hash is an unregistered "
+    "change.\n"
     "\n"
     "User: __MESSAGE__\n"
 )
@@ -716,7 +724,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     with an existing spec file).
     """
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from constants import SPEC_PATH_TEMPLATE, PARTIAL, DRAFT
+    from constants import SPEC_PATH_TEMPLATE, PARTIAL, DRAFT, SYNCED
     import spec_utils
     from state import StateManager
 
@@ -765,10 +773,15 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     else:
         old_hash = st["modules"][module_key].get("spec_hash")
         if old_hash == new_hash:
-            if st["modules"][module_key].get("status") == PARTIAL:
+            status = st["modules"][module_key].get("status")
+            if status == PARTIAL:
                 return (f"{module_key} 已登记（spec hash {new_hash[:8]}），"
                         f"等待『批准执行 {name}』触发实现")
-            if st["modules"][module_key].get("status") != DRAFT:
+            if status == SYNCED:
+                return (f"{module_key} 已登记且已同步（spec hash {new_hash[:8]}），"
+                        "无未登记的变更——无需补登记；"
+                        "如需发起新的 spec 变更，请先编辑 spec.md 再登记")
+            if status != DRAFT:
                 return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
     backup_dir = os.path.join(root, ".loop", "backup")
     os.makedirs(backup_dir, exist_ok=True)

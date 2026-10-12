@@ -34,3 +34,20 @@ When creating or modifying spec files:
 3. After editing a spec, append __JSON_ACTION__ `{"action":"spec_result","requirement":"<name>","module":"<change_id>/<module_name>"}` with BOTH requirement and module fields
 4. Always run the grilling/grill-me skill first (every spec change): interview the user one question at a time
 5. `openspec-new-change` / `openspec-propose` create a NEW change only — edit existing specs by modifying spec.md in place
+
+## Module–Repo Binding
+
+A module whose `project_roots` is `["."]` in `<root>/.loop/state.json` is
+unbound — it cannot be implemented (no repo to edit, no test gate to run).
+Do not let the user approve it.
+
+After generating or registering specs (PRD bootstrap, new module, spec_result):
+1. Read every module's `project_roots` from `<root>/.loop/state.json`
+2. For each unbound module: confirm its owning project(s) with the user,
+   one at a time, citing evidence (PRD + grep candidate worktrees for the
+   interfaces/classes the module touches)
+3. Bind: `loop_engine set-project-root --root <root> <change_id>/<module_name> <abs_path>...`
+   - paths = project worktree directories under the requirement root
+     (e.g. `<root>/kunhe-wms`); two or more paths bind a multi-repo module
+   - the command auto-records `module_to_project` in the registry
+4. Verify: re-read state.json — `project_roots` must no longer be `["."]`

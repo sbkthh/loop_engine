@@ -46,6 +46,9 @@ def test_system_prompt_has_prd_bootstrap_rules():
     assert "未生效" in router._LLM_SYSTEM_PROMPT and \
         "modules[key].spec_hash" in router._LLM_SYSTEM_PROMPT, \
         "G must verify hash evidence before claiming a registration is 未生效"
+    assert "set-project-root" in router._LLM_SYSTEM_PROMPT and \
+        "project_roots" in router._LLM_SYSTEM_PROMPT, \
+        "G must guide module-repo binding for unbound modules"
     assert "Change boundary" in router._LLM_SYSTEM_PROMPT, \
         "G must know all code changes go through spec-session, no bugfix exception"
     assert "grill-me" in router._LLM_SYSTEM_PROMPT, \
@@ -239,6 +242,8 @@ def test_installed_skills_resolve_siblings_without_production_registry(backend, 
     assert "loop_engine requirement-list" in content
     assert "~/.qoder/loop_engine/requirements.json" not in content
     assert "~/.qoder/skills" not in registration.read_text()
+    assert "set-project-root" in registration.read_text(), \
+        "registration skill must cover module-repo binding"
 
 
 def test_unregistered_edits_missing_detection(monkeypatch, tmp_path):

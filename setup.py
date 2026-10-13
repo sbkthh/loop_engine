@@ -65,14 +65,32 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
 
 
 def create_worktree(source, target, change_id, full_branch=None):
-    """Create a git worktree with a feature branch. Returns (success, msg)."""
+    """Create a git worktree with a feature branch. Returns (success, msg).
+
+    Baseline is origin/master, deliberately not the source repo's checked-out
+    HEAD: HEAD silently inherits whatever branch happens to be checked out
+    (a test line, a stale local master), and every code artifact built in the
+    worktree then rides on that wrong baseline.
+    """
     if not os.path.exists(os.path.join(source, ".git")):
         return False, "Not a git repository"
     branch = full_branch or f"feature/{change_id}"
+    # Best-effort refresh so the baseline is current master, not the repo's
+    # last-fetch state; offline keeps the existing ref and reports the risk.
+    fetched = subprocess.run(["git", "fetch", "origin", "master"],
+                             cwd=source, capture_output=True, text=True)
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/master"],
+        cwd=source, capture_output=True, text=True)
+    if probe.returncode != 0:
+        return False, ("origin/master not found in source repo — "
+                       "fetch it first (git fetch origin master)")
     try:
-        subprocess.run(["git", "worktree", "add", "-b", branch, target, "HEAD"],
+        subprocess.run(["git", "worktree", "add", "-b", branch, target,
+                        "origin/master"],
                        cwd=source, capture_output=True, text=True, check=True)
-        return True, f"Worktree created at {target} on branch {branch}"
+        warn = "" if fetched.returncode == 0 else " (警告: fetch 失败，基线可能不是最新)"
+        return True, f"Worktree created at {target} on branch {branch}{warn}"
     except subprocess.CalledProcessError as e:
         return False, e.stderr
 

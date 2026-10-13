@@ -15,19 +15,31 @@ from state import StateManager
 import registry
 
 
+def _make_repo(path):
+    """Repo whose master is pushed to a bare origin — create_worktree
+    baselines on origin/master, so tests need a real origin to fetch."""
+    os.makedirs(path)
+    subprocess.run(["git", "init", "-q", "-b", "master"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=path)
+    with open(os.path.join(path, "README.md"), "w") as f:
+        f.write("# Test\n")
+    subprocess.run(["git", "add", "."], cwd=path)
+    subprocess.run(["git", "commit", "-q", "-m", "init"],
+                   cwd=path, capture_output=True)
+    subprocess.run(["git", "init", "-q", "--bare", path + "-remote.git"],
+                   check=True)
+    subprocess.run(["git", "remote", "add", "origin", path + "-remote.git"],
+                   cwd=path, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "master"],
+                   cwd=path, capture_output=True, check=True)
+
+
 class TestCreateWorktree(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.source = os.path.join(self.tmp.name, "source")
-        os.makedirs(self.source)
-        subprocess.run(["git", "init", "-q"], cwd=self.source, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=self.source)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=self.source)
-        with open(os.path.join(self.source, "README.md"), "w") as f:
-            f.write("# Test\n")
-        subprocess.run(["git", "add", "."], cwd=self.source)
-        subprocess.run(["git", "commit", "-q", "-m", "init"],
-                       cwd=self.source, capture_output=True)
+        _make_repo(self.source)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -49,6 +61,53 @@ class TestCreateWorktree(unittest.TestCase):
         success, msg = create_worktree(non_git, target, "test-change")
         self.assertFalse(success)
         self.assertTrue(len(msg) > 0)
+
+    def test_worktree_baselines_on_origin_master_not_head(self):
+        """Regression: the old HEAD-based version silently inherited whatever
+        branch the source repo had checked out (test line / stale master)."""
+        with open(os.path.join(self.source, "m2.txt"), "w") as f:
+            f.write("m2\n")
+        subprocess.run(["git", "add", "."], cwd=self.source)
+        subprocess.run(["git", "commit", "-q", "-m", "m2"],
+                       cwd=self.source, capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "master"],
+                       cwd=self.source, capture_output=True, check=True)
+        # source HEAD now sits on an older side branch; origin/master is ahead
+        subprocess.run(["git", "checkout", "-q", "-b", "test-line", "HEAD~1"],
+                       cwd=self.source, check=True)
+        target = os.path.join(self.tmp.name, "wt-baseline")
+        success, msg = create_worktree(self.source, target, "test-change")
+        self.assertTrue(success, msg)
+
+        def rev(repo, ref):
+            return subprocess.run(["git", "rev-parse", ref], cwd=repo,
+                                  capture_output=True, text=True).stdout.strip()
+
+        self.assertEqual(rev(target, "HEAD"),
+                         rev(self.source, "origin/master"))
+        self.assertNotEqual(rev(target, "HEAD"), rev(self.source, "HEAD"))
+        self.assertTrue(os.path.exists(os.path.join(target, "m2.txt")))
+
+    def test_worktree_requires_origin_master(self):
+        """A repo without origin/master fails loudly instead of silently
+        baselining on HEAD."""
+        local_only = os.path.join(self.tmp.name, "local-only")
+        os.makedirs(local_only)
+        subprocess.run(["git", "init", "-q", "-b", "master"],
+                       cwd=local_only, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"],
+                       cwd=local_only)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=local_only)
+        with open(os.path.join(local_only, "a.txt"), "w") as f:
+            f.write("a\n")
+        subprocess.run(["git", "add", "."], cwd=local_only)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=local_only, capture_output=True)
+        success, msg = create_worktree(local_only,
+                                       os.path.join(self.tmp.name, "wt-x"),
+                                       "c")
+        self.assertFalse(success)
+        self.assertIn("origin/master", msg)
 
 
 class TestInitRequirement(unittest.TestCase):
@@ -85,15 +144,7 @@ class TestSetupRequirement(unittest.TestCase):
         self.src_a = os.path.join(self.tmp.name, "proj-a")
         self.src_b = os.path.join(self.tmp.name, "proj-b")
         for src in (self.src_a, self.src_b):
-            os.makedirs(src)
-            subprocess.run(["git", "init", "-q"], cwd=src, check=True)
-            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=src)
-            subprocess.run(["git", "config", "user.name", "T"], cwd=src)
-            with open(os.path.join(src, "README.md"), "w") as f:
-                f.write("# Test\n")
-            subprocess.run(["git", "add", "."], cwd=src)
-            subprocess.run(["git", "commit", "-q", "-m", "init"],
-                           cwd=src, capture_output=True)
+            _make_repo(src)
 
     def tearDown(self):
         registry.REGISTRY_PATH = self._original_path
@@ -189,15 +240,7 @@ class TestInitFromPrdProjectRoot(unittest.TestCase):
         self.src_a = os.path.join(self.tmp.name, "proj-a")
         self.src_b = os.path.join(self.tmp.name, "proj-b")
         for src in (self.src_a, self.src_b):
-            os.makedirs(src)
-            subprocess.run(["git", "init", "-q"], cwd=src, check=True)
-            subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=src)
-            subprocess.run(["git", "config", "user.name", "T"], cwd=src)
-            with open(os.path.join(src, "README.md"), "w") as f:
-                f.write("# Test\n")
-            subprocess.run(["git", "add", "."], cwd=src)
-            subprocess.run(["git", "commit", "-q", "-m", "init"],
-                           cwd=src, capture_output=True)
+            _make_repo(src)
         self.prd = os.path.join(self.tmp.name, "prd.md")
         with open(self.prd, "w") as f:
             f.write("# PRD\n\n## Inventory\n\ncreate item\n\n## Pricing\n\ncalc\n")

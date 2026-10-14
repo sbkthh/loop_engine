@@ -114,6 +114,13 @@ _LLM_SYSTEM_PROMPT = (
 _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "hooks", "audit_hook.sh")
 
+# 用户级 MR 目标分支守卫（同一文件也注册在 ~/.qoder/settings.json 的用户
+# 级 hooks 里）。git push -o merge_request.create 不带 target 会走服务端
+# 默认分支 master（2026-10-14 真实事故）。这里随 --settings 一起注入，
+# 避免"注入的 settings 是否与用户级设置合并"这一未证实前提决定守卫是否生效；
+# 文件不存在时静默跳过（非本机环境不阻断）。
+_MR_GUARD_HOOK = os.path.expanduser("~/.qoder/hooks/mr-target-branch.sh")
+
 # change_id/module_name must be single path segments: blocks ".." and "/"
 # from escaping the requirement root when building spec paths.
 _MODULE_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+")
@@ -171,15 +178,24 @@ def _audit_settings():
     the user's own agent sessions are untouched. Edit/Write are logged
     (never blocked) so direct code edits by G leave an audit trail.
     Backends without hook support (pi) skip this — see _llm_dispatch.
+    The MR target-branch guard rides along: WeCom sessions once pushed
+    `-o merge_request.create` without a target and every MR defaulted to
+    master; whether --settings merges or replaces user settings must not
+    decide whether that guard applies.
     """
-    return json.dumps({
-        "hooks": {
-            "PreToolUse": [
-                {"matcher": "Bash|Edit|Write",
-                 "hooks": [{"type": "command", "command": _AUDIT_HOOK}]}
-            ]
-        }
-    })
+    pre_tool = [
+        {"matcher": "Bash|Edit|Write",
+         "hooks": [{"type": "command", "command": _AUDIT_HOOK}]}
+    ]
+    if os.path.exists(_MR_GUARD_HOOK):
+        for cond in ("Bash(glab mr create:*)", "Bash(git push:*)"):
+            pre_tool.append({
+                "matcher": "Bash",
+                "if": cond,
+                "hooks": [{"type": "command",
+                           "command": f"bash {_MR_GUARD_HOOK}"}],
+            })
+    return json.dumps({"hooks": {"PreToolUse": pre_tool}})
 
 
 def _agent_cli():

@@ -59,6 +59,37 @@ def test_system_prompt_has_prd_bootstrap_rules():
         "G sessions must audit-trail every Edit/Write"
 
 
+def test_audit_settings_include_mr_guard_when_present(tmp_path):
+    """WeCom --settings must carry the MR target-branch guard next to the
+    audit hook: whether --settings merges or replaces user settings must not
+    decide if `git push -o merge_request.create` can still default to master."""
+    from wecom_server import router
+    guard = tmp_path / "mr-target-branch.sh"
+    guard.write_text("#!/bin/bash\nexit 0\n")
+    orig = router._MR_GUARD_HOOK
+    try:
+        router._MR_GUARD_HOOK = str(guard)
+        payload = router._audit_settings()
+        assert "Bash|Edit|Write" in payload
+        assert "Bash(glab mr create:*)" in payload
+        assert "Bash(git push:*)" in payload
+    finally:
+        router._MR_GUARD_HOOK = orig
+
+
+def test_audit_settings_without_mr_guard(tmp_path):
+    """Missing guard file degrades to audit-only, never breaks the payload."""
+    from wecom_server import router
+    orig = router._MR_GUARD_HOOK
+    try:
+        router._MR_GUARD_HOOK = str(tmp_path / "missing.sh")
+        payload = router._audit_settings()
+        assert "Bash|Edit|Write" in payload
+        assert "git push:*" not in payload
+    finally:
+        router._MR_GUARD_HOOK = orig
+
+
 def _fake_llm_reply(stdout):
     def fake_run(cmd, **kwargs):
         if any("qodercli" in part for part in cmd):

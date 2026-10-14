@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 
 from constants import STATE_FILE
@@ -64,6 +65,22 @@ def init_from_prd(name, root, change_id, projects, prd_path, modules=None, conte
     }
 
 
+def _sync_local_qoder(source, target):
+    """Carry the source repo's git-ignored .qoder/ into the new worktree.
+
+    `git worktree add` materializes only tracked files, so machine-local
+    config the engine reads from .qoder/AGENTS.md (test command, Nacos
+    flags) would be missing in every fresh worktree. Never overwrites an
+    existing target .qoder — local edits win; missing source .qoder is fine.
+    """
+    src = os.path.join(source, ".qoder")
+    dst = os.path.join(target, ".qoder")
+    if not os.path.isdir(src) or os.path.exists(dst):
+        return False
+    shutil.copytree(src, dst)
+    return True
+
+
 def create_worktree(source, target, change_id, full_branch=None):
     """Create a git worktree with a feature branch. Returns (success, msg).
 
@@ -89,8 +106,10 @@ def create_worktree(source, target, change_id, full_branch=None):
         subprocess.run(["git", "worktree", "add", "-b", branch, target,
                         "origin/master"],
                        cwd=source, capture_output=True, text=True, check=True)
+        synced = _sync_local_qoder(source, target)
         warn = "" if fetched.returncode == 0 else " (警告: fetch 失败，基线可能不是最新)"
-        return True, f"Worktree created at {target} on branch {branch}{warn}"
+        note = "；已同步源仓库 .qoder 本地配置" if synced else ""
+        return True, f"Worktree created at {target} on branch {branch}{warn}{note}"
     except subprocess.CalledProcessError as e:
         return False, e.stderr
 

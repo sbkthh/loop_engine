@@ -54,6 +54,28 @@ class TestCreateWorktree(unittest.TestCase):
             cwd=target, capture_output=True, text=True)
         self.assertEqual(result.stdout.strip(), "feature/test-change")
 
+    def test_worktree_syncs_local_qoder_config(self):
+        """worktree add only materializes tracked files; the source repo's
+        git-ignored .qoder/ (engine reads .qoder/AGENTS.md there) must be
+        carried over or every fresh worktree loses the test command."""
+        qoder = os.path.join(self.source, ".qoder")
+        os.makedirs(qoder)
+        with open(os.path.join(qoder, "AGENTS.md"), "w") as f:
+            f.write("mvn clean test -Dcustom=1\n")
+        target = os.path.join(self.tmp.name, "wt-qoder")
+        success, msg = create_worktree(self.source, target, "test-change")
+        self.assertTrue(success, msg)
+        copied = os.path.join(target, ".qoder", "AGENTS.md")
+        self.assertTrue(os.path.exists(copied))
+        with open(copied) as f:
+            self.assertEqual(f.read(), "mvn clean test -Dcustom=1\n")
+
+    def test_worktree_without_source_qoder(self):
+        target = os.path.join(self.tmp.name, "wt-no-qoder")
+        success, msg = create_worktree(self.source, target, "test-change")
+        self.assertTrue(success, msg)
+        self.assertFalse(os.path.exists(os.path.join(target, ".qoder")))
+
     def test_worktree_not_git_repo(self):
         non_git = os.path.join(self.tmp.name, "notgit")
         os.makedirs(non_git)

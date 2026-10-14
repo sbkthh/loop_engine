@@ -73,6 +73,8 @@ def test_audit_settings_include_mr_guard_when_present(tmp_path):
         assert "Bash|Edit|Write" in payload
         assert "Bash(glab mr create:*)" in payload
         assert "Bash(git push:*)" in payload
+        assert "mcp__gitlab__create_merge_request" in payload and \
+            "mcp__gitlab__update_merge_request" in payload
     finally:
         router._MR_GUARD_HOOK = orig
 
@@ -86,6 +88,7 @@ def test_audit_settings_without_mr_guard(tmp_path):
         payload = router._audit_settings()
         assert "Bash|Edit|Write" in payload
         assert "git push:*" not in payload
+        assert "mcp__gitlab__create_merge_request" not in payload
     finally:
         router._MR_GUARD_HOOK = orig
 

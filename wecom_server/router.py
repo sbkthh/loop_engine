@@ -118,6 +118,8 @@ _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # 级 hooks 里）。git push -o merge_request.create 不带 target 会走服务端
 # 默认分支 master（2026-10-14 真实事故）。这里随 --settings 一起注入，
 # 避免"注入的 settings 是否与用户级设置合并"这一未证实前提决定守卫是否生效；
+# 同一脚本也管 MCP gitlab 的 create/update_merge_request（读
+# tool_input.target_branch），所以 MCP 工具名单独注册一条 matcher。
 # 文件不存在时静默跳过（非本机环境不阻断）。
 _MR_GUARD_HOOK = os.path.expanduser("~/.qoder/hooks/mr-target-branch.sh")
 
@@ -195,6 +197,13 @@ def _audit_settings():
                 "hooks": [{"type": "command",
                            "command": f"bash {_MR_GUARD_HOOK}"}],
             })
+        # MCP 调用不经 Bash，Bash-only matcher 拦不到：按工具名单独注册
+        pre_tool.append({
+            "matcher": "mcp__gitlab__create_merge_request"
+                       "|mcp__gitlab__update_merge_request",
+            "hooks": [{"type": "command",
+                       "command": f"bash {_MR_GUARD_HOOK}"}],
+        })
     return json.dumps({"hooks": {"PreToolUse": pre_tool}})
 
 

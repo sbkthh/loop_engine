@@ -754,7 +754,9 @@ loop_engine close <name>
 
 ### 结项后的行为
 
-- **企微/飞书消息短路**：任何解析到该需求的消息收到固定回复「已结项（日期），主 spec 已沉淀至 …/openspec/specs/」，不再起 LLM 会话——`approve` / `spec_result` 也一并拦截（防对冻结需求的误操作）。系统快照里也会列出已结项需求
+- **点名消息短路**：消息中直接点名该需求（注册名/模块名）时收到固定回复「已结项（日期），主 spec 已沉淀至 …/openspec/specs/」，不再起 LLM 会话。系统快照里也会列出已结项需求
+- **变更动作服务端硬门禁**：`approve` / `run_spec` / `spec_result` / `adjudicate` 对已结项需求一律拦截（无论消息经由哪条路由抵达）——这是冻结的基石，不依赖路由巧合
+- **不连坐日常消息**：没点名、只是经「最近会话」回退到该需求的运维/查询消息（如「提交推送spec文件」）**不再被短路**——会正常进入 G 会话，G 按结项上下文只读协助（git commit/push 主 spec、回答结项问题、引导基于主 spec 开新需求），历史/评分/灰名单只读查询照常可用
 - **scheduler.poll 跳过**：CLOSED 需求不再参与轮询（spec hash 变化也不会触发 SPEC_CHANGED）
 - **恢复**：确需重开时手动把 `requirements.json` 里该需求的 `status` 改回后重试（v1 无 reopen 命令）
 

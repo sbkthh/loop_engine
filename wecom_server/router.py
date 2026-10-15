@@ -115,6 +115,12 @@ _LLM_SYSTEM_PROMPT = (
     "never work around it. After success remind the user that the domain "
     "dir is their specs git repo (kunhe/specs): the main specs must be "
     "committed/pushed by them.\n"
+    "- Closed requirement = read-only session: when the current requirement "
+    "is 已结项 (closed), never edit spec.md, never trigger spec_result/"
+    "approve/run_spec/adjudicate (server-side gates reject them anyway). "
+    "DO help with post-close ops: commit/push the main specs in the "
+    "loop-work specs git repo (e.g. 提交推送spec文件), answer closure "
+    "questions, and guide new requirements that build on the main specs.\n"
     "\n"
     "User: __MESSAGE__\n"
 )
@@ -941,10 +947,25 @@ def _user_intends_approve(message):
     return bool(_APPROVE_INTENT_RE.search(message))
 
 
+_CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "spec_result", "adjudicate"}
+
+
 def _dispatch_json_action(payload, registry, data_dir, user_id):
     """Dispatch a __JSON_ACTION__ payload. Returns reply text, or an
     error message for unknown actions / missing parameters."""
     action = payload.get("action")
+    if action in _CLOSED_BLOCKED_ACTIONS:
+        name = payload.get("requirement")
+        entry = next((r for r in registry if r.get("name") == name), None) \
+            if name else None
+        if entry and entry.get("status") == "CLOSED":
+            # bedrock freeze: a closed requirement accepts no mutating action,
+            # no matter how the message was routed here (det match, recent
+            # fallback, classifier). Read-only actions pass through below.
+            domain = os.path.dirname(os.path.abspath(entry.get("root", "")))
+            return (f"需求「{entry['name']}」已结项（{entry.get('closed_at', '-')}），"
+                    f"动作 {action} 已被拦截（规格已冻结）。"
+                    f"主 spec 在 {domain}/openspec/specs/。")
     if action == "approve":
         name = payload.get("requirement")
         if not name:
@@ -1153,9 +1174,11 @@ def _run_llm_turn(session_id, is_new, prompt, settings=None, timeout=1800):
 
 
 def _closed_reply(entry):
-    """Canned reply for a CLOSED requirement: no LLM session, no JSON actions.
-    A closed requirement's specs are frozen (hash-gated, archived); any further
-    work must start a new requirement from the domain main specs."""
+    """Canned reply for a deterministically matched CLOSED requirement
+    (name/module appears in the message). Nameless messages that merely fall
+    back to a closed requirement's session are NOT hijacked — post-close ops
+    like committing the main specs are legitimate; their freeze is enforced
+    by the action gate in _dispatch_json_action instead."""
     domain = os.path.dirname(os.path.abspath(entry.get("root", "")))
     return (f"需求「{entry.get('name')}」已结项（{entry.get('closed_at', '-')}）。"
             f"主 spec 已沉淀至 {domain}/openspec/specs/；要继续演进请基于主 spec "
@@ -1170,15 +1193,13 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         # first (covers short grill-me answers), then the LLM classifier.
         # Global-intent questions (总览/所有需求状态…) skip the fallback and
         # stay in the global session so the reply is prefixed 【通用】.
+        # NOTE: a closed requirement is deliberately NOT short-circuited here.
+        # A nameless message that falls back to a closed req via recent/classify
+        # (e.g. 提交推送spec文件 right after closing) must still reach G —
+        # committing the main specs is a legitimate post-close op. The freeze
+        # lives at the action gate (_dispatch_json_action), not at routing.
         requirement = _recent_requirement(user_id) \
             or _classify_requirement(message, registry)
-    if requirement:
-        entry = next((r for r in registry if r.get("name") == requirement), None)
-        if entry and entry.get("status") == "CLOSED":
-            # closed requirements stay frozen: no session, no recent-activity
-            # marking, no spec edits — covers the recent/classify fallback path
-            # that bypasses the name match in dispatch().
-            return _closed_reply(entry)
     _touch_recent(user_id, requirement)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__SKILLS_DIR__", _agent_cli().asset_dirs()[0])

@@ -119,17 +119,48 @@ def test_closed_requirement_short_circuits_dispatch(monkeypatch):
     assert calls == [], "closed requirement must never spawn an LLM turn"
 
 
-def test_closed_requirement_blocked_on_recent_fallback(monkeypatch):
-    """recent-activity fallback resolving to a CLOSED requirement also
-    short-circuits (message doesn't name the requirement)."""
+def test_closed_requirement_fallback_not_hijacked(monkeypatch):
+    """Regression: a nameless message that falls back to a CLOSED requirement
+    via the recent session (e.g. 提交推送spec文件 right after 结项) must reach
+    G — committing the main specs is a legitimate post-close op. It used to
+    be canned-blocked with 已结项."""
     from wecom_server import router
     monkeypatch.setattr(router, "_recent_requirement", lambda uid: "req")
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
     monkeypatch.setattr(router.subprocess, "run",
-                        _fake_llm_reply("不应到达"))
-    fn = dispatch("继续", [_CLOSED_ENTRY], "/tmp", "u1")
+                        _fake_llm_reply("好的，正在提交推送主 spec"))
+    fn = dispatch("提交推送spec文件", [_CLOSED_ENTRY], "/tmp", "u1")
     reply = fn()
-    assert "已结项" in reply
-    assert "不应到达" not in reply
+    assert "已结项" not in reply
+    assert "提交推送" in reply
+
+
+def test_closed_requirement_blocks_mutating_actions():
+    """Bedrock freeze: approve/run_spec/spec_result/adjudicate on a CLOSED
+    requirement are rejected in _dispatch_json_action no matter how the
+    message was routed (det match, recent fallback, classifier)."""
+    from wecom_server import router
+    registry = [_CLOSED_ENTRY]
+    for payload in (
+        {"action": "approve", "requirement": "req"},
+        {"action": "run_spec", "requirement": "req", "module": "c/m"},
+        {"action": "spec_result", "requirement": "req", "module": "c/m"},
+        {"action": "adjudicate", "requirement": "req", "target": "1",
+         "decision": "accept"},
+    ):
+        reply = router._dispatch_json_action(payload, registry, "/tmp", "u1")
+        assert "已结项" in reply and "拦截" in reply, payload["action"]
+
+
+def test_closed_requirement_allows_readonly_actions():
+    """Read-only actions stay available post-close."""
+    from wecom_server import router
+    registry = [_CLOSED_ENTRY]
+    reply = router._dispatch_json_action(
+        {"action": "history", "requirement": "req"}, registry, "/tmp", "u1")
+    assert "已结项" not in reply
 
 
 def test_state_snapshot_lists_closed_requirements(tmp_path):

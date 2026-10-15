@@ -595,6 +595,7 @@ Skill 会自动：
 4. **登记**：编辑完 G 在回复末尾追加 `__JSON_ACTION__` 动作块（spec_result）→ 服务器校验/备份/置 PARTIAL
 5. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
 6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 登记 → 批准
+7. **结项**：全部模块 SYNCED 后，说「结项 xx」→ G 执行 `loop_engine close` 并汇报（门禁、主 spec 落位、归档）；结项后对该需求的任何消息都会被短路为「已结项」提示（见「九、需求结项」）
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -613,6 +614,9 @@ loop_engine requirement-rename old-name new-name
 
 # 删除需求
 loop_engine requirement-remove <name>
+
+# 结项需求：主 spec 沉淀到域级目录 + 变更归档 + 注册表 CLOSED（详见「九、需求结项」）
+loop_engine close <name>
 
 # 重置模块到 DRAFT
 loop_engine reset --root <path> <change_id/module_name>
@@ -673,6 +677,9 @@ loop_engine status --root ~/loop-work/stockup
 loop_engine poll
 loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
+
+# 7. 全部模块 SYNCED 后结项（主 spec 沉淀 + 变更归档 + 注册表 CLOSED，见「九、需求结项」）
+loop_engine close strategic-stockup-system-upgrade
 ```
 
 > **微信替代**：第 1-5 步全部可在微信完成——发 PRD 路径 + 参数注册，说"按 PRD 生成 spec"，G 澄清后编辑 spec 并以 `__JSON_ACTION__` 动作块登记，回复"批准执行"即进入第 6 步。参见「六、Layer 1 Spec Session — 微信路径」。
@@ -728,6 +735,40 @@ loop_engine run strategic-stockup-system-upgrade
 
 ---
 
+## 九、需求结项（close）
+
+需求全部模块 SYNCED、用户确认完结后，用结项命令把生命周期收口：
+
+```bash
+loop_engine close <name>
+```
+
+一条命令做四件事：
+
+1. **门禁校验**（任一不过则整体拒绝并打印原因）：注册名不存在 / 需求正在执行（持有 `.loop/lock`）/ 存在非 SYNCED 模块（逐个列出）/ 有未裁决的灰名单草稿 / 每个模块当前 spec 文件的 md5 与 `state.json` 记录的 `spec_hash` 不一致
+2. **delta → 域级主 spec**：模块 spec 落位到**需求根父目录**的 `openspec/specs/<module>/spec.md`（如 `~/loop-work/boss/openspec/specs/…`）。`## ADDED/MODIFIED Requirements` 段头剥掉归并为一个 `## Requirements`，Requirement 正文逐字保留；**两阶段**：先全量预检目标路径，任一已存在则整体 abort（v1 不做主 spec 合并，升级路径是 openspec CLI 的 delta apply）
+3. **归档**：`openspec/changes/` 下所有活跃变更目录移入 `archive/<date>-<change_id>/`
+4. **注册表标 CLOSED**：`requirements.json` 写入 `status: "CLOSED"` + `closed_at`
+
+`close` 不修改 `state.json`（冻结审计链）、不自动 git 提交——域级目录是用户的 specs git 仓库（如 `kunhe/specs`），主 spec 的 commit/push 由人确认。
+
+### 结项后的行为
+
+- **企微/飞书消息短路**：任何解析到该需求的消息收到固定回复「已结项（日期），主 spec 已沉淀至 …/openspec/specs/」，不再起 LLM 会话——`approve` / `spec_result` 也一并拦截（防对冻结需求的误操作）。系统快照里也会列出已结项需求
+- **scheduler.poll 跳过**：CLOSED 需求不再参与轮询（spec hash 变化也不会触发 SPEC_CHANGED）
+- **恢复**：确需重开时手动把 `requirements.json` 里该需求的 `status` 改回后重试（v1 无 reopen 命令）
+
+### 主 spec 与基线继承
+
+- 域级主 spec 是需求的**沉淀产物**，放在需求根的父目录（`<域>/openspec/specs/`），随该目录的 git 仓库共享
+- 下一个需求注册模块时（requirement-register skill 会在 spec 撰写前检查）：若 `<需求根父目录>/openspec/specs/<module>/spec.md` 存在，以它为编辑基线复制进本变更再按 PRD 演化——系统的能力规范跨需求连续累积，不再每次从零写
+
+### 企微/飞书路径
+
+全部模块 SYNCED 后，直接发「**结项 <需求名或别名>**」：G 核对注册名（`requirement-list`）→ 执行 `loop_engine close` → 转述输出（门禁拒绝原因如实转达，不会绕过；仅限用户明确要求结项时执行）。成功后 G 会提醒 commit/push 主 spec。
+
+---
+
 ## 十、WeCom 企业微信 Bot
 
 WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
@@ -749,6 +790,7 @@ WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
 - `给 XX 加项目`（如"给越库二期加项目 kunhe-wms"，附源仓库路径）— 自动执行 `requirement-add-project`：创建 worktree 并注册到需求，分支缺省沿用需求内第一个项目的分支
 - `按 PRD 生成 spec` — 生成 proposal/design/specs/tasks，然后自动进入 grill-me 澄清；新模块注册后 G 会询问归属项目并执行 `set-project-root` 绑定工作目录
 - 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
+- `结项 <需求>` — 全部模块 SYNCED 后收口需求：主 spec 沉淀到域级目录、变更归档、注册表 CLOSED（详见「九、需求结项」）；结项后对该需求的任何消息回复固定「已结项」提示
 - `查看执行历史` — 各需求的运行历史（runs.json）
 - `查看灰名单` / `接受 1 拒绝 2` — 列出待裁决草稿 / 混合裁决（支持 `全部接受`、`全部拒绝`）
 - `查看评分 <模块名>` — 该模块 SCORE 的**全量**明细（不带模块名则列全部已评分模块，NEEDS_REFINEMENT 排前）；模块名可写裸名或 `change-id/模块名`
@@ -1015,7 +1057,7 @@ loop_engine feishu stop
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
 │     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │
-│     grill-me 澄清 / 编辑 spec.md                              │
+│     grill-me 澄清 / 编辑 spec.md / 结项（loop_engine close） │
 │                                                                     │
 │     __JSON_ACTION__ 动作（服务器按动作分发，不经过二次 LLM）：        │
 │     approve     → 批准 + dispatch → fork B                         │
@@ -1083,6 +1125,7 @@ loop_engine feishu stop
     ├── test_scope_audit.py     ├── test_report.py
     ├── test_agent_cli.py       ├── test_pi_audit_bridge.py
     ├── test_hermeticity.py     ├── conftest.py
+    ├── test_close.py           # 需求结项（close 门禁 / 主spec 同步 / 归档）
     └── test_pi_e2e.py          # 真实 pi + Maven，默认不跑（opt-in）
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）；LOOP_ENGINE_DATA_DIR 可整体搬到别处
@@ -1144,6 +1187,7 @@ loop_engine feishu stop
 - **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信（`agent_cli.py` 是纯 argv 拼装的无状态叶子，不构成核心耦合）
 - **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式、启动噪声长什么样、skills/子代理装到哪——全部收敛在 `agent_cli` 一处（loop 步骤走 `build_cmd()`，企业微信问答走 `build_chat_cmd()` + `clean_reply()`，目录走 `asset_dirs()`）。`qodercli` 与 `pi` 两行都已有 builder；档案表里出现 `cmd: None` 的后端会在 spawn 时报错，**不静默回落**成 qodercli，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用（pi 实测：result.md 单 JSON 对象一次通过，`__JSON_ACTION__` 能被现有正则解析，text/json 两种模式的 stdout 都没有 qodercli 那类启动噪声）。新增后端 = 档案表加一行 + 两个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
 - **G 路径（企业微信直接回复）同样在收口里**：`wecom_server/router.py` 的三处 spawn（需求归属分类、每轮问答、漏登记纠正）原先自己拼 qodercli argv、自己读 `~/.qoder/settings.json` 的模型、自己剥启动噪声，现已全部改走 `agent_cli`——router 里不再出现任何二进制名或模型来源。两条路径的契约差异记在 `agent_cli` 顶部：G 的 prompt 从 **stdin** 进、回复从 **stdout** 出，所以 chat argv 不带任何提示词参数。pi 的 chat `--tools` 比 loop 更窄（去掉 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复）。**审计钩子的投放**：qodercli 能按次收 `--settings` JSON，pi 的对应物（扩展侧事件 `tool_call`）只能来自**加载的扩展**，所以本仓库带了一个 ~47 行的适配器 `wecom_server/hooks/pi_audit_bridge.ts`——它把 pi 的工具事件映射成 `audit_hook.sh` 的 stdin 契约（`bash{command}` / `edit|write{path}` → `file_path`，按 `ctx.cwd` 绝对化并镜像 pi 的 `~` 展开，否则相对 `pending.json` 会漏过要求前导斜杠的 Guard 1），再 `spawnSync` 同一个 shell 钩子，rc==1 就把 stdout 当 block reason 回喂模型。**守卫逻辑只有一份**：改 `audit_hook.sh` 两个后端同时生效。`agent_cli.chat_audit_mode()` 报告投放方式——`"settings"` / `"extension"` / `""`，其中 `""`（后端不支持按值注入**或** `.ts` 没被打进包）才是审计链真的断了，router 首轮显式打一条 warning；扩展路径缺失时**不加** `-e`，因为 pi 对加载失败的扩展是 rc=1 硬失败，打包问题不该变成整个微信问答不可用。**两个后端共有的孔洞**：Guard 2 只认 `tool=Edit`，G 若用 Write 整体覆盖 spec.md 就不会留快照（新建 spec.md 也因 `[ -f ]` 跳过），此时 `spec_result` 报不出变更规模、纠正循环也读不到东西。另：G 的模型回落值（原硬编码 `DeepSeek-V4-Flash`）一并去掉了——取不到就不传 `--model`，与 loop 同一口径
+- **MR 目标分支守卫（本机可选，随 --settings 注入）**：`router._audit_settings()` 在 G 会话的 `--settings` 里追加 `~/.qoder/hooks/mr-target-branch.sh` 的注册——Bash 两条条件（`glab mr create` / `git push -o merge_request.create` 必须显式带 target 且禁止 master/main）+ MCP 工具名 matcher（`mcp__gitlab__create/update_merge_request` 读 `tool_input.target_branch`，MCP 调用不经 Bash，Bash-only matcher 拦不到）。钩子文件不存在时静默跳过（非本机环境不阻断）；改维护规则只改那一个脚本，用户级 `~/.qoder/settings.json` 与 G 注入两处注册共用
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警
 - **安全阀**：同 action 重复 3 次自动中断、200 步上限、LLM 步骤 6h / 本地命令 30s / 最终门禁 mvn 30min·仓（commit 兜底 95min）三层超时、hard_errors 用尽 3 次转 BLOCKED

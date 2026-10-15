@@ -254,6 +254,9 @@ def _poll_requirement(root, name):
 def poll():
     """Run one detection cycle and merge into pending.json."""
     for req in _read_registry():
+        if req.get("status") == "CLOSED":
+            # closed requirement: state frozen, nothing to poll or clean
+            continue
         _cleanup_stale_manual(req.get("root", ""))
         # Do NOT clear state["current"] here even when the lock is free:
         # current is the resume checkpoint for a run that died mid-action
@@ -264,6 +267,8 @@ def poll():
         # "executing" signal.
     fresh = []
     for req in _read_registry():
+        if req.get("status") == "CLOSED":
+            continue
         entry = _poll_requirement(req.get("root"), req.get("name"))
         if entry:
             fresh.append(entry)

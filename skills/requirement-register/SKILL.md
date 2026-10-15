@@ -25,6 +25,7 @@ When the user says "给 XX 加项目" / "新增项目" / "补充项目":
 
 When creating or modifying spec files:
 
+0. Domain main-spec baseline (inheritance): before authoring a module's spec, check `<需求根的父目录>/openspec/specs/<module>/spec.md` — a main spec deposited there by a CLOSED requirement. If it exists, copy its content into this change's `specs/<module>/spec.md` as the editing baseline, then evolve it per the PRD (SCORE judges the evolved content; do not restart from a blank page for a module the system already has).
 1. Read `../spec-session/SKILL.md` relative to this SKILL.md's directory (not the process cwd) and follow its workflow
 2. PRD bootstrap (no OpenSpec artifacts yet, user says "生成 spec" / "按 PRD 初始化"):
    - Run `loop_engine requirement-list` to get the root

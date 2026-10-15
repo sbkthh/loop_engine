@@ -3,6 +3,7 @@
 import argparse
 import datetime
 import json
+import re
 import shutil
 import sys
 import os
@@ -12,7 +13,7 @@ from state import StateManager
 from machine import StateMachine
 from constants import DRAFT, ALL_STATUSES, DATA_DIR
 from setup import setup_requirement, init_from_prd, add_project_to_requirement
-from spec_utils import coerce_roots
+from spec_utils import coerce_roots, compute_spec_hash
 import report
 import registry
 import scheduler
@@ -306,6 +307,112 @@ def cmd_requirement_rename(args):
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+
+
+_DELTA_HEADER_RE = re.compile(r"^## (ADDED|MODIFIED|REMOVED) Requirements\s*$")
+
+
+def _transform_delta_spec(src_path, requirement_name):
+    """Delta spec -> main spec: drop the ADDED/MODIFIED delta header lines and
+    home every requirement under one `## Requirements`. Preamble lines before
+    the first delta block and `### Requirement:` bodies survive verbatim;
+    `## REMOVED Requirements` sections are kept too — v1 has no main-spec
+    deletion semantics. ponytail: an existing main-spec target aborts in
+    cmd_close instead of merging; the upgrade path is the openspec CLI's
+    delta apply against the baseline."""
+    module = os.path.basename(os.path.dirname(os.path.abspath(src_path)))
+    out = [f"# {module}", "", "## Purpose", "",
+           f"{module} 能力的当前规范（自需求 {requirement_name} 结项沉淀，"
+           "delta 已解析为主 spec；后续需求基于此文件演化）。", ""]
+    seen_requirements = False
+    for line in open(src_path).read().splitlines():
+        if _DELTA_HEADER_RE.match(line):
+            # `## Requirements` lands where the first delta block was, so any
+            # preamble (## External Dependencies …) stays ahead of it
+            if not seen_requirements:
+                out += ["## Requirements", ""]
+                seen_requirements = True
+            continue
+        out.append(line)
+    return "\n".join(out).rstrip() + "\n"
+
+
+def cmd_close(args):
+    """Close a finished requirement: verify hashes, sync delta specs to the
+    domain-level main specs, archive the openspec changes, mark CLOSED.
+    state.json is deliberately left untouched (frozen audit trail), and no
+    git commit is made — the domain dir is the user's specs repo."""
+    entry = registry.find_requirement(args.name)
+    if not entry:
+        print(f"Error: requirement not found: {args.name}")
+        sys.exit(1)
+    root = entry["root"]
+    if scheduler.is_locked(root):
+        print(f"Error: {root} 正在执行中（持有锁），禁止结项。")
+        sys.exit(1)
+    state = StateManager(root).load()
+    modules = state.get("modules", {})
+    not_synced = sorted(k for k, m in modules.items()
+                        if m.get("status") != "SYNCED")
+    if not_synced:
+        print("Error: 以下模块未 SYNCED，不能结项：")
+        for k in not_synced:
+            print(f"  {k}: {modules[k].get('status')}")
+        sys.exit(1)
+    pending = [d for d in state.get("gray_drafts", [])
+               if d.get("status") == "pending"]
+    if pending:
+        print(f"Error: 有 {len(pending)} 条灰名单草稿待裁决，先处理完再结项。")
+        sys.exit(1)
+
+    # Gate everything before touching anything: hash check + target pre-check.
+    specs = []  # (module, src_path, dst_path)
+    for key, m in modules.items():
+        change_id, _, module = key.partition("/")
+        src = os.path.join(root, "openspec", "changes", change_id,
+                           "specs", module, "spec.md")
+        if compute_spec_hash(src) != m.get("spec_hash"):
+            print(f"Error: {key} 的 spec 文件与登记 hash 不一致"
+                  f"（可能被外部改动或缺失）: {src}")
+            sys.exit(1)
+        dst = os.path.join(os.path.dirname(os.path.abspath(root)),
+                           "openspec", "specs", module, "spec.md")
+        specs.append((module, src, dst))
+    existing = [dst for _, _, dst in specs if os.path.exists(dst)]
+    if existing:
+        print("Error: 以下主 spec 已存在，v1 不做合并，请人工处理后重试：")
+        for p in existing:
+            print(f"  {p}")
+        sys.exit(1)
+
+    for module, src, dst in specs:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w") as f:
+            f.write(_transform_delta_spec(src, entry["name"]))
+        print(f"主 spec: {dst}")
+
+    changes_dir = os.path.join(root, "openspec", "changes")
+    archive_dir = os.path.join(changes_dir, "archive")
+    today = datetime.date.today().isoformat()
+    for name in sorted(os.listdir(changes_dir)) if os.path.isdir(changes_dir) else []:
+        if name == "archive":
+            continue
+        src_dir = os.path.join(changes_dir, name)
+        if not os.path.isdir(src_dir):
+            continue
+        os.makedirs(archive_dir, exist_ok=True)
+        dst_dir = os.path.join(archive_dir, f"{today}-{name}")
+        shutil.move(src_dir, dst_dir)
+        print(f"归档: {dst_dir}")
+
+    try:
+        registry.close_requirement(args.name)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(f"已结项: {args.name} (CLOSED {today})")
+    print("提醒: 需求根所在域目录是 git 仓库，主 spec 请自行 commit/push；"
+          "后续需求从这些主 spec 继承基线。")
 
 
 def cmd_context_set(args):
@@ -871,6 +978,12 @@ def main():
                        help="Unregister a requirement")
     p.add_argument("name", help="Requirement name to remove")
     p.set_defaults(func=cmd_requirement_remove)
+
+    p = sub.add_parser("close",
+                       help="Close a finished requirement: sync domain main specs, "
+                            "archive openspec changes, mark CLOSED in the registry")
+    p.add_argument("name", help="Requirement name in the registry")
+    p.set_defaults(func=cmd_close)
 
     p = sub.add_parser("context", parents=[common],
                        help="Manage .loop/context.json (databases, nacos, gateways)")

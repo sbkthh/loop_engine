@@ -286,6 +286,20 @@ class TestPoll(SchedulerBase):
         self.assertTrue(e["modules"][0]["spec_hash_changed"])
         self.assertFalse(e["approved"])
 
+    def test_poll_skips_closed_requirement(self):
+        """CLOSED registry entry: even a hash-changed SYNCED module is not
+        polled — a closed requirement's state is frozen after closure."""
+        root = self.register("closed-req", os.path.join(self.tmp.name, "req"))
+        data = json.load(open(scheduler.REGISTRY_PATH))
+        data["requirements"][0]["status"] = "CLOSED"
+        with open(scheduler.REGISTRY_PATH, "w") as f:
+            json.dump(data, f)
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED", spec_hash=h)})
+        _make_spec(root, "c", "m", content="changed spec")
+
+        self.assertEqual(scheduler.poll(), [])
+
     def test_poll_skips_cosmetic_spec_change(self):
         """Comment/format-only spec edit: no SPEC_CHANGED trigger."""
         from spec_utils import compute_spec_norm_hash

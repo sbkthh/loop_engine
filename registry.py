@@ -94,6 +94,18 @@ def rename_requirement(old_name, new_name):
     return True
 
 
+def close_requirement(name):
+    """Mark a requirement CLOSED (idempotent: re-close just refreshes the date)."""
+    data = load()
+    target = next((r for r in data["requirements"] if r["name"] == name), None)
+    if not target:
+        raise ValueError(f"Requirement not found: {name}")
+    target["status"] = "CLOSED"
+    target["closed_at"] = datetime.date.today().isoformat()
+    save(data)
+    return target
+
+
 def list_requirements():
     return load()["requirements"]
 

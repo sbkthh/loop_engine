@@ -93,6 +93,56 @@ def test_audit_settings_without_mr_guard(tmp_path):
         router._MR_GUARD_HOOK = orig
 
 
+_CLOSED_ENTRY = {"name": "req", "root": "/tmp/x",
+                 "status": "CLOSED", "closed_at": "2026-10-15"}
+
+
+def test_closed_requirement_short_circuits_dispatch(monkeypatch):
+    """CLOSED registry entry: dispatch returns the canned 已结项 reply with
+    zero LLM turns — approve/spec_result traffic is blocked the same way."""
+    from wecom_server import router
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return types.SimpleNamespace(stdout="不应到达", returncode=0)
+
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+    registry = [_CLOSED_ENTRY]
+    for msg in ("req 现在什么状态", "批准执行 req"):
+        fn = dispatch(msg, registry, "/tmp", "u1")
+        assert fn.requirement == "req"
+        reply = fn()
+        assert "已结项" in reply
+        assert "2026-10-15" in reply
+        assert "不应到达" not in reply
+    assert calls == [], "closed requirement must never spawn an LLM turn"
+
+
+def test_closed_requirement_blocked_on_recent_fallback(monkeypatch):
+    """recent-activity fallback resolving to a CLOSED requirement also
+    short-circuits (message doesn't name the requirement)."""
+    from wecom_server import router
+    monkeypatch.setattr(router, "_recent_requirement", lambda uid: "req")
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("不应到达"))
+    fn = dispatch("继续", [_CLOSED_ENTRY], "/tmp", "u1")
+    reply = fn()
+    assert "已结项" in reply
+    assert "不应到达" not in reply
+
+
+def test_state_snapshot_lists_closed_requirements(tmp_path):
+    """CLOSED requirements appear in the shared snapshot with their main-spec
+    location; reading them must not require a state.json read."""
+    from wecom_server import router
+    reg = [dict(_CLOSED_ENTRY, root=str(tmp_path))]
+    snap = router._system_state_snapshot(reg)
+    assert "已结项" in snap
+    assert "2026-10-15" in snap
+    assert "openspec/specs" in snap
+
+
 def _fake_llm_reply(stdout):
     def fake_run(cmd, **kwargs):
         if any("qodercli" in part for part in cmd):

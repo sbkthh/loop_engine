@@ -1034,6 +1034,11 @@ def _system_state_snapshot(registry):
         name = req.get("name")
         if not root or not name:
             continue
+        if req.get("status") == "CLOSED":
+            domain = os.path.dirname(os.path.abspath(root))
+            lines.append(f"- {name}：已结项（{req.get('closed_at', '-')}），"
+                         f"主 spec 见 {domain}/openspec/specs/")
+            continue
         try:
             with open(os.path.join(root, ".loop", "state.json")) as f:
                 st = json.load(f)
@@ -1138,6 +1143,16 @@ def _run_llm_turn(session_id, is_new, prompt, settings=None, timeout=1800):
     return cli.clean_reply(r.stdout)
 
 
+def _closed_reply(entry):
+    """Canned reply for a CLOSED requirement: no LLM session, no JSON actions.
+    A closed requirement's specs are frozen (hash-gated, archived); any further
+    work must start a new requirement from the domain main specs."""
+    domain = os.path.dirname(os.path.abspath(entry.get("root", "")))
+    return (f"需求「{entry.get('name')}」已结项（{entry.get('closed_at', '-')}）。"
+            f"主 spec 已沉淀至 {domain}/openspec/specs/；要继续演进请基于主 spec "
+            f"开新需求。如确需恢复，请管理员在注册表将 status 改回后重试。")
+
+
 def _llm_dispatch(message, registry, data_dir, user_id):
     """Background LLM direct response with per-user/per-requirement session."""
     requirement = _detect_requirement(message, registry)
@@ -1148,6 +1163,13 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         # stay in the global session so the reply is prefixed 【通用】.
         requirement = _recent_requirement(user_id) \
             or _classify_requirement(message, registry)
+    if requirement:
+        entry = next((r for r in registry if r.get("name") == requirement), None)
+        if entry and entry.get("status") == "CLOSED":
+            # closed requirements stay frozen: no session, no recent-activity
+            # marking, no spec edits — covers the recent/classify fallback path
+            # that bypasses the name match in dispatch().
+            return _closed_reply(entry)
     _touch_recent(user_id, requirement)
     session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__SKILLS_DIR__", _agent_cli().asset_dirs()[0])
@@ -1258,4 +1280,12 @@ def dispatch(message, registry, data_dir, user_id="default"):
     """
     fn = lambda: _llm_dispatch(message, registry, data_dir, user_id)
     fn.requirement = _detect_requirement(message, registry)
+    if fn.requirement:
+        entry = next((r for r in registry
+                      if r.get("name") == fn.requirement), None)
+        if entry and entry.get("status") == "CLOSED":
+            # hard short-circuit before any LLM turn or JSON action: a closed
+            # requirement must not accept approve/spec_result traffic
+            fn = lambda e=entry: _closed_reply(e)
+            fn.requirement = entry["name"]
     return fn

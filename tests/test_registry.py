@@ -79,6 +79,24 @@ class TestRegistry(unittest.TestCase):
         with self.assertRaises(ValueError):
             registry.rename_requirement("req-a", "req-b")
 
+    def test_close_requirement(self):
+        registry.add_requirement("fin", "/tmp/fin")
+        entry = registry.close_requirement("fin")
+        self.assertEqual(entry["status"], "CLOSED")
+        self.assertIn("closed_at", entry)
+        self.assertEqual(registry.find_requirement("fin")["status"], "CLOSED")
+
+    def test_close_requirement_idempotent(self):
+        registry.add_requirement("fin", "/tmp/fin")
+        registry.close_requirement("fin")
+        entry = registry.close_requirement("fin")
+        self.assertEqual(entry["status"], "CLOSED")
+        self.assertEqual(len(registry.list_requirements()), 1)
+
+    def test_close_requirement_not_found(self):
+        with self.assertRaises(ValueError):
+            registry.close_requirement("ghost")
+
     def test_list_requirements(self):
         registry.add_requirement("req-a", "/tmp/a")
         registry.add_requirement("req-b", "/tmp/b")

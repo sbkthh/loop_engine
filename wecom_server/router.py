@@ -301,8 +301,8 @@ _GLOBAL_INTENT_RE = re.compile(
 # cleanup must still reach G (the command self-gates on CLOSED/clean/merged;
 # the action gates keep approve/spec_result frozen regardless).
 _CLOSED_CLEANUP_RE = re.compile(
-    r"(?:清理|删除|移除|prune|remove)[^\n]{0,20}(?:worktree|work\s*tree|工作树)"
-    r"|(?:worktree|work\s*tree|工作树)[^\n]{0,20}(?:清理|删除|移除|prune|remove)",
+    r"(?:清理|删除|移除|prune|remove)[^\n]*(?:worktree|work\s*tree|工作树)"
+    r"|(?:worktree|work\s*tree|工作树)[^\n]*(?:清理|删除|移除|prune|remove)",
     re.IGNORECASE)
 
 

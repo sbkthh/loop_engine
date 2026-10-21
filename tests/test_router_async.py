@@ -157,7 +157,7 @@ def test_closed_requirement_named_cleanup_reaches_llm(monkeypatch):
 def test_closed_cleanup_intent_regex():
     from wecom_server import router
     for msg in ("清理 req 的 worktree", "删除工作树", "prune-worktrees req",
-                "worktree 清理一下"):
+                "worktree 清理一下", "清理 cross-dock-v2-backend 的 worktree"):
         assert router._CLOSED_CLEANUP_RE.search(msg), msg
     for msg in ("req 现在什么状态", "提交推送spec文件", "批准执行 req"):
         assert not router._CLOSED_CLEANUP_RE.search(msg), msg

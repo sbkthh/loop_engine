@@ -618,6 +618,9 @@ loop_engine requirement-remove <name>
 # 结项需求：主 spec 沉淀到域级目录 + 变更归档 + 注册表 CLOSED（详见「九、需求结项」）
 loop_engine close <name>
 
+# 清理已结项需求的 worktree（仅删干净且已合入远程主干的 checkout，本地分支保留）
+loop_engine prune-worktrees <name>
+
 # 重置模块到 DRAFT
 loop_engine reset --root <path> <change_id/module_name>
 
@@ -759,6 +762,18 @@ loop_engine close <name>
 - **不连坐日常消息**：没点名、只是经「最近会话」回退到该需求的运维/查询消息（如「提交推送spec文件」）**不再被短路**——会正常进入 G 会话，G 按结项上下文只读协助（git commit/push 主 spec、回答结项问题、引导基于主 spec 开新需求），历史/评分/灰名单只读查询照常可用
 - **scheduler.poll 跳过**：CLOSED 需求不再参与轮询（spec hash 变化也不会触发 SPEC_CHANGED）
 - **恢复**：确需重开时手动把 `requirements.json` 里该需求的 `status` 改回后重试（v1 无 reopen 命令）
+
+### worktree 清理
+
+`close` **不碰**各项目的 worktree（代码检出仍留在需求根下），结项输出会提示剩余项。确认 MR 已合并后运行：
+
+```bash
+loop_engine prune-worktrees <name>
+```
+
+逐个项目判定，只删除同时满足「工作区干净（`git status --porcelain` 为空）」和「HEAD 已合入远程主干（`origin/HEAD`，退到 `origin/master|main|develop`）」的 checkout；脏的、未合的、源仓库缺失的一律跳过并打印原因，**从不 `--force`**。删除只丢第二份检出，**本地分支保留**——要复查随时 `git worktree add` 重建。命令要求需求已是 CLOSED（未结项说明 worktree 还在用）。
+
+审计需要的仍是需求根里的 `openspec/`、`plans/`、`.loop/state.json`（冻结）和 `LOOP_REPORT.md`，与代码检出无关。
 
 ### 主 spec 与基线继承
 
@@ -1128,6 +1143,7 @@ loop_engine feishu stop
     ├── test_agent_cli.py       ├── test_pi_audit_bridge.py
     ├── test_hermeticity.py     ├── conftest.py
     ├── test_close.py           # 需求结项（close 门禁 / 主spec 同步 / 归档）
+    ├── test_prune_worktrees.py # 结项后 worktree 清理（干净+已合入门禁）
     └── test_pi_e2e.py          # 真实 pi + Maven，默认不跑（opt-in）
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）；LOOP_ENGINE_DATA_DIR 可整体搬到别处

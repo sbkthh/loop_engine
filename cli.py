@@ -5,6 +5,7 @@ import datetime
 import json
 import re
 import shutil
+import subprocess
 import sys
 import os
 import time
@@ -413,6 +414,95 @@ def cmd_close(args):
     print(f"已结项: {args.name} (CLOSED {today})")
     print("提醒: 需求根所在域目录是 git 仓库，主 spec 请自行 commit/push；"
           "后续需求从这些主 spec 继承基线。")
+    remaining = [p.get("name", "") for p in entry.get("projects", [])
+                 if os.path.isdir(os.path.join(root, p.get("name", "")))]
+    if remaining:
+        print(f"提醒: 项目 worktree 未删除（{', '.join(remaining)}）。确认 MR 已合并后，"
+              f"运行 loop_engine prune-worktrees {args.name} 清理（本地分支保留）。")
+
+
+_WORKTREE_MAINLINE_REFS = ("origin/HEAD", "origin/master", "origin/main",
+                           "origin/develop")
+
+
+def _worktree_mainline(wt):
+    """First existing remote-tracking mainline ref, or None."""
+    for ref in _WORKTREE_MAINLINE_REFS:
+        r = subprocess.run(
+            ["git", "-C", wt, "rev-parse", "--verify", "--quiet", ref],
+            capture_output=True, text=True)
+        if r.returncode == 0:
+            return ref
+    return None
+
+
+def _prune_worktrees(entry):
+    """Remove clean, merged project worktrees; keep local branches.
+
+    A worktree is removed only when its checkout has no uncommitted /
+    untracked changes AND its HEAD is already an ancestor of a remote
+    mainline. Anything else is skipped and reported, never forced.
+    """
+    root = os.path.abspath(entry["root"])
+    removed, skipped = [], []
+    for project in entry.get("projects", []):
+        name = project.get("name", "")
+        wt = os.path.join(root, name)
+        if not name or not os.path.isdir(wt):
+            continue
+        source = project.get("source")
+        if not source or not os.path.isdir(source):
+            skipped.append(f"{name}: 源仓库不存在（{source}）")
+            continue
+        status = subprocess.run(["git", "-C", wt, "status", "--porcelain"],
+                                capture_output=True, text=True)
+        if status.returncode != 0:
+            skipped.append(f"{name}: 不是有效的 worktree")
+            continue
+        if status.stdout.strip():
+            skipped.append(f"{name}: 工作区有未提交改动，未删除")
+            continue
+        mainline = _worktree_mainline(wt)
+        if not mainline:
+            skipped.append(f"{name}: 找不到远程主干引用（origin/HEAD 等），未删除")
+            continue
+        merged = subprocess.run(
+            ["git", "-C", wt, "merge-base", "--is-ancestor", "HEAD", mainline],
+            capture_output=True)
+        if merged.returncode != 0:
+            skipped.append(f"{name}: 分支未合入 {mainline}，未删除")
+            continue
+        rm = subprocess.run(["git", "-C", source, "worktree", "remove", wt],
+                            capture_output=True, text=True)
+        if rm.returncode == 0:
+            removed.append(name)
+        else:
+            skipped.append(
+                f"{name}: git worktree remove 失败（{rm.stderr.strip()[:160]}）")
+    return removed, skipped
+
+
+def cmd_prune_worktrees(args):
+    """Remove project worktrees of a CLOSED requirement.
+
+    Only clean, already-merged checkouts are removed; local branches are
+    kept. Active requirements are refused — their worktrees are in use.
+    """
+    entry = registry.find_requirement(args.name)
+    if not entry:
+        print(f"Error: requirement not found: {args.name}")
+        sys.exit(1)
+    if entry.get("status") != "CLOSED":
+        print(f"Error: 需求未结项（status={entry.get('status') or '-'}），"
+              "worktree 仍用于执行，禁止清理。")
+        sys.exit(1)
+    removed, skipped = _prune_worktrees(entry)
+    for name in removed:
+        print(f"已删除 worktree: {name}（本地分支保留）")
+    for msg in skipped:
+        print(f"跳过: {msg}")
+    if not removed and not skipped:
+        print("没有可清理的 worktree。")
 
 
 def cmd_context_set(args):
@@ -984,6 +1074,12 @@ def main():
                             "archive openspec changes, mark CLOSED in the registry")
     p.add_argument("name", help="Requirement name in the registry")
     p.set_defaults(func=cmd_close)
+
+    p = sub.add_parser("prune-worktrees",
+                       help="Remove clean, merged worktrees of a CLOSED "
+                            "requirement (local branches kept)")
+    p.add_argument("name", help="Requirement name in the registry")
+    p.set_defaults(func=cmd_prune_worktrees)
 
     p = sub.add_parser("context", parents=[common],
                        help="Manage .loop/context.json (databases, nacos, gateways)")

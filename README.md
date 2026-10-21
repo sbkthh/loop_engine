@@ -775,6 +775,8 @@ loop_engine prune-worktrees <name>
 
 审计需要的仍是需求根里的 `openspec/`、`plans/`、`.loop/state.json`（冻结）和 `LOOP_REPORT.md`，与代码检出无关。
 
+企微/飞书里可以直接点名：「**清理 <需求名> 的 worktree**」。已结项需求的点名消息默认短路为「已结项」，但明确的 worktree 清理意图会放行到 G 执行 `prune-worktrees`（approve/spec_result 等服务端动作门禁仍然生效）。
+
 ### 主 spec 与基线继承
 
 - 域级主 spec 是需求的**沉淀产物**，放在需求根的父目录（`<域>/openspec/specs/`），随该目录的 git 仓库共享

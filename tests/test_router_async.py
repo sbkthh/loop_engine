@@ -137,6 +137,32 @@ def test_closed_requirement_fallback_not_hijacked(monkeypatch):
     assert "提交推送" in reply
 
 
+def test_closed_requirement_named_cleanup_reaches_llm(monkeypatch):
+    """Named worktree-cleanup intent on a CLOSED requirement bypasses the
+    canned reply (post-close maintenance); the command's own gates and the
+    action gates still enforce the freeze."""
+    from wecom_server import router
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("worktree 清理完成：src（本地分支保留）"))
+    fn = dispatch("清理 req 的 worktree", [_CLOSED_ENTRY], "/tmp", "u1")
+    assert fn.requirement == "req"
+    reply = fn()
+    assert "已结项" not in reply
+    assert "清理完成" in reply
+
+
+def test_closed_cleanup_intent_regex():
+    from wecom_server import router
+    for msg in ("清理 req 的 worktree", "删除工作树", "prune-worktrees req",
+                "worktree 清理一下"):
+        assert router._CLOSED_CLEANUP_RE.search(msg), msg
+    for msg in ("req 现在什么状态", "提交推送spec文件", "批准执行 req"):
+        assert not router._CLOSED_CLEANUP_RE.search(msg), msg
+
+
 def test_closed_requirement_blocks_mutating_actions():
     """Bedrock freeze: approve/run_spec/spec_result/adjudicate on a CLOSED
     requirement are rejected in _dispatch_json_action no matter how the

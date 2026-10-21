@@ -121,6 +121,14 @@ _LLM_SYSTEM_PROMPT = (
     "DO help with post-close ops: commit/push the main specs in the "
     "loop-work specs git repo (e.g. 提交推送spec文件), answer closure "
     "questions, and guide new requirements that build on the main specs.\n"
+    "- Worktree cleanup after closure: only when the user explicitly asks "
+    "to clean/prune worktrees (清理/删除 worktree). Run `loop_engine "
+    "prune-worktrees <name>` and relay its output verbatim. It self-gates "
+    "(requirement must be CLOSED; per project: clean checkout + HEAD "
+    "already merged into a remote mainline) and skips dirty/unmerged ones "
+    "— never run `git worktree remove --force`, never delete the "
+    "requirement root or branches. Only the checkout goes away; local "
+    "branches stay.\n"
     "\n"
     "User: __MESSAGE__\n"
 )
@@ -287,6 +295,15 @@ _GLOBAL_INTENT_RE = re.compile(
     r"总览|汇总|概览|一览|全局|整体|总体|所有需求|全部需求|每个需求|各需求|"
     r"需求状态|模块状态|所有模块|全部模块"
 )
+
+# Post-close maintenance intent: a message that names a CLOSED requirement
+# is normally short-circuited to _closed_reply, but explicit worktree
+# cleanup must still reach G (the command self-gates on CLOSED/clean/merged;
+# the action gates keep approve/spec_result frozen regardless).
+_CLOSED_CLEANUP_RE = re.compile(
+    r"(?:清理|删除|移除|prune|remove)[^\n]{0,20}(?:worktree|work\s*tree|工作树)"
+    r"|(?:worktree|work\s*tree|工作树)[^\n]{0,20}(?:清理|删除|移除|prune|remove)",
+    re.IGNORECASE)
 
 
 def _detect_requirement(message, registry):
@@ -1315,7 +1332,10 @@ def dispatch(message, registry, data_dir, user_id="default"):
                       if r.get("name") == fn.requirement), None)
         if entry and entry.get("status") == "CLOSED":
             # hard short-circuit before any LLM turn or JSON action: a closed
-            # requirement must not accept approve/spec_result traffic
-            fn = lambda e=entry: _closed_reply(e)
-            fn.requirement = entry["name"]
+            # requirement must not accept approve/spec_result traffic.
+            # Exception: explicit worktree-cleanup intent still reaches G
+            # (post-close maintenance); action gates keep the freeze.
+            if not _CLOSED_CLEANUP_RE.search(message):
+                fn = lambda e=entry: _closed_reply(e)
+                fn.requirement = entry["name"]
     return fn

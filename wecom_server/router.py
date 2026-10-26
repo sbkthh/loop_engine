@@ -1297,6 +1297,18 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
         reply = f"【{requirement}】\n{reply}"
     payloads = _json_action_payloads(reply)
     if payloads:
+        # Same-turn registration: G may run `requirement-add` during this
+        # turn, so the registry snapshot taken at message receipt predates
+        # the new requirement. Resolve actions against a fresh registry when
+        # one names a requirement the snapshot doesn't know — otherwise every
+        # spec_result answers 没有找到需求.
+        unknown = {p.get("requirement") for p in payloads
+                   if p.get("requirement")} - {r.get("name") for r in registry}
+        if unknown:
+            import registry as _registry
+            fresh = _registry.list_requirements()
+            if {r.get("name") for r in fresh} & unknown:
+                registry = fresh
         body = _JSON_ACTION_RE.sub("", reply).strip()
         results = []
         for payload in payloads:

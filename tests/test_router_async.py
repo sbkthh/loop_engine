@@ -885,6 +885,32 @@ def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):
     assert len(os.listdir(os.path.join(root, ".loop", "backup"))) == 1
 
 
+def test_spec_result_sees_same_turn_registration(monkeypatch, tmp_path):
+    """G registers a brand-new requirement via `requirement-add` during the
+    turn; the registry snapshot taken at message receipt predates it. The
+    action must resolve against a fresh registry, not answer 没有找到需求."""
+    from wecom_server import router
+    from state import StateManager
+    import registry as reg_mod
+
+    root, spec_path = _make_spec_root(tmp_path)
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+    monkeypatch.setattr(reg_mod, "list_requirements",
+                        lambda: [{"name": "req", "root": root}])
+
+    reply = ('__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"chg1/m1"}\n已完成')
+    out = router._process_llm_reply(reply, "根据prd生成spec", None, [],
+                                    str(tmp_path), "u1")
+
+    assert "没有找到需求" not in out
+    assert "已登记" in out
+    st = StateManager(root).load()
+    assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"
+
+
 def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
     from wecom_server import router
 

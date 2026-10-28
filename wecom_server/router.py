@@ -1319,6 +1319,31 @@ def _normalize_reply_prefix(reply, requirement, registry):
     return reply
 
 
+def _normalize_action_requirement(payload, registry):
+    """Map a change id (e.g. outbound-optimization-v1) or a <name>-* label
+    in payload['requirement'] to the registered requirement name. Unknown
+    values are left untouched so the not-found error still fires."""
+    req = payload.get("requirement")
+    if not req or any(r.get("name") == req for r in registry):
+        return payload
+    candidates = [r.get("name") for r in registry
+                  if r.get("name") and req.startswith(r["name"] + "-")]
+    if candidates:
+        return {**payload, "requirement": max(candidates, key=len)}
+    for r in registry:
+        root = r.get("root")
+        if not root:
+            continue
+        try:
+            with open(os.path.join(root, ".loop", "state.json")) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if req in {k.split("/", 1)[0] for k in st.get("modules", {})}:
+            return {**payload, "requirement": r["name"]}
+    return payload
+
+
 def _process_llm_reply(reply, message, requirement, registry, data_dir,
                        user_id):
     """Parse and execute a G reply: __JSON_ACTION__ block wins over legacy
@@ -1340,6 +1365,8 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
             fresh = _registry.list_requirements()
             if {r.get("name") for r in fresh} & unknown:
                 registry = fresh
+        payloads = [_normalize_action_requirement(p, registry)
+                    for p in payloads]
         body = _JSON_ACTION_RE.sub("", reply).strip()
         results = []
         for payload in payloads:

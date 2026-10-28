@@ -504,6 +504,50 @@ def test_approve_prefix_executes(monkeypatch):
     assert calls["entries"][0]["requirement"] == "req"
 
 
+def test_approve_action_with_change_id_resolves_to_requirement(
+        monkeypatch, tmp_path):
+    """G sometimes emits the change id as the requirement
+    (outbound-optimization-v1). The action must resolve it to the registered
+    name instead of answering 没有找到需求 (real 2026-10-28 飞书 case)."""
+    from wecom_server import router
+    import scheduler
+
+    root, _ = _make_spec_root(tmp_path)  # state has change id "chg1"
+    calls = {}
+    monkeypatch.setattr(scheduler, "approve",
+                        lambda name, approved_by=None:
+                        calls.__setitem__("approve", name) or 1)
+    monkeypatch.setattr(scheduler, "load_pending",
+                        lambda: {"pending": [{
+                            "requirement": "req", "trigger": "SPEC_CHANGED",
+                            "modules": [{"key": "chg1/m1",
+                                         "status": "PARTIAL"}]}]})
+    monkeypatch.setattr(scheduler, "load_config",
+                        lambda: {"max_concurrency": 2})
+    monkeypatch.setattr(scheduler, "dispatch",
+                        lambda entries, max_concurrency=2:
+                        calls.__setitem__("entries", entries) or ["req"])
+
+    reply = router._process_llm_reply(
+        '__JSON_ACTION__ {"action":"approve","requirement":"chg1"}\n已收到批准',
+        "批准执行", "req", [{"name": "req", "root": root}], "/tmp", "u1")
+
+    assert "没有找到需求" not in reply
+    assert calls["approve"] == "req"
+    assert calls["entries"][0]["requirement"] == "req"
+
+
+def test_normalize_action_requirement_prefix_and_unknown(tmp_path):
+    from wecom_server import router
+
+    reg = [{"name": "outbound-optimization", "root": str(tmp_path)}]
+    out = router._normalize_action_requirement(
+        {"requirement": "outbound-optimization-v1"}, reg)
+    assert out["requirement"] == "outbound-optimization"
+    out = router._normalize_action_requirement({"requirement": "ghost"}, reg)
+    assert out["requirement"] == "ghost"
+
+
 def test_approve_unknown_requirement(monkeypatch):
     from wecom_server import router
 

@@ -26,7 +26,9 @@ _LLM_SYSTEM_PROMPT = (
     "Answer concisely in Chinese. "
     "Every reply MUST start with '【<requirement name>】'; use 【通用】 "
     "for global/cross-requirement questions (总览、所有需求状态) and when "
-    "unknown. "
+    "unknown. The label is the REGISTERED requirement name (e.g. "
+    "outbound-optimization) — never the change id, module-key prefix, or "
+    "feature branch name (outbound-optimization-v1). "
     "Keep reply under 500 chars. "
     "Use only WeCom markdown: **bold**, > quote, "
     "<font color=\"info|comment|warning\">text</font>. "
@@ -1289,10 +1291,39 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                               data_dir, user_id)
 
 
+_REPLY_PREFIX_RE = re.compile(r"^【([^】]+)】")
+
+
+def _normalize_reply_prefix(reply, requirement, registry):
+    """Force the label to the registered requirement name when G uses the
+    change id (e.g. outbound-optimization-v1) instead. Aliases (战略备货)
+    and 【通用】 are left untouched."""
+    m = _REPLY_PREFIX_RE.match(reply)
+    if not m or not requirement:
+        return reply
+    label = m.group(1)
+    if label == requirement:
+        return reply
+    change_ids = set()
+    entry = next((r for r in registry if r.get("name") == requirement), None)
+    root = entry.get("root") if entry else None
+    if root:
+        try:
+            with open(os.path.join(root, ".loop", "state.json")) as f:
+                st = json.load(f)
+            change_ids = {k.split("/", 1)[0] for k in st.get("modules", {})}
+        except (OSError, ValueError):
+            pass
+    if label in change_ids or label.startswith(requirement + "-"):
+        return f"【{requirement}】" + reply[m.end():]
+    return reply
+
+
 def _process_llm_reply(reply, message, requirement, registry, data_dir,
                        user_id):
     """Parse and execute a G reply: __JSON_ACTION__ block wins over legacy
     prefixes; otherwise plain text passes through. Returns user-facing text."""
+    reply = _normalize_reply_prefix(reply, requirement, registry)
     if requirement and not reply.startswith(("__", "【")):
         reply = f"【{requirement}】\n{reply}"
     payloads = _json_action_payloads(reply)

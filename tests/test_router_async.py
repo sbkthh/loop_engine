@@ -911,6 +911,28 @@ def test_spec_result_sees_same_turn_registration(monkeypatch, tmp_path):
     assert st["modules"]["chg1/m1"]["status"] == "PARTIAL"
 
 
+def test_reply_prefix_normalizes_change_id_and_keeps_alias(tmp_path):
+    """G sometimes labels replies with the change id / branch suffix
+    (outbound-optimization-v1) instead of the registered requirement name.
+    Normalize known change ids and <name>-* labels; leave aliases alone."""
+    from wecom_server import router
+
+    root, _ = _make_spec_root(tmp_path)  # state has change id "chg1"
+    reg = [{"name": "req", "root": root}]
+
+    out = router._process_llm_reply("【chg1】已完成", "m", "req", reg,
+                                    "/tmp", "u1")
+    assert out.startswith("【req】") and "已完成" in out
+
+    out = router._process_llm_reply("【req-v2】已完成", "m", "req", reg,
+                                    "/tmp", "u1")
+    assert out.startswith("【req】")
+
+    out = router._process_llm_reply("【战略备货】已完成", "m", "req", reg,
+                                    "/tmp", "u1")
+    assert out.startswith("【战略备货】")
+
+
 def test_spec_result_unknown_requirement(monkeypatch, tmp_path):
     from wecom_server import router
 

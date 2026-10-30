@@ -428,8 +428,9 @@ def _clear_approval(name):
 def _last_user():
     """Most recently active bot user (written by the webhook servers).
 
-    Returns {"user": id, "platform": "wecom"|"feishu"}; platform defaults
-    to wecom for records written before multi-platform support.
+    Returns {"user": id, "platform": "wecom"|"feishu"|"aibot", "chatid",
+    "chattype"}; platform defaults to wecom for records written before
+    multi-platform support.
     """
     try:
         with open(os.path.join(DATA_DIR, "last_user.json")) as f:
@@ -471,6 +472,43 @@ def notify_text(message, user_id=None):
         except Exception as e:
             _log(f"notify: send failed: {e}")
             return False
+    if platform == "aibot":
+        config_path = os.path.join(DATA_DIR, "aibot.json")
+        if not os.path.exists(config_path):
+            return False
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+        except (OSError, ValueError):
+            return False
+        if not config.get("bot_id") or not config.get("secret"):
+            return False
+        chatid = info.get("chatid") or user_id
+        port = int(config.get("port", 5099))
+        conn = None
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request(
+                "POST", "/notify",
+                body=json.dumps({"chatid": chatid, "content": message},
+                                ensure_ascii=False).encode(),
+                headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            resp.read()
+            sent = 200 <= resp.status < 300
+            _log(f"notify: sent to aibot:{chatid}" if sent
+                 else f"notify: aibot send failed ({resp.status})")
+            return sent
+        except Exception as e:
+            _log(f"notify: aibot send failed: {e}")
+            return False
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
     config_path = os.path.join(DATA_DIR, "wecom.json")
     if not os.path.exists(config_path):
         return False

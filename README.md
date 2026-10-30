@@ -1019,6 +1019,61 @@ loop_engine feishu stop
 
 ---
 
+## 十点六、企微智能机器人长连接（aibot）
+
+`aibot_server/` 是第三种传输：企微**智能机器人 API 模式 + 长连接**，与飞书同构（本机主动出站 WSS），不需要公网地址、反向隧道或可信 IP。它和「十、WeCom 企业微信 Bot」的自建应用回调通道**并存**，互不影响。
+
+### 创建机器人
+
+企业微信客户端 → 工作台 → 智能机器人 → 创建 → **API 模式** → 连接方式选「**长连接**」，记录 `Bot ID` 和 `Secret`。
+
+### 配置与启动
+
+```bash
+loop_engine aibot config          # 交互写入 bot_id / secret / port
+loop_engine aibot config --show
+
+nohup loop_engine aibot start >> ~/.qoder/loop_engine/aibot.log 2>&1 &
+loop_engine aibot status
+loop_engine aibot stop
+```
+
+`~/.qoder/loop_engine/aibot.json`（写入后自动 `chmod 600`）：
+
+| 字段 | 说明 |
+|------|------|
+| `bot_id` | 机器人 Bot ID（必填） |
+| `secret` | 机器人 Secret（必填，明文仅靠 0600 保护，切勿入库） |
+| `port` | 本机回环控制端口，默认 `5099`（启停/通知走这里，必须单实例） |
+| `receipt_enabled` | 收到消息即回「已收到，正在处理…」，缺省开 |
+
+依赖：`websockets`（`pip install websockets`，本机已随环境安装）。
+
+### 单聊与群聊
+
+| 场景 | 触发 | 会话上下文 | 动作权限 |
+|------|------|------------|----------|
+| 单聊 | 直接发消息 | 按用户独立 | 全部动作（批准/执行/结项等） |
+| 群聊 | **@机器人** | 按群共享 | **只读**：仅 `history` / `gray_list` / `score_view` |
+
+群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
+
+v1 只处理文本与富文本中的文字；图片/语音/文件回复「暂不支持」。
+
+### 通知
+
+调度器通知按 `last_user.json` 的 `platform=aibot` 路由到**最后交互的会话**：群里触发回群（`chatid`），单聊触发回单聊（`chatid=userid`）。守护进程未运行或控制端口不可达时通知静默失败并记日志。
+
+### 与自建应用回调的差异
+
+- 凭证只有 Bot ID + Secret，不需要 CorpID/AgentID/Token/EncodingAESKey
+- 无公网回调，无 XML/AES 解密；消息是 JSON 帧
+- 回复必须带原回调 `req_id`（文本用 `stream` + `finish=true`）；异步结果用 `aibot_send_msg` 主动推送
+- 同一 Bot ID 只能一条活跃连接：在另一台机器启动会踢掉本机，因此控制端口兼作单实例锁
+- 订阅有频率保护：短时间断连会退避 60s，避免反复 `aibot_subscribe`
+
+---
+
 ## 十一、架构说明
 
 ### 进程调用关系
@@ -1127,10 +1182,14 @@ loop_engine feishu stop
 │   ├── wecom_api.py            # 企业微信 API（推送/下载）
 │   ├── crypto.py               # 回调消息加解密
 │   ├── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子（守卫逻辑唯一的一份，两后端共用）
+│   ├── hooks/readonly_guard.sh # 群聊只读工具门禁（阻止变更命令与 Edit/Write）
 │   └── hooks/pi_audit_bridge.ts # pi 侧适配器：tool_call → 上面这个钩子的 stdin 契约（-e 加载）
 ├── feishu_server/              # 飞书机器人（与 WeCom 平行，复用 router.dispatch）
 │   ├── server.py               # WebSocket 长连接（官方 SDK）+ 去重 + 串行队列
 │   └── feishu_api.py           # 飞书 API（app_access_token/推送）
+├── aibot_server/               # 企微智能机器人长连接（复用 router.dispatch）
+│   ├── server.py               # WSS 订阅/心跳/重连 + 会话队列 + 回环控制端口
+│   └── aibot_api.py            # 协议帧、文本提取、@mention 清洗、分段
 └── tests/
     ├── test_machine.py         ├── test_state.py
     ├── test_parser.py          ├── test_directives.py
@@ -1146,6 +1205,10 @@ loop_engine feishu stop
     ├── test_hermeticity.py     ├── conftest.py
     ├── test_close.py           # 需求结项（close 门禁 / 主spec 同步 / 归档）
     ├── test_prune_worktrees.py # 结项后 worktree 清理（干净+已合入门禁）
+    ├── test_aibot_api.py       # aibot 协议帧/文本提取/分段
+    ├── test_aibot_server.py    # aibot 去重/队列/ack/推送/控制端口
+    ├── test_router_aibot.py    # 会话隔离 + 群聊只读动作
+    ├── test_scheduler_aibot.py # 通知走 aibot 回环端口
     └── test_pi_e2e.py          # 真实 pi + Maven，默认不跑（opt-in）
 
 ~/.qoder/loop_engine/           # 数据目录（仅数据，无代码）；LOOP_ENGINE_DATA_DIR 可整体搬到别处

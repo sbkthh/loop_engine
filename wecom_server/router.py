@@ -144,6 +144,11 @@ _LLM_SYSTEM_PROMPT = (
 _AUDIT_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "hooks", "audit_hook.sh")
 
+# Group chats are read-only; this hook is injected only for those turns and
+# blocks mutating loop_engine commands plus any Edit/Write.
+_READONLY_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "hooks", "readonly_guard.sh")
+
 # 用户级 MR 目标分支守卫（同一文件也注册在 ~/.qoder/settings.json 的用户
 # 级 hooks 里）。git push -o merge_request.create 不带 target 会走服务端
 # 默认分支 master（2026-10-14 真实事故）。这里随 --settings 一起注入，
@@ -203,7 +208,7 @@ def _cached_modules(root):
     return modules
 
 
-def _audit_settings():
+def _audit_settings(readonly=False):
     """Per-invocation settings auditing sensitive tool calls.
 
     Injected via --settings so only WeCom-spawned sessions carry the hook;
@@ -234,6 +239,11 @@ def _audit_settings():
             "hooks": [{"type": "command",
                        "command": f"bash {_MR_GUARD_HOOK}"}],
         })
+    if readonly and os.path.exists(_READONLY_HOOK):
+        pre_tool.append({
+            "matcher": "Bash|Edit|Write",
+            "hooks": [{"type": "command", "command": _READONLY_HOOK}],
+        })
     return json.dumps({"hooks": {"PreToolUse": pre_tool}})
 
 
@@ -253,7 +263,7 @@ def _agent_cli():
 _audit_gap_warned = False
 
 
-def _chat_audit_settings():
+def _chat_audit_settings(readonly=False):
     """--settings payload carrying the audit hook, or None when the backend
     delivers that same hook another way (pi: -e audit bridge, already on the
     argv) or cannot deliver it at all — in which case the correction loop has
@@ -262,7 +272,7 @@ def _chat_audit_settings():
     cli = _agent_cli()
     mode = cli.chat_audit_mode()
     if mode == "settings":
-        return _audit_settings()
+        return _audit_settings(readonly)
     if not _audit_gap_warned and mode == "":
         _audit_gap_warned = True
         logger.warning(
@@ -276,15 +286,23 @@ def _chat_audit_settings():
 _SESSION_DIR = os.path.join(DATA_DIR, "sessions")
 
 
-def _get_session_id(user_id, requirement="global"):
-    """Get or create a stable agent-CLI session ID per WeCom user and
+def _safe_key(value):
+    """Filesystem-safe scope/key. Group chatids are opaque strings."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value or "")
+
+
+def _get_session_id(user_id, requirement="global", session_key=None):
+    """Get or create a stable agent-CLI session ID per conversation and
     requirement. Sessions are split per requirement so conversations
-    about different requirements never share context.
+    about different requirements never share context. session_key lets a
+    transport namespace the conversation (e.g. aibot group chatid) while
+    user_id keeps identifying the human for approvals.
     Returns (session_id, is_new) where is_new=True means first-time use.
     """
     os.makedirs(_SESSION_DIR, exist_ok=True)
-    safe = requirement.replace("/", "_").replace(":", "_").replace(" ", "_")
-    path = os.path.join(_SESSION_DIR, f"{user_id}__{safe}.txt")
+    scope = _safe_key(session_key or user_id)
+    safe = _safe_key(requirement)
+    path = os.path.join(_SESSION_DIR, f"{scope}__{safe}.txt")
     if os.path.exists(path):
         with open(path) as f:
             return f.read().strip(), False
@@ -973,11 +991,24 @@ def _user_intends_approve(message):
 
 _CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "spec_result", "adjudicate"}
 
+# Group chats are read-only: only these JSON actions may run there.
+_GROUP_READONLY_ACTIONS = frozenset({"history", "gray_list", "score_view"})
 
-def _dispatch_json_action(payload, registry, data_dir, user_id):
+_READONLY_NOTE = (
+    "\n\n当前是群聊只读模式：禁止执行 close / prune-worktrees / approve / "
+    "run_spec / spec_result / adjudicate，禁止编辑 spec 或代码；只回答问题和"
+    "查看状态。需要变更时请用户到单聊操作。\n"
+)
+
+
+def _dispatch_json_action(payload, registry, data_dir, user_id,
+                          allowed_actions=None):
     """Dispatch a __JSON_ACTION__ payload. Returns reply text, or an
     error message for unknown actions / missing parameters."""
     action = payload.get("action")
+    if allowed_actions is not None and action not in allowed_actions:
+        return (f"群聊只读：动作 {action or '(空)'} 只能在单聊触发。"
+                f"群内可用：history / gray_list / score_view。")
     if action in _CLOSED_BLOCKED_ACTIONS:
         name = payload.get("requirement")
         entry = next((r for r in registry if r.get("name") == name), None) \
@@ -1053,23 +1084,24 @@ def _llm_lock(requirement):
 # name (users are told to), so deterministic routing re-seeds it.
 # ponytail: 全进程内存 dict，不做磁盘持久化；重启后靠首条带名消息重建
 _RECENT_WINDOW = 1800  # 30 min covers a grill-me round-trip
-_recent_activity = {}  # (user_id, requirement) -> last-active timestamp
+_recent_activity = {}  # (scope, requirement) -> last-active timestamp
 _recent_guard = threading.Lock()
 
 
-def _touch_recent(user_id, requirement):
+def _touch_recent(user_id, requirement, session_key=None):
     if not requirement:
         return
     with _recent_guard:
-        _recent_activity[(user_id, requirement)] = time.time()
+        _recent_activity[(session_key or user_id, requirement)] = time.time()
 
 
-def _recent_requirement(user_id):
+def _recent_requirement(user_id, session_key=None):
     now = time.time()
+    scope = session_key or user_id
     with _recent_guard:
         candidates = [
             (ts, req) for (uid, req), ts in _recent_activity.items()
-            if uid == user_id and now - ts < _RECENT_WINDOW
+            if uid == scope and now - ts < _RECENT_WINDOW
         ]
     if not candidates:
         return None
@@ -1209,8 +1241,11 @@ def _closed_reply(entry):
             f"开新需求。如确需恢复，请管理员在注册表将 status 改回后重试。")
 
 
-def _llm_dispatch(message, registry, data_dir, user_id):
-    """Background LLM direct response with per-user/per-requirement session."""
+def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
+                  allowed_actions=None):
+    """Background LLM direct response with per-conversation/per-requirement
+    session. user_id identifies the human (approval attribution); session_key
+    identifies the conversation (aibot group chatid vs single user)."""
     requirement = _detect_requirement(message, registry)
     if not requirement and not _GLOBAL_INTENT_RE.search(message):
         # no keyword hit — try the most recently active requirement session
@@ -1222,10 +1257,18 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         # (e.g. 提交推送spec文件 right after closing) must still reach G —
         # committing the main specs is a legitimate post-close op. The freeze
         # lives at the action gate (_dispatch_json_action), not at routing.
-        requirement = _recent_requirement(user_id) \
-            or _classify_requirement(message, registry)
-    _touch_recent(user_id, requirement)
-    session_id, is_new = _get_session_id(user_id, requirement or "global")
+        if session_key:
+            requirement = _recent_requirement(user_id, session_key)
+        else:
+            requirement = _recent_requirement(user_id)
+        requirement = requirement or _classify_requirement(message, registry)
+    if session_key:
+        _touch_recent(user_id, requirement, session_key)
+        session_id, is_new = _get_session_id(user_id, requirement or "global",
+                                             session_key)
+    else:
+        _touch_recent(user_id, requirement)
+        session_id, is_new = _get_session_id(user_id, requirement or "global")
     prompt = _LLM_SYSTEM_PROMPT.replace("__SKILLS_DIR__", _agent_cli().asset_dirs()[0])
     prompt = prompt.replace("__MESSAGE__", message, 1)
     # Shared fact layer: real-time state injected into every session so
@@ -1244,8 +1287,10 @@ def _llm_dispatch(message, registry, data_dir, user_id):
                     f"- {root}/.loop/context.json —— 环境上下文（数据库/Nacos/网关；setup 时可选写入，存在则被注入到每步指令）\n"
                     f"- {os.path.join(DATA_DIR, 'requirements.json')} —— 全局需求注册表"
                 )
+    if allowed_actions is not None:
+        prompt += _READONLY_NOTE
     # first message creates session, subsequent messages resume it
-    settings = _chat_audit_settings()
+    settings = _chat_audit_settings(readonly=allowed_actions is not None)
     with _llm_lock(requirement or "global"):
         try:
             reply = _run_llm_turn(session_id, is_new, prompt, settings)
@@ -1266,7 +1311,10 @@ def _llm_dispatch(message, registry, data_dir, user_id):
     # spec changes. Give up after a few rounds so a stubborn G can't hang
     # the reply; its last action then goes through the normal dispatch.
     rounds = 0
-    missing = _unregistered_edits(session_id, reply)
+    # Read-only sessions cannot register a spec edit, so re-driving G for a
+    # missing spec_result would only burn turns and loop.
+    missing = (set() if allowed_actions is not None
+               else _unregistered_edits(session_id, reply))
     while rounds < _CORRECTION_MAX_ROUNDS and missing:
         correction = _spec_correction_prompt(session_id)
         if not correction:
@@ -1293,7 +1341,7 @@ def _llm_dispatch(message, registry, data_dir, user_id):
         rounds += 1
         missing = _unregistered_edits(session_id, reply)
     return _process_llm_reply(reply, message, requirement, registry,
-                              data_dir, user_id)
+                              data_dir, user_id, allowed_actions)
 
 
 _REPLY_PREFIX_RE = re.compile(r"^【([^】]+)】")
@@ -1350,7 +1398,7 @@ def _normalize_action_requirement(payload, registry):
 
 
 def _process_llm_reply(reply, message, requirement, registry, data_dir,
-                       user_id):
+                       user_id, allowed_actions=None):
     """Parse and execute a G reply: __JSON_ACTION__ block wins over legacy
     prefixes; otherwise plain text passes through. Returns user-facing text."""
     reply = _normalize_reply_prefix(reply, requirement, registry)
@@ -1380,9 +1428,12 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
                 results.append(
                     f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
                     f"如需执行，请本人回复：批准执行 {name}")
+            elif allowed_actions is None:
+                results.append(_dispatch_json_action(
+                    payload, registry, data_dir, user_id))
             else:
-                results.append(_dispatch_json_action(payload, registry,
-                                                     data_dir, user_id))
+                results.append(_dispatch_json_action(
+                    payload, registry, data_dir, user_id, allowed_actions))
         result = "\n\n".join(r for r in results if r)
         if not body:
             return result
@@ -1392,15 +1443,21 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
     return reply
 
 
-def dispatch(message, registry, data_dir, user_id="default"):
+def dispatch(message, registry, data_dir, user_id="default",
+             session_key=None, allowed_actions=None):
     """Classify and dispatch to the right handler.
 
     Returns Callable[[], str] for async (return "success" immediately,
     push result via WeCom API in background). The callable carries the
     deterministically detected requirement so the server can queue messages
     per requirement (serial within, parallel across).
+
+    session_key namespaces the LLM session per conversation (defaults to
+    user_id). allowed_actions, when set, hard-limits __JSON_ACTION__ to that
+    set (aibot group chats pass the read-only actions).
     """
-    fn = lambda: _llm_dispatch(message, registry, data_dir, user_id)
+    fn = lambda: _llm_dispatch(message, registry, data_dir, user_id,
+                               session_key, allowed_actions)
     fn.requirement = _detect_requirement(message, registry)
     if fn.requirement:
         entry = next((r for r in registry

@@ -957,6 +957,122 @@ def cmd_feishu_config(args):
         print("No values entered, config not saved.")
 
 
+def _aibot_config_path():
+    return os.path.join(DATA_DIR, "aibot.json")
+
+
+def _aibot_port():
+    try:
+        with open(_aibot_config_path()) as f:
+            return int(json.load(f).get("port", 5099))
+    except (OSError, ValueError, TypeError):
+        return 5099
+
+
+def _write_aibot_config(config):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = _aibot_config_path()
+    with open(path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    os.chmod(path, 0o600)
+
+
+def cmd_aibot_config(args):
+    config_path = _aibot_config_path()
+    if args.show:
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                print(f.read())
+        else:
+            print("Not configured.")
+        return
+    if args.set:
+        parts = args.set.split("=", 1)
+        if len(parts) != 2:
+            print("Usage: --set key=value")
+            sys.exit(1)
+        config = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                config = json.load(f)
+        config[parts[0]] = parts[1]
+        _write_aibot_config(config)
+        print(f"Set {parts[0]} = {parts[1]}")
+        return
+    print("Enter aibot configuration (press Enter to skip):")
+    config = {}
+    for key in ["bot_id", "secret", "port"]:
+        val = input(f"  {key}: ").strip()
+        if val:
+            config[key] = val
+    config.setdefault("port", "5099")
+    config.setdefault("receipt_enabled", True)
+    _write_aibot_config(config)
+    print(f"Saved to {config_path}")
+
+
+def cmd_aibot_start(args):
+    config_path = _aibot_config_path()
+    if not os.path.exists(config_path):
+        print("aibot not configured. Run 'loop_engine aibot config' first.")
+        sys.exit(1)
+    with open(config_path) as f:
+        config = json.load(f)
+    if not config.get("bot_id") or not config.get("secret"):
+        print("aibot.json missing bot_id/secret. "
+              "Run 'loop_engine aibot config' first.")
+        sys.exit(1)
+    print(f"Starting aibot long connection (control port {_aibot_port()})...")
+    from aibot_server.server import start
+    start()
+
+
+def _aibot_health(timeout=2):
+    import http.client
+    conn = None
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", _aibot_port(),
+                                          timeout=timeout)
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        data = json.loads(resp.read() or b"{}")
+        return data if resp.status == 200 else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def cmd_aibot_stop(args):
+    import http.client
+    port = _aibot_port()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("POST", "/shutdown", body=b"{}",
+                     headers={"Content-Type": "application/json"})
+        conn.getresponse().read()
+        conn.close()
+    except OSError:
+        print("aibot is not running.")
+        return
+    for _ in range(10):
+        time.sleep(0.5)
+        if not _aibot_health(timeout=1):
+            print("aibot stopped.")
+            return
+    print("aibot stop requested, but it is still responding.")
+
+
+def cmd_aibot_status(args):
+    data = _aibot_health()
+    if data:
+        print(f"aibot is running (bot_id={data.get('bot_id', '?')}, "
+              f"connected={data.get('connected')})")
+    else:
+        print("aibot is not running.")
+
+
 def cmd_scope_audit(args):
     scope_audit.cmd_scope_audit(args)
 
@@ -1184,6 +1300,23 @@ def main():
     fs.add_argument("--show", action="store_true", help="Show current config")
     fs.add_argument("--set", help="Set a config value (key=value)")
     fs.set_defaults(func=cmd_feishu_config)
+
+    p = sub.add_parser("aibot", help="WeCom 智能机器人 integration (long connection)")
+    asub = p.add_subparsers(dest="aibot_command", required=True)
+
+    a = asub.add_parser("start", help="Start bot (WebSocket long connection)")
+    a.set_defaults(func=cmd_aibot_start)
+
+    a = asub.add_parser("stop", help="Stop bot")
+    a.set_defaults(func=cmd_aibot_stop)
+
+    a = asub.add_parser("status", help="Check bot status")
+    a.set_defaults(func=cmd_aibot_status)
+
+    a = asub.add_parser("config", help="Configure aibot settings")
+    a.add_argument("--show", action="store_true", help="Show current config")
+    a.add_argument("--set", help="Set a config value (key=value)")
+    a.set_defaults(func=cmd_aibot_config)
 
     p = sub.add_parser("self-install", help="Install skill and verify setup")
     p.set_defaults(func=cmd_self_install)

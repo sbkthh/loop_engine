@@ -35,6 +35,8 @@ def test_system_prompt_has_prd_bootstrap_rules():
 
     assert "requirement-register" in router._LLM_SYSTEM_PROMPT
     assert "spec-session" in router._LLM_SYSTEM_PROMPT
+    assert "troubleshoot/SKILL.md" in router._LLM_SYSTEM_PROMPT, \
+        "G must route runtime troubleshooting to the troubleshoot skill"
     assert "manual-loop" not in router._LLM_SYSTEM_PROMPT, \
         "manual-loop skill deprecated, prompt should not reference it"
     assert "__JSON_ACTION__" in router._LLM_SYSTEM_PROMPT

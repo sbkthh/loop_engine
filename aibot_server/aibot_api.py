@@ -5,6 +5,7 @@ protocol testable without a socket.
 """
 import re
 import time
+from urllib.parse import parse_qs, urlparse
 
 from wecom_server.wecom_api import sanitize_markdown, split_segments
 
@@ -118,3 +119,45 @@ def extract_quote(body):
         name = (quote.get("file") or {}).get("name") or ""
         return f"[引用文件: {name}]" if name else "[引用文件]"
     return ""
+
+
+def _media_item(item):
+    if not isinstance(item, dict):
+        return None
+    kind = item.get("msgtype") or item.get("type")
+    if kind not in ("image", "file"):
+        return None
+    content = item.get(kind) or {}
+    url = (content.get("url") or "").strip()
+    if not url:
+        return None
+    aeskey = (content.get("aeskey") or content.get("aes_key") or "").strip()
+    if not aeskey:
+        # Some frames put the key on the download URL instead of the body.
+        query = parse_qs(urlparse(url).query)
+        aeskey = (query.get("aeskey") or query.get("aes_key") or [""])[0]
+    return {"kind": kind, "url": url, "aeskey": aeskey}
+
+
+def extract_media(body):
+    """Downloadable attachments in this message (images/files), or [].
+
+    Quoted attachments are deliberately excluded: v1 only handles media the
+    user sent in the current message.
+    """
+    if not isinstance(body, dict):
+        return []
+    msgtype = body.get("msgtype")
+    if msgtype in ("image", "file"):
+        item = _media_item({"msgtype": msgtype, msgtype: body.get(msgtype)})
+        return [item] if item else []
+    if msgtype == "mixed":
+        mixed = body.get("mixed") or {}
+        items = mixed.get("msg_item") or mixed.get("items") or []
+        found = []
+        for item in items:
+            media = _media_item(item)
+            if media:
+                found.append(media)
+        return found
+    return []

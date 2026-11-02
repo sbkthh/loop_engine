@@ -111,7 +111,7 @@ def test_duplicate_msgid_dispatched_once(env):
 
 def test_unsupported_message_type_replies_without_dispatch(env):
     server, calls, _, _ = env
-    _run(server, _callback(msgtype="image"))
+    _run(server, _callback(msgtype="voice"))
 
     assert calls["count"] == 0
     assert server._ws.sent
@@ -202,6 +202,112 @@ def test_group_quote_with_only_mention_still_dispatches(env):
     _run(server, frame)
 
     assert "被引用的内容" in calls["message"]
+
+
+def test_image_message_dispatches_with_media_fragment(env, monkeypatch):
+    server, calls, _, _ = env
+    server.CONFIG["receipt_enabled"] = True
+    monkeypatch.setattr(
+        server, "prepare_media",
+        lambda item, msgid: f"[图片] {item['kind']} {msgid}")
+    frame = _callback(msgid="img1", msgtype="image")
+    frame["body"]["image"] = {"url": "https://x/a.png", "aeskey": "k"}
+    _run(server, frame, wait=0.3)
+
+    assert "[图片] image img1" in calls["message"]
+    frames = server._ws.sent
+    assert frames[0]["body"]["stream"]["id"] == "ack_img1"
+    assert frames[-1]["cmd"] == "aibot_send_msg"
+
+
+def test_file_message_dispatches_with_media_fragment(env, monkeypatch):
+    server, calls, _, _ = env
+    monkeypatch.setattr(
+        server, "prepare_media",
+        lambda item, msgid: f"[文件] {item['kind']} {msgid}")
+    frame = _callback(msgid="file1", msgtype="file")
+    frame["body"]["file"] = {"url": "https://x/a.txt", "aeskey": "k"}
+    _run(server, frame)
+
+    assert "[文件] file file1" in calls["message"]
+
+
+def test_mixed_text_and_image_are_combined(env, monkeypatch):
+    server, calls, _, _ = env
+    monkeypatch.setattr(
+        server, "prepare_media",
+        lambda item, msgid: f"[图片] {msgid}")
+    frame = _callback(msgid="mix1", msgtype="mixed")
+    frame["body"]["mixed"] = {"msg_item": [
+        {"msgtype": "text", "text": {"content": "看看这个"}},
+        {"msgtype": "image", "image": {"url": "https://x/a.png"}},
+    ]}
+    _run(server, frame)
+
+    assert "看看这个" in calls["message"]
+    assert "[图片] mix1" in calls["message"]
+
+
+def test_group_image_without_text_is_dispatched_readonly(env, monkeypatch):
+    server, calls, _, _ = env
+    monkeypatch.setattr(
+        server, "prepare_media",
+        lambda item, msgid: f"[图片] {msgid}")
+    frame = _callback(msgid="img2", kind="group", chatid="wr1",
+                      userid="bob", msgtype="image",
+                      content="@机器人\u2005")
+    frame["body"]["image"] = {"url": "https://x/a.png"}
+    _run(server, frame)
+
+    assert calls["count"] == 1
+    assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
+    assert "[图片] img2" in calls["message"]
+
+
+def test_media_failure_pushes_error_and_skips_dispatch(env, monkeypatch):
+    server, calls, _, _ = env
+
+    def boom(item, msgid):
+        raise ValueError("附件解密失败")
+
+    monkeypatch.setattr(server, "prepare_media", boom)
+    frame = _callback(msgid="img3", msgtype="image")
+    frame["body"]["image"] = {"url": "https://x/a.png"}
+    _run(server, frame)
+
+    assert calls["count"] == 0
+    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
+    assert pushed and "附件处理失败" in pushed[-1]["body"]["markdown"]["content"]
+
+
+def test_image_message_uses_real_media_pipeline(env, monkeypatch):
+    """Server -> media -> filesystem integration (download faked only)."""
+    import base64
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from aibot_server import media
+
+    server, calls, _, tmp_path = env
+    key = bytes(range(32))
+    plain = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    pad = 32 - len(plain) % 32
+    padded = plain + bytes([pad]) * pad
+    enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    encrypted = enc.update(padded) + enc.finalize()
+
+    monkeypatch.setattr(media, "MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setattr(
+        media, "download",
+        lambda url, max_bytes=media.MAX_BYTES:
+        (encrypted, {"Content-Disposition": 'filename="shot.png"'}))
+    frame = _callback(msgid="imgreal", msgtype="image")
+    frame["body"]["image"] = {
+        "url": "https://x/a", "aeskey": base64.b64encode(key).decode()}
+    _run(server, frame, wait=0.3)
+
+    assert "图片已保存到：" in calls["message"]
+    path = calls["message"].split("图片已保存到：", 1)[1].splitlines()[0]
+    assert path.startswith(str(tmp_path))
+    assert open(path, "rb").read() == plain
 
 
 def test_subscribe_error_detected_without_cmd():

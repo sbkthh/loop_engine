@@ -16,11 +16,13 @@ import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 from constants import DATA_DIR as _DEFAULT_DATA_DIR
 
 from .aibot_api import (
     WS_URL,
+    extract_media,
     extract_quote,
     extract_text,
     ping_frame,
@@ -30,6 +32,8 @@ from .aibot_api import (
     strip_mentions,
     subscribe_frame,
 )
+from . import media as media_mod
+from .media import prepare_media
 
 logger = logging.getLogger("aibot")
 
@@ -207,7 +211,7 @@ async def _handle_frame(frame):
     msgtype = body.get("msgtype")
     if msgtype == "event":
         return
-    if msgtype not in ("text", "mixed"):
+    if msgtype not in ("text", "mixed", "image", "file"):
         try:
             await _reply(req_id, f"unsup_{msgid}",
                          "暂不支持该消息类型，请发送文字。")
@@ -215,11 +219,9 @@ async def _handle_frame(frame):
             logger.error("[aibot] unsupported reply failed: %s", e)
         return
     text = strip_mentions(extract_text(body))
+    media_items = extract_media(body)
     quote = extract_quote(body)
-    if quote:
-        text = (f"[引用消息]\n{quote}\n\n[当前消息]\n{text}"
-                if text else f"[引用消息]\n{quote}")
-    if not text:
+    if not text and not media_items and not quote:
         if kind == "single":
             try:
                 await _reply(req_id, f"empty_{msgid}",
@@ -229,7 +231,6 @@ async def _handle_frame(frame):
         return
     _remember_user(chatid, kind, userid)
     allowed = None if kind == "single" else GROUP_READONLY_ACTIONS
-    fn = _build_job(text, userid, _session_key(kind, chatid), allowed)
     receipt = CONFIG.get("receipt_enabled", True)
     if isinstance(receipt, str):
         receipt = receipt.strip().lower() not in ("0", "false", "no", "off")
@@ -238,6 +239,31 @@ async def _handle_frame(frame):
             await _reply(req_id, f"ack_{msgid}", "已收到，正在处理…")
         except Exception as e:
             logger.error("[aibot] ack failed: %s", e)
+    fragments = []
+    if media_items:
+        try:
+            loop = asyncio.get_running_loop()
+            fragments = await loop.run_in_executor(
+                None,
+                lambda: [prepare_media(item, msgid) for item in media_items])
+        except Exception as e:
+            first = media_items[0] if media_items else {}
+            logger.error(
+                "[aibot] media failed: %s (kind=%s host=%s aeskey_len=%d)",
+                e, first.get("kind"),
+                urlparse(first.get("url") or "").hostname,
+                len(first.get("aeskey") or ""))
+            try:
+                await _send_markdown(chatid, "附件处理失败，请重发或改发文字。")
+            except Exception as send_err:
+                logger.error("[aibot] media error push failed: %s", send_err)
+            return
+    parts = ([text] if text else []) + fragments
+    current = "\n\n".join(parts)
+    if quote:
+        current = (f"[引用消息]\n{quote}\n\n[当前消息]\n{current}"
+                   if current else f"[引用消息]\n{quote}")
+    fn = _build_job(current, userid, _session_key(kind, chatid), allowed)
     await _enqueue(kind, chatid, fn)
 
 
@@ -402,6 +428,7 @@ def start(data_dir=None):
     global CONFIG, DATA_DIR
     if data_dir:
         DATA_DIR = data_dir
+        media_mod.MEDIA_DIR = os.path.join(DATA_DIR, "files", "aibot")
     CONFIG = load_config(DATA_DIR)
     if not CONFIG.get("bot_id") or not CONFIG.get("secret"):
         print("aibot.json missing bot_id/secret. "
@@ -411,6 +438,11 @@ def start(data_dir=None):
         import websockets  # noqa: F401
     except ImportError:
         print("websockets not installed. Run 'pip install websockets'.")
+        raise SystemExit(1)
+    try:
+        import cryptography  # noqa: F401
+    except ImportError:
+        print("cryptography not installed. Run 'pip install cryptography'.")
         raise SystemExit(1)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:

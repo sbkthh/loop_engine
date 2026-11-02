@@ -1047,7 +1047,7 @@ loop_engine aibot stop
 | `port` | 本机回环控制端口，默认 `5099`（启停/通知走这里，必须单实例） |
 | `receipt_enabled` | 收到消息即回「已收到，正在处理…」，缺省开 |
 
-依赖：`websockets`（`pip install websockets`，本机已随环境安装）。
+依赖：`websockets` + `cryptography`（`pip install websockets cryptography`，本机已随环境安装）。
 
 ### 单聊与群聊
 
@@ -1058,7 +1058,23 @@ loop_engine aibot stop
 
 群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
 
-v1 只处理文本与富文本中的文字；图片/语音/文件回复「暂不支持」。
+v1 支持文本、图文混排中的文字与图片、独立图片、文件；语音/视频仍回复「暂不支持」。
+
+### 图片与文件
+
+附件 URL 五分钟有效且加密。守护进程下载后按 SDK 同款算法解密（AES-256-CBC，`IV = aeskey 前 16 字节`，PKCS#7 按 32 字节去填充），保存到 `~/.qoder/loop_engine/files/aibot/`，再把路径注入 G 的输入：
+
+| 类型 | 处理 |
+|------|------|
+| 图片 | 保存原图，提示 G 用 `Read` 查看 |
+| txt / log / md / json / yaml / csv / xml / 代码等文本 | 保存原文件，提示 G 用 `Read` 读取 |
+| PDF | 保存原文件，提示 G 用 `Read` 读取 |
+| docx | 抽取 `word/document.xml` 文本后注入 |
+| xlsx | 优先 `openpyxl`，否则 stdlib 解析 `sharedStrings.xml` + sheet XML |
+| doc | 调用 macOS `textutil` 转文本 |
+| 其他二进制 | 保存原文件，提示 G 用 `Bash` 查看，禁止臆测 |
+
+限制：单个附件 ≤20MB、抽取文本 ≤5 万字符、附件保留 24 小时后自动清理。引用消息里的附件暂不下载（只保留占位符）。群聊仍为只读，图片/文件只是输入。
 
 ### 通知
 
@@ -1189,7 +1205,8 @@ v1 只处理文本与富文本中的文字；图片/语音/文件回复「暂不
 │   └── feishu_api.py           # 飞书 API（app_access_token/推送）
 ├── aibot_server/               # 企微智能机器人长连接（复用 router.dispatch）
 │   ├── server.py               # WSS 订阅/心跳/重连 + 会话队列 + 回环控制端口
-│   └── aibot_api.py            # 协议帧、文本提取、@mention 清洗、分段
+│   ├── aibot_api.py            # 协议帧、文本/附件提取、@mention 清洗、分段
+│   └── media.py                # 附件下载/AES 解密/落盘/docx/xlsx/doc 文本抽取
 └── tests/
     ├── test_machine.py         ├── test_state.py
     ├── test_parser.py          ├── test_directives.py
@@ -1205,8 +1222,9 @@ v1 只处理文本与富文本中的文字；图片/语音/文件回复「暂不
     ├── test_hermeticity.py     ├── conftest.py
     ├── test_close.py           # 需求结项（close 门禁 / 主spec 同步 / 归档）
     ├── test_prune_worktrees.py # 结项后 worktree 清理（干净+已合入门禁）
-    ├── test_aibot_api.py       # aibot 协议帧/文本提取/分段
-    ├── test_aibot_server.py    # aibot 去重/队列/ack/推送/控制端口
+    ├── test_aibot_api.py       # aibot 协议帧/文本与附件提取/分段
+    ├── test_aibot_server.py    # aibot 去重/队列/ack/推送/图片文件/控制端口
+    ├── test_aibot_media.py     # 附件解密、文件名、docx/xlsx 抽取、清理
     ├── test_router_aibot.py    # 会话隔离 + 群聊只读动作
     ├── test_scheduler_aibot.py # 通知走 aibot 回环端口
     └── test_pi_e2e.py          # 真实 pi + Maven，默认不跑（opt-in）

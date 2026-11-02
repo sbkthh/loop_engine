@@ -426,11 +426,11 @@ def _clear_approval(name):
 
 
 def _last_user():
-    """Most recently active bot user (written by the webhook servers).
+    """Most recently active bot user (written by the long-connection servers).
 
-    Returns {"user": id, "platform": "wecom"|"feishu"|"aibot", "chatid",
-    "chattype"}; platform defaults to wecom for records written before
-    multi-platform support.
+    Returns {"user": id, "platform": "feishu"|"aibot", "chatid", "chattype"}.
+    Legacy records without a platform are not deliverable anymore (the WeCom
+    callback transport was removed); they are skipped by notify_text.
     """
     try:
         with open(os.path.join(DATA_DIR, "last_user.json")) as f:
@@ -450,7 +450,7 @@ def notify_text(message, user_id=None):
     info = _last_user()
     if not user_id:
         user_id = info.get("user")
-    platform = info.get("platform", "wecom")
+    platform = info.get("platform") or ""
     if not user_id:
         _log("notify: no recipient user, skipped")
         return False
@@ -509,23 +509,8 @@ def notify_text(message, user_id=None):
                     conn.close()
                 except OSError:
                     pass
-    config_path = os.path.join(DATA_DIR, "wecom.json")
-    if not os.path.exists(config_path):
-        return False
-    with open(config_path) as f:
-        config = json.load(f)
-    if not config.get("corp_id") or not config.get("secret") or not config.get("agent_id"):
-        return False
-    try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from wecom_server.wecom_api import send_text
-        sent = send_text(user_id, message, config)
-        _log(f"notify: sent to {user_id}" if sent
-             else f"notify: send failed for {user_id}")
-        return sent
-    except Exception as e:
-        _log(f"notify: send failed: {e}")
-        return False
+    _log(f"notify: unknown platform {platform!r}, skipped")
+    return False
 
 
 _GRAY_REF_RE = re.compile(

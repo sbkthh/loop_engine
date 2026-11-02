@@ -2158,38 +2158,29 @@ class TestNotify(SchedulerBase):
 
     def test_notify_text_skips_without_recipient(self):
         scheduler.notify_text = self._notify_text_orig
-        wecom = os.path.join(self.tmp.name, "wecom.json")
-        with open(wecom, "w") as f:
-            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
-        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
-             mock.patch("wecom_server.wecom_api.send_text") as mock_send:
+        with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name):
             self.assertFalse(scheduler.notify_text("hello"))
-        mock_send.assert_not_called()
 
-    def test_notify_text_sends_to_last_user(self):
+    def test_notify_text_skips_legacy_wecom_record(self):
+        """Records written before platform support have no platform field;
+        the WeCom callback transport is gone, so they are not deliverable."""
         scheduler.notify_text = self._notify_text_orig
-        wecom = os.path.join(self.tmp.name, "wecom.json")
-        with open(wecom, "w") as f:
-            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
         with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
             json.dump({"user": "LiChuan"}, f)
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
-             mock.patch("wecom_server.wecom_api.send_text",
-                        return_value=True) as mock_send:
-            self.assertTrue(scheduler.notify_text("hello"))
-        mock_send.assert_called_once()
-        self.assertEqual(mock_send.call_args[0][0], "LiChuan")
-        self.assertEqual(mock_send.call_args[0][1], "hello")
+             mock.patch("feishu_server.feishu_api.send_text") as mock_send:
+            self.assertFalse(scheduler.notify_text("hello"))
+        mock_send.assert_not_called()
 
     def test_notify_text_explicit_user_overrides_last_user(self):
         scheduler.notify_text = self._notify_text_orig
-        wecom = os.path.join(self.tmp.name, "wecom.json")
-        with open(wecom, "w") as f:
-            json.dump({"corp_id": "c", "secret": "s", "agent_id": 1}, f)
+        feishu = os.path.join(self.tmp.name, "feishu.json")
+        with open(feishu, "w") as f:
+            json.dump({"app_id": "cli_a", "app_secret": "s"}, f)
         with open(os.path.join(self.tmp.name, "last_user.json"), "w") as f:
-            json.dump({"user": "SomeoneElse"}, f)
+            json.dump({"user": "SomeoneElse", "platform": "feishu"}, f)
         with mock.patch.object(scheduler, "DATA_DIR", self.tmp.name), \
-             mock.patch("wecom_server.wecom_api.send_text",
+             mock.patch("feishu_server.feishu_api.send_text",
                         return_value=True) as mock_send:
             self.assertTrue(scheduler.notify_text("hello", user_id="LiChuan"))
         self.assertEqual(mock_send.call_args[0][0], "LiChuan")

@@ -109,11 +109,11 @@ maker/checker 能直接用——见「Agent 后端与资产目录」里 frontmat
 | 入口 | 写法 | 为什么单独列 |
 |---|---|---|
 | crontab 轮询 / 会话清理 | `*/10 * * * * LOOP_ENGINE_AGENT_CLI=pi ~/.local/bin/loop_engine poll` | cron **不读 `~/.bashrc`**，在 profile 里 `export` 对它无效，env 必须写在命令前面 |
-| WeCom 守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine wecom start` | G 问答是它的子进程，env 从它继承 |
-| 飞书守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine feishu start` | 同上 |
+| 飞书守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine feishu start` | G 问答是它的子进程，env 从它继承 |
+| aibot 守护进程 | `LOOP_ENGINE_AGENT_CLI=pi loop_engine aibot start` | 同上 |
 | 手动 `run` / `next` | 同一 shell 里 `export`，或逐条前缀 | 手跑一次很容易忘了带 |
 
-**换后端要重启守护进程**：常驻的 wecom / feishu 进程带的是它启动那一刻的 env，改 env 不重启就是旧后端。
+**换后端要重启守护进程**：常驻的 feishu / aibot 进程带的是它启动那一刻的 env，改 env 不重启就是旧后端。
 `next` / `run` 由 cron 和 `dispatch` 每次 fork 新进程，改完即生效。重启守护进程是生产动作——先确认没有
 在飞步骤（`ps` 查 `loop_engine run`），并知道飞书那条 WS 长连接断开的几秒内**用户消息不补推**。
 
@@ -159,10 +159,6 @@ crontab -e
 
 > 用 pi 后端时这两行都要把 env 写在命令前面（`*/10 * * * * LOOP_ENGINE_AGENT_CLI=pi ~/.local/bin/loop_engine poll`），
 > cron 不读 `~/.bashrc`。见「换到 pi 后端安装」。
-
-### WeCom Bot（可选）
-
-需要微信交互时再配置，见「十、WeCom 企业微信 Bot」。
 
 ---
 
@@ -460,8 +456,8 @@ run 结束消息里 **BLOCKED 优先于 NEEDS_REFINEMENT**：只要有一个模�
 > **生效方式分两种**：`_score_gap_text` / `_no_advance_reason` 的改动随下一次
 > `loop_engine poll` 或 `run`（都 fork 新进程跑工作树源码）**立即生效**；
 > `score_view` 动作与 LLM 提示词改动在**常驻守护进程**里，需要
-> `loop_engine wecom start` 重启才生效。飞书侧复用同一个
-> `wecom_server.router.dispatch`，改一处两边同时生效。
+> `loop_engine aibot stop && loop_engine aibot start`（飞书同理）重启才生效。
+> 飞书与 aibot 复用同一个 `wecom_server.router.dispatch`，改一处两边同时生效。
 
 ### 最终门禁的超时预算
 
@@ -788,192 +784,9 @@ loop_engine prune-worktrees <name>
 
 ---
 
-## 十、WeCom 企业微信 Bot
+## 十、飞书接入
 
-WeCom bot 允许通过企业微信发送消息与 loop engine 交互。
-
-### 架构
-
-```
-用户发消息 → WeCom → POST /callback → 服务器解密 → 返回"success"
-  → 后台 qodercli 处理 → API 推送结果
-```
-
-所有消息走异步 LLM 路径：服务器立即返回 `"success"`（WeCom 不重试），后台调 qodercli 处理，完成后通过 API 推送结果。没有关键词匹配，LLM 处理全部意图；LLM 判定需要后端动作时，在回复末尾追加 `__JSON_ACTION__ {"action": ..., ...}` 动作块，服务器识别后进程内执行对应 handler（不经过二次 LLM）。
-
-### 可用命令
-
-- `查状态` / `总览` / `所有需求状态` — 查看所有需求状态。跨需求全局问题统一走 global 会话，回复前缀为 【通用】；消息带需求名/模块名时路由到对应需求会话（前缀【需求名】），无关键词的短应答自动回到最近会话
-- `批准执行` — 批准待执行的需求（有未裁决灰名单草稿时会被拒绝）
-- `注册需求`（发 PRD 路径 + 需求名/根目录/change-id/项目仓库）— 自动执行 `requirement-add --prd`
-- `给 XX 加项目`（如"给越库二期加项目 kunhe-wms"，附源仓库路径）— 自动执行 `requirement-add-project`：创建 worktree 并注册到需求，分支缺省沿用需求内第一个项目的分支
-- `按 PRD 生成 spec` — 生成 proposal/design/specs/tasks，然后自动进入 grill-me 澄清；新模块注册后 G 会询问归属项目并执行 `set-project-root` 绑定工作目录
-- 改需求 / 澄清 spec — 自动走 spec-session + grill-me 流程，编辑后等待批准执行
-- `结项 <需求>` — 全部模块 SYNCED 后收口需求：主 spec 沉淀到域级目录、变更归档、注册表 CLOSED（详见「九、需求结项」）；结项后对该需求的任何消息回复固定「已结项」提示
-- `查看执行历史` — 各需求的运行历史（runs.json）
-- `查看灰名单` / `接受 1 拒绝 2` — 列出待裁决草稿 / 混合裁决（支持 `全部接受`、`全部拒绝`）
-- `查看评分 <模块名>` — 该模块 SCORE 的**全量**明细（不带模块名则列全部已评分模块，NEEDS_REFINEMENT 排前）；模块名可写裸名或 `change-id/模块名`
-- 其他自然语言问题 — LLM 自动理解并回答
-
-动作块支持的动作：`approve`（批准+派发）、`spec_result`（登记 spec 变更，需 requirement+module）、`history`（执行历史）、`gray_list`（列草稿）、`adjudicate`（裁决，需 requirement+target+decision）、`score_view`（评分全量明细，requirement 可选、module 可选）。
-
-### 配置
-
-WeCom 配置存储在 `~/.qoder/loop_engine/wecom.json`：
-
-| 字段 | 说明 |
-|------|------|
-| `corp_id` | 企业 ID |
-| `agent_id` | 应用 Agent ID |
-| `secret` | 应用 Secret |
-| `token` | 回调 Token |
-| `encoding_aes_key` | 回调加密密钥 |
-
-### 启动
-
-```bash
-# 启动服务器（默认端口 5000）
-loop_engine wecom start --port 5000
-
-# 查看状态
-loop_engine wecom status
-
-# 停止服务器
-loop_engine wecom stop
-
-# 重启服务器（代码改动后）
-loop_engine wecom stop && loop_engine wecom start --port 5000
-
-# 配置
-loop_engine wecom config --show
-loop_engine wecom config --set key=value
-```
-
-> 改 `agent_models.json` 与改代码一样要重启才生效：`agent_cli` 每进程只读一次并缓存，长驻的
-> wecom / feishu 守护进程不会热加载，表现是「配置填好了、进程还在用 `~/.qoder/settings.json`
-> 的默认模型」。feishu 同理：`loop_engine feishu stop` 后再 `nohup loop_engine feishu start …`。
-> 本机要填的模型名写在 `<数据目录>/agent_models.json`（默认 `~/.qoder/loop_engine/agent_models.json`），
-> 放在那里**不需要任何 env**；`LOOP_ENGINE_MODEL_CONFIG` 只在这个文件放在别处时才需要（non-editable
-> 安装拿不到仓库根目录的 JSON，见「模型」小节）。
-
-### 隧道
-
-企业微信回调 URL 需要公网可达。使用 autossh 建立反向隧道：
-
-```bash
-# 启动隧道（服务器 IP 见 ~/.qoder/loop_engine/wecom.json 或历史记录）
-autossh -M 0 -N -o ServerAliveInterval=30 \
-  -R 5000:localhost:5000 root@<server-ip>
-
-# 查看隧道状态
-pgrep -fl autossh
-
-# 停止隧道
-pkill -f "autossh.*5000:localhost:5000"
-
-# 重启隧道
-pkill -f "autossh.*5000:localhost:5000"
-autossh -M 0 -N -o ServerAliveInterval=30 \
-  -R 5000:localhost:5000 root@<server-ip>
-```
-
-隧道断线后 autossh 会自动重连；只有服务器 IP 或 SSH 密钥变更时才需手动重启。
-
-### 异步推送
-
-慢操作（如查询复杂状态、执行 LLM 推理）走异步路径：
-1. 服务器立即返回 `"success"`（WeCom 不重试）
-2. 后台线程调 qodercli 处理
-3. 完成后通过 WeCom API 主动推送结果
-
-异步推送需要将服务器公网 IP 加入企业微信应用管理的"企业可信IP"列表。
-
-### 模型
-
-每一步（含企业微信的两类轮次）都可以单独指定**模型**与**上下文窗口**，配置在仓库根
-`agent_models.json`（与 `minimal_mcp.json` 同级，由 `agent_cli` 读取）：
-
-```json
-{ "qodercli": { "default": {"model": "", "context": ""},
-                "CHECKER":  {"model": "", "context": ""},
-                "CHAT":     {"model": "", "context": ""},
-                "CLASSIFY_REQUIREMENT": {"model": "", "context": ""} },
-  "pi":       { "default": {"model": "", "context": ""} } }
-```
-
-`model` 是型号名；`context` 是**正整数 token 数**（`"1000000"`），留空 = 不传
-`--context-window`。老写法（步骤值直接是型号字符串）仍被读成 `{"model": 老值}`——
-别人的本机配置文件已经在盘上，引擎不能要求每台机器同步改文件。
-
-- **步骤键** = `constants.ALL_STEP_KEYS`：10 个 loop action（`SCORE`/`CLASSIFY_CHANGE`/
-  `MAKER_STEP0`/`MAKER_STEP1_RED`/`MAKER_STEP2_GREEN`/`CHECKER`/`MAKER_FIX`/
-  `CODE_REVIEW`/`CODE_REVIEW_FIX`/`ALIGN_DOCS`）+ `CHAT`（G 问答轮）+
-  `CLASSIFY_REQUIREMENT`（需求归属轮）。
-- **仓库里所有值都是空串，这是刻意的**：两个后端拼写型号的方式不同，且这个仓会镜像推到别人机器上，
-  写死厂商型号名等于把一台机器的目录塞进所有人的 checkout。填本机 `qodercli --list-models` /
-  `pi --list-models` 列出的名字，填一行生效一行。
-- **全有或全无**：某后端段里只要有一个非空值，该段每个 step 都必须能解析出具体名字（step 留空取
-  `default`）；`default` 缺失或不可用 ⇒ **整段视为不存在**，warn 一条，行为回到「全程一个默认模型」。
-  半填配置不再被允许，原因见下面的实测。
-- **pi 段填什么写法**：`pi --list-models` 打的是**六列表格**（`provider model context max-out thinking
-  images`），`agent_cli` 取前两列拼成 `provider/model` 作为合法名单——整行不是型号名。所以填
-  `provider/model` 一定可以；只填裸 model id 仅当它在名单里**只属于一个 provider** 时才被接受
-  （跨 provider 重名必须写全名）。比对时大小写归一。名单拉不到（查询失败 / 没有可解析的数据行）时
-  跳过校验，配置照常生效。
-- **pi 也支持分步**：仓库模板里 `pi` 段只列了 `default`，那是省事不是限制——步骤键与 qodercli **完全同名**
-  （`SCORE`/`CHECKER`/`CHAT`/…），照抄一份填进 `pi` 段即可分档。
-- **型号要在校验名单内**：配置里的名字必须出现在该后端 `--list-models` 的输出里（每进程查一次并缓存）。
-  不在名单 ⇒ 该值按未填处理并 warn。查不到名单（后端没有这个 flag）则跳过校验。
-- **回落链**：`agent_models.json` 的 step 键 → 该后端 `default` → 后端自身默认（qodercli 读
-  `~/.qoder/settings.json` 的 `model.name`，可用 `/model` 切换；pi 读 `~/.pi/agent/settings.json`
-  的 `defaultProvider`/`defaultModel`）→ 不传 `--model`。文件缺失或全空时，argv 与引入本文件之前
-  **逐字节相同**（`tests/test_agent_cli.py` 用等值断言钉住）。
-- **两条 2026-09-09 的实测（qodercli 1.0.45）就是上面两条规则的理由**：① 续跑时**省略** `--model`
-  不回读 `settings.json`，而是沿用该会话上一轮实际使用的模型——所以半填配置会让某步的模型取决于
-  「上一步是谁」，随执行顺序漂移且不留痕迹；② 不存在的型号 **rc=0**，只打一行
-  `Model "X" is not available right now; using "auto" instead` 然后真跑在 `auto` 上，并且这个 `auto`
-  会按 ① 粘住后续轮——所以「填错必须响着失败」在这两个后端上做不到，能做的只有事前拒收。
-  反过来，续跑时**显式**给 `--model` 是有效的（实测同一段会话内出现两种模型），所以「共会话」与
-  「按步骤分档」可以叠加。
-- **上下文窗口是 2026-09-28 新加的一维（qodercli 1.1.62，判据 = 会话 jsonl 里的
-  `runtime-config.contextWindow`，非 `None` 才算真的按指定窗口在服务）**：
-  - **flag 盖过 CLI 自己的存储**：不传 flag 时 `~/.qoder/settings.json` 的
-    `model.preferences.<内部id>.contextWindow` 会在 spawn 生效（实测默认模型 = 400000），显式传
-    `1000000` 则以 flag 为准。这正是走引擎侧透传的理由——那份存储按内部 id 分开、会被 `/model` 面板整体重写，
-    不能当配置真相。
-  - **非正整数是硬失败，不是静默忽略**：`1M`、`abc` ⇒ rc=1 `Invalid context window … Must be a
-    positive integer`，连会话文件都不生成（与 `--model` 的静默降级相反）。所以 `agent_cli` 自己先校验，
-    不合格 warn + 不传：一步的笔误不该毁掉该类型的每一次 spawn。
-  - **合法格式 = 纯 token 数**：档位串不支持；`999999999999` 这种整数被接受（rc=0）但窗口回落到
-    `None`，连 preferences 里的值也不用了——填大到没边的数等于没填，且不留错误。
-  - **窗口在同一会话内是粘的**：带 `1000000` 跑一轮，下一轮**省略 flag 仍是 1000000**；显式改 `200000`
-    之后又粘成 200000。因此 `context` 与 `model` 用同一套解析：步骤留空取该段 `default`。把 `default`
-    也留空才会出现「某步窗口取决于上一步」，那是配置选择，不是引擎行为。
-  - **只对 qodercli 成立**：pi 没有对应物（`--no-context-files` 只是禁用 AGENTS.md/CLAUDE.md 发现，
-    名字撞车而已），`pi` 段填了 context ⇒ **warn 一次 + 忽略**，pi 的 argv 不出现该 flag。
-  - **型号半边整段失效时 context 跟着失效**：一个段一个开关，不会留下「模型静默跑在 auto、窗口却按配置」
-    这种半条决策。
-  - **没配就等于今天**：模板与个人文件的 context 全空时，argv 连 `--context-window` 都不带
-    （`tests/test_agent_cli.py` 的等值断言钉住）；此时窗口完全由后端决定，实测同一台机器上
-    `qfmodel` = 400000、`qmodel_38max` 与 `dfmodel` = `None`。
-- **`CHAT` 键的含义受 ① 约束**：G 问答是续跑的长会话，`CHAT` 实际等于「该会话第一次发言时用的模型」；
-  真正每轮独立的只有 `CLASSIFY_REQUIREMENT`（一次性 uuid 会话）。
-- **查找顺序**：`LOOP_ENGINE_MODEL_CONFIG` → `<数据目录>/agent_models.json`（存在就读）→ 仓库根的那份。
-  仓库根的文件由 `__file__` 定位，非 editable 安装时拿不到（根目录 JSON 不在 `pyproject` 的 package-data
-  覆盖范围内，只有 `wecom_server`/`feishu_server` 的 `hooks/*` 进包）——那种安装把值写进数据目录就自动
-  生效，不必配 env；`minimal_mcp.json` 有同一个既存问题，暂无对应物。
-- **个人配置写数据目录那份**：仓库根的 `agent_models.json` 被 `tests/test_constants.py` 钉成「只有形状、
-  没有型号名」——填了值本地这条测试就红，提交则随镜像推到别人机器上。值写在
-  `~/.qoder/loop_engine/agent_models.json`（即 `<数据目录>/agent_models.json`，`LOOP_ENGINE_DATA_DIR` 换目录
-  时跟着换）不需要任何 env。三处都找不到、或整段解析不出模型名，行为退回今天的单模型，不报错。
-- **生效时机是进程启动后第一次 spawn**：`_step_models` 按 (后端, 路径) 缓存读盘结果，改文件不会热加载，
-  长驻的 wecom / feishu 守护进程要重启——见上面「重启服务器」那条。
-
----
-
-## 十点五、飞书接入
-
-`feishu_server/` 与 `wecom_server/` 平行，复用同一套核心流程（`wecom_server.router.dispatch`：LLM 分类 → `__JSON_ACTION__` 动作块 → 后端执行）。传输层使用官方 SDK 的 **WebSocket 长连接**：无需公网地址、反向隧道、安全组放行，也不需要签名校验/challenge 握手。
+`feishu_server/` 与 `aibot_server/` 复用同一套核心流程（`wecom_server.router.dispatch`：LLM 分类 → `__JSON_ACTION__` 动作块 → 后端执行）。传输层使用官方 SDK 的 **WebSocket 长连接**：无需公网地址、反向隧道、安全组放行，也不需要签名校验/challenge 握手。
 
 ### 飞书开放平台配置
 
@@ -1014,14 +827,14 @@ loop_engine feishu stop
 - 消息处理全程在后台线程，结果通过 IM API 主动推送
 - 事件按 `event_id` 去重（SDK 重连后可能重投）
 - 推送分通道：含 markdown（`**`/链接/`<font>`）走交互卡片渲染（`<font>` 压平，其余保留），纯文本仍走 text 消息
-- 支持接收**文件消息**与**富文本（post）消息**：文件下载到 `~/.qoder/loop_engine/files/`（文件名按 UTF-8 还原），post 中的文字说明与附件路径合并注入 prompt——发文件时附一句说明即可告知用途（企微的 media/get 链路无法稳定收文件）
-- 调度器通知（`scheduler.notify_text`）按 `last_user.json` 中的 `platform` 字段路由到最近活跃用户所在平台（缺省 `wecom`，向后兼容）
+- 支持接收**文件消息**与**富文本（post）消息**：文件下载到 `~/.qoder/loop_engine/files/`（文件名按 UTF-8 还原），post 中的文字说明与附件路径合并注入 prompt——发文件时附一句说明即可告知用途
+- 调度器通知（`scheduler.notify_text`）按 `last_user.json` 中的 `platform` 字段路由到最近活跃用户所在平台（`feishu` / `aibot`；无 `platform` 的旧记录不投递）
 
 ---
 
-## 十点六、企微智能机器人长连接（aibot）
+## 十点五、企微智能机器人长连接（aibot）
 
-`aibot_server/` 是第三种传输：企微**智能机器人 API 模式 + 长连接**，与飞书同构（本机主动出站 WSS），不需要公网地址、反向隧道或可信 IP。它和「十、WeCom 企业微信 Bot」的自建应用回调通道**并存**，互不影响。
+`aibot_server/` 是企微**智能机器人 API 模式 + 长连接**传输，与飞书同构（本机主动出站 WSS），不需要公网地址、反向隧道或可信 IP。
 
 ### 创建机器人
 
@@ -1097,7 +910,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │  crontab  (*/10 * * * * loop_engine poll)  ← 周期轮询触发器         │
-│  → scheduler.poll() = 读 state.json → 合并 pending.json → 微信通知  │
+│  → scheduler.poll() = 读 state.json → 合并 pending.json → 聊天通知  │
 │  → dispatch 兜底（仅捡起已 approved 但未启动的）                    │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │
@@ -1106,7 +919,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 │  A: loop_engine CLI 主进程（argparse 分发）                         │
 │     cmd_poll = scheduler.poll() + dispatch(已 approved 项) 兜底     │
 │     poll / pending / approve / run / schedule / session-clean /    │
-│     manual-begin|end (deprecated) / wecom ...                     │
+│     manual-begin|end (deprecated) / feishu / aibot ...            │
 │     approve 不含 dispatch → dispatch 由各触发者各自负责              │
 └──────┬──────────────────────────────────────┬──────────────────────┘
        │ dispatch 兜底                         │ manual-begin/end（废弃）
@@ -1136,14 +949,14 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 └──────────────────────────────────────────────
 
 ┌────────────────────────────────────────────────────────────────────┐
-│  F: wecom_server 守护进程（端口 5000，A fork 常驻）                  │
-│     微信回调 → 立即返回 "success" → 后台 LLM 处理 → API 推送结果     │
+│  F: chat 守护进程（飞书 / aibot 长连接，A fork 常驻）                │
+│     长连接收消息 → 立即 ack → 后台 LLM 处理 → 主动推送结果           │
 │     LLM 回复含 __JSON_ACTION__ 动作块 → 进程内执行对应 handler      │
 └──────┬─────────────────────────────────────────────────────────────┘
        │ 每个消息派生一个 G
        ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  G: qodercli 子进程（每个微信消息一次，超时 30 分钟兜底）             │
+│  G: qodercli 子进程（每条聊天消息一次，超时 30 分钟兜底）             │
 │     --session-id/--resume <按用户+需求稳定的会话>（对话记忆）        │
 │     --settings <audit hook>（敏感 Bash 命令审计，只挂在 G 上）       │
 │     spec 管理（内置规则）：注册 PRD 需求 / 按 PRD 生成 artifacts /   │
@@ -1161,9 +974,9 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
 | A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end（废弃）；scheduler.poll() 只检测不启动 |
-| B | run_requirement | G (微信，即时) / A (poll 兜底) | 循环驱动；flock 锁 + 三层超时（步骤/命令/门禁）；并发上限 max_concurrency |
+| B | run_requirement | G (聊天通道即时) / A (poll 兜底) | 循环驱动；flock 锁 + 三层超时（步骤/命令/门禁）；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
-| F | wecom_server | A (wecom start) | 常驻 :5000；LLM 分类 → JSON 动作块 → handler 进程内执行 |
+| F | chat 守护进程 | A (feishu / aibot start) | 长连接 + 会话队列；LLM 分类 → JSON 动作块 → handler 进程内执行 |
 | G | agent CLI 子进程（qodercli / pi） | F（每消息） | 按用户+需求共用会话；audit hook 审计；spec 管理（注册/生成/澄清/编辑）；5 种动作触发不同 handler |
 
 > 上图里 D/G 写的是 qodercli，那是**默认后端**下的形状。pi 后端下同一批槽位是 pi 子进程：argv 少
@@ -1192,15 +1005,13 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 ├── agents/                     # 子代理定义源（self-install 拷到后端 agents 目录）
 │   ├── maker.md                # 代码生成：TDD/SDD，按 loop-maker-workflow
 │   └── checker.md              # spec↔plan↔code 一致性校验，不改文件
-├── wecom_server/               # WeCom 机器人（F/G）
-│   ├── server.py               # Flask 回调服务器（解密/验签/响应）
-│   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理（平台无关，飞书复用）
-│   ├── wecom_api.py            # 企业微信 API（推送/下载）
-│   ├── crypto.py               # 回调消息加解密
+├── wecom_server/               # 共享聊天核心（飞书 / aibot 共用）
+│   ├── router.py               # 意图分类 + JSON 动作分发 + spec 管理（平台无关）
+│   ├── wecom_api.py            # WeCom 风格 markdown 清洗 / 分段 / 颜色辅助
 │   ├── hooks/audit_hook.sh     # 敏感 Bash 命令审计钩子（守卫逻辑唯一的一份，两后端共用）
 │   ├── hooks/readonly_guard.sh # 群聊只读工具门禁（阻止变更命令与 Edit/Write）
 │   └── hooks/pi_audit_bridge.ts # pi 侧适配器：tool_call → 上面这个钩子的 stdin 契约（-e 加载）
-├── feishu_server/              # 飞书机器人（与 WeCom 平行，复用 router.dispatch）
+├── feishu_server/              # 飞书机器人（与 aibot 平行，复用 router.dispatch）
 │   ├── server.py               # WebSocket 长连接（官方 SDK）+ 去重 + 串行队列
 │   └── feishu_api.py           # 飞书 API（app_access_token/推送）
 ├── aibot_server/               # 企微智能机器人长连接（复用 router.dispatch）
@@ -1214,9 +1025,8 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
     ├── test_scheduler.py       ├── test_session_clean.py
     ├── test_audit_hook.py      ├── test_context.py
     ├── test_registry.py        ├── test_constants.py
-    ├── test_router_async.py    ├── test_server.py
-    ├── test_feishu_server.py   ├── test_feishu_api.py
-    ├── test_wecom_api.py       ├── test_wecom_crypto.py
+    ├── test_router_async.py    ├── test_feishu_server.py
+    ├── test_feishu_api.py      ├── test_wecom_api.py
     ├── test_scope_audit.py     ├── test_report.py
     ├── test_agent_cli.py       ├── test_pi_audit_bridge.py
     ├── test_hermeticity.py     ├── conftest.py
@@ -1235,12 +1045,12 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 ├── schedule.json               # 调度器配置（max_concurrency）
 ├── runs.json                   # 执行历史（requirement → 起止/轮次/结局）
 ├── agent_models.json           # 本机每步模型与上下文配置（放这里就不需要任何 env）
-├── wecom.json                  # WeCom 应用配置（密钥）
 ├── feishu.json                 # 飞书应用配置（密钥）
+├── aibot.json                  # 企微智能机器人配置（Bot ID / Secret，0600）
 ├── audit.log                   # 敏感命令审计日志
-├── sessions/                   # 微信用户会话状态
+├── sessions/                   # 聊天用户会话状态
 ├── spec-snapshots/             # G 改 spec.md 前的快照（漏登记纠正链读它）
-├── files/                      # 飞书附件落盘
+├── files/                      # 飞书 / aibot 附件落盘
 └── .loop/                      # 本地循环状态
 
 ~/.qoder/skills/                # 5 个协作 Skill
@@ -1287,7 +1097,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 
 - **调度器不 import 引擎核心模块**：只通过文件（`.loop/state.json`）和 CLI 子进程通信（`agent_cli.py` 是纯 argv 拼装的无状态叶子，不构成核心耦合）
 - **Agent 后端单点收口**：qodercli 专有知识——二进制定位、MCP 白名单 flag、从 `~/.qoder/settings.json` 取模型、会话 jsonl 落盘探测与 `--session-id`/`--resume` 二段式、启动噪声长什么样、skills/子代理装到哪——全部收敛在 `agent_cli` 一处（loop 步骤走 `build_cmd()`，企业微信问答走 `build_chat_cmd()` + `clean_reply()`，目录走 `asset_dirs()`）。`qodercli` 与 `pi` 两行都已有 builder；档案表里出现 `cmd: None` 的后端会在 spawn 时报错，**不静默回落**成 qodercli，以免误以为在测新后端。会话身份（`uuid5(root, module_key)`）、`cwd=root`（codegraph MCP 子进程继承 OS cwd）、步骤超时留在 `scheduler.py`——它们是循环策略而非 CLI 细节；`.loop/result.md` 与 `__JSON_ACTION__` 属 prompt 级契约，跨后端通用（pi 实测：result.md 单 JSON 对象一次通过，`__JSON_ACTION__` 能被现有正则解析，text/json 两种模式的 stdout 都没有 qodercli 那类启动噪声）。新增后端 = 档案表加一行 + 两个 builder 函数（pi 路线与调研见 `docs/AGENT_BACKEND.md`，内部文档、不随仓库分发）
-- **G 路径（企业微信直接回复）同样在收口里**：`wecom_server/router.py` 的三处 spawn（需求归属分类、每轮问答、漏登记纠正）原先自己拼 qodercli argv、自己读 `~/.qoder/settings.json` 的模型、自己剥启动噪声，现已全部改走 `agent_cli`——router 里不再出现任何二进制名或模型来源。两条路径的契约差异记在 `agent_cli` 顶部：G 的 prompt 从 **stdin** 进、回复从 **stdout** 出，所以 chat argv 不带任何提示词参数。pi 的 chat `--tools` 比 loop 更窄（去掉 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复）。**审计钩子的投放**：qodercli 能按次收 `--settings` JSON，pi 的对应物（扩展侧事件 `tool_call`）只能来自**加载的扩展**，所以本仓库带了一个 ~47 行的适配器 `wecom_server/hooks/pi_audit_bridge.ts`——它把 pi 的工具事件映射成 `audit_hook.sh` 的 stdin 契约（`bash{command}` / `edit|write{path}` → `file_path`，按 `ctx.cwd` 绝对化并镜像 pi 的 `~` 展开，否则相对 `pending.json` 会漏过要求前导斜杠的 Guard 1），再 `spawnSync` 同一个 shell 钩子，rc==1 就把 stdout 当 block reason 回喂模型。**守卫逻辑只有一份**：改 `audit_hook.sh` 两个后端同时生效。`agent_cli.chat_audit_mode()` 报告投放方式——`"settings"` / `"extension"` / `""`，其中 `""`（后端不支持按值注入**或** `.ts` 没被打进包）才是审计链真的断了，router 首轮显式打一条 warning；扩展路径缺失时**不加** `-e`，因为 pi 对加载失败的扩展是 rc=1 硬失败，打包问题不该变成整个微信问答不可用。**两个后端共有的孔洞**：Guard 2 只认 `tool=Edit`，G 若用 Write 整体覆盖 spec.md 就不会留快照（新建 spec.md 也因 `[ -f ]` 跳过），此时 `spec_result` 报不出变更规模、纠正循环也读不到东西。另：G 的模型回落值（原硬编码 `DeepSeek-V4-Flash`）一并去掉了——取不到就不传 `--model`，与 loop 同一口径
+- **G 路径（聊天通道直接回复）同样在收口里**：`wecom_server/router.py` 的三处 spawn（需求归属分类、每轮问答、漏登记纠正）原先自己拼 qodercli argv、自己读 `~/.qoder/settings.json` 的模型、自己剥启动噪声，现已全部改走 `agent_cli`——router 里不再出现任何二进制名或模型来源。两条路径的契约差异记在 `agent_cli` 顶部：G 的 prompt 从 **stdin** 进、回复从 **stdout** 出，所以 chat argv 不带任何提示词参数。pi 的 chat `--tools` 比 loop 更窄（去掉 `mcp`：G 从 `state.json` 取答案，MCP 只会拖慢人在等的这条回复）。**审计钩子的投放**：qodercli 能按次收 `--settings` JSON，pi 的对应物（扩展侧事件 `tool_call`）只能来自**加载的扩展**，所以本仓库带了一个 ~47 行的适配器 `wecom_server/hooks/pi_audit_bridge.ts`——它把 pi 的工具事件映射成 `audit_hook.sh` 的 stdin 契约（`bash{command}` / `edit|write{path}` → `file_path`，按 `ctx.cwd` 绝对化并镜像 pi 的 `~` 展开，否则相对 `pending.json` 会漏过要求前导斜杠的 Guard 1），再 `spawnSync` 同一个 shell 钩子，rc==1 就把 stdout 当 block reason 回喂模型。**守卫逻辑只有一份**：改 `audit_hook.sh` 两个后端同时生效。`agent_cli.chat_audit_mode()` 报告投放方式——`"settings"` / `"extension"` / `""`，其中 `""`（后端不支持按值注入**或** `.ts` 没被打进包）才是审计链真的断了，router 首轮显式打一条 warning；扩展路径缺失时**不加** `-e`，因为 pi 对加载失败的扩展是 rc=1 硬失败，打包问题不该变成整个聊天问答不可用。**两个后端共有的孔洞**：Guard 2 只认 `tool=Edit`，G 若用 Write 整体覆盖 spec.md 就不会留快照（新建 spec.md 也因 `[ -f ]` 跳过），此时 `spec_result` 报不出变更规模、纠正循环也读不到东西。另：G 的模型回落值（原硬编码 `DeepSeek-V4-Flash`）一并去掉了——取不到就不传 `--model`，与 loop 同一口径
 - **MR 目标分支守卫（本机可选，随 --settings 注入）**：`router._audit_settings()` 在 G 会话的 `--settings` 里追加 `~/.qoder/hooks/mr-target-branch.sh` 的注册——Bash 两条条件（`glab mr create` / `git push -o merge_request.create` 必须显式带 target 且禁止 master/main）+ MCP 工具名 matcher（`mcp__gitlab__create/update_merge_request` 读 `tool_input.target_branch`，MCP 调用不经 Bash，Bash-only matcher 拦不到）。钩子文件不存在时静默跳过（非本机环境不阻断）；改维护规则只改那一个脚本，用户级 `~/.qoder/settings.json` 与 G 注入两处注册共用
 - **跨进程锁 = fcntl.flock 内核独占锁**：`.loop/lock` 文件永久保留（绝不 unlink），进程死亡内核自动释放锁，无需死 pid 回收；锁内容只作展示/审计
 - **状态持久化**：state.json 原子写（mkstemp + fsync + replace）+ 滚动 `.bak` 备份；丢失自动从备份恢复，损坏先隔离（`state.json.corrupt-<ts>`）再恢复，无备份才重建并告警

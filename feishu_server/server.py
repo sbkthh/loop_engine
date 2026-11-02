@@ -20,10 +20,8 @@ logger = logging.getLogger("feishu")
 # Runtime config, set by start()
 CONFIG = {}
 
-# Per-requirement serial queues, same design as the WeCom server (kept as a
-# copy so the production WeCom path stays untouched).
-# ponytail: duplicated queue glue from wecom_server/server.py; extract a
-# shared module only when a third platform shows up.
+# Per-requirement serial queues (aibot_server carries its own copy).
+# ponytail: duplicated queue glue; extract a shared module when it drifts.
 _MAX_PENDING = 3
 _pending = {}  # requirement -> queue.Queue
 _pending_guard = threading.Lock()

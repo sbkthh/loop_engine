@@ -54,13 +54,33 @@ def send_msg_frame(chatid, content):
     }
 
 
+_FONT_RE = re.compile(r'<font color="[^"]*">(.*?)</font>', flags=re.DOTALL)
+
+
 def split(content):
-    """Sanitize WeCom markdown and segment by UTF-8 byte length."""
-    return split_segments(sanitize_markdown(content or ""), max_bytes=MAX_BYTES)
+    """Flatten WeCom <font> tags (unsupported in aibot markdown), then segment."""
+    text = _FONT_RE.sub(r"\1", content or "")
+    return split_segments(sanitize_markdown(text), max_bytes=MAX_BYTES)
 
 
 def strip_mentions(text):
     return _MENTION_RE.sub("", text or "").strip()
+
+
+def _mixed_text(mixed):
+    mixed = mixed or {}
+    items = mixed.get("msg_item") or mixed.get("items") or []
+    parts = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        # Official callbacks use `msgtype`; older/third-party SDKs use `type`.
+        if (item.get("msgtype") or item.get("type")) != "text":
+            continue
+        content = ((item.get("text") or {}).get("content") or "").strip()
+        if content:
+            parts.append(content)
+    return "\n".join(parts)
 
 
 def extract_text(body):
@@ -71,14 +91,30 @@ def extract_text(body):
     if msgtype == "text":
         return ((body.get("text") or {}).get("content") or "").strip()
     if msgtype == "mixed":
-        mixed = body.get("mixed") or {}
-        items = mixed.get("msg_item") or mixed.get("items") or []
-        parts = []
-        for item in items:
-            if not isinstance(item, dict) or item.get("type") != "text":
-                continue
-            content = ((item.get("text") or {}).get("content") or "").strip()
-            if content:
-                parts.append(content)
-        return "\n".join(parts)
+        return _mixed_text(body.get("mixed"))
+    return ""
+
+
+def extract_quote(body):
+    """Quoted message text embedded in the callback, or "".
+
+    The quote is part of the inbound frame; there is no API to fetch the
+    original message by id. Non-text quotes become a placeholder so G knows
+    an attachment was referenced.
+    """
+    quote = body.get("quote") if isinstance(body, dict) else None
+    if not isinstance(quote, dict):
+        return ""
+    msgtype = quote.get("msgtype")
+    if msgtype == "text":
+        return ((quote.get("text") or {}).get("content") or "").strip()
+    if msgtype == "mixed":
+        return _mixed_text(quote.get("mixed"))
+    if msgtype == "voice":
+        return ((quote.get("voice") or {}).get("content") or "").strip()
+    if msgtype == "image":
+        return "[引用图片]"
+    if msgtype == "file":
+        name = (quote.get("file") or {}).get("name") or ""
+        return f"[引用文件: {name}]" if name else "[引用文件]"
     return ""

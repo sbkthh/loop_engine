@@ -21,6 +21,7 @@ from constants import DATA_DIR as _DEFAULT_DATA_DIR
 
 from .aibot_api import (
     WS_URL,
+    extract_quote,
     extract_text,
     ping_frame,
     respond_frame,
@@ -214,6 +215,10 @@ async def _handle_frame(frame):
             logger.error("[aibot] unsupported reply failed: %s", e)
         return
     text = strip_mentions(extract_text(body))
+    quote = extract_quote(body)
+    if quote:
+        text = (f"[引用消息]\n{quote}\n\n[当前消息]\n{text}"
+                if text else f"[引用消息]\n{quote}")
     if not text:
         if kind == "single":
             try:

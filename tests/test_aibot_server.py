@@ -181,6 +181,29 @@ def test_queue_full_sends_busy_note(env):
     assert pushed and "上一条还在处理中" in pushed[-1]["body"]["markdown"]["content"]
 
 
+def test_quote_is_prepended_to_current_message(env):
+    server, calls, _, _ = env
+    frame = _callback(msgid="q1", content="继续")
+    frame["body"]["quote"] = {
+        "msgtype": "text", "text": {"content": "原问题"}}
+    _run(server, frame)
+
+    message = calls["message"]
+    assert "[引用消息]" in message
+    assert message.index("原问题") < message.index("继续")
+
+
+def test_group_quote_with_only_mention_still_dispatches(env):
+    server, calls, _, _ = env
+    frame = _callback(msgid="q2", kind="group", chatid="wr1",
+                      content="@机器人\u2005")
+    frame["body"]["quote"] = {
+        "msgtype": "text", "text": {"content": "被引用的内容"}}
+    _run(server, frame)
+
+    assert "被引用的内容" in calls["message"]
+
+
 def test_subscribe_error_detected_without_cmd():
     from aibot_server import server
     frame = {"headers": {"req_id": "aibot_subscribe_123"},

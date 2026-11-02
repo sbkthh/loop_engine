@@ -39,6 +39,11 @@ def test_split_never_exceeds_limit_or_breaks_cjk():
     assert "".join(segments) == content
 
 
+def test_split_strips_font_tags():
+    segments = api.split('<font color="info">成功</font> 与 <font color="warning">失败</font>')
+    assert segments == ["成功 与 失败"]
+
+
 def test_extract_text_text():
     assert api.extract_text(
         {"msgtype": "text", "text": {"content": " 你好 "}}) == "你好"
@@ -54,6 +59,43 @@ def test_extract_text_mixed_joins_text_items():
         ]},
     }
     assert api.extract_text(body) == "第一行\n第二行"
+
+
+def test_extract_text_mixed_accepts_official_msgtype_key():
+    body = {"msgtype": "mixed", "mixed": {"msg_item": [
+        {"msgtype": "text", "text": {"content": "官方字段"}},
+        {"msgtype": "image", "image": {"url": "u"}},
+    ]}}
+    assert api.extract_text(body) == "官方字段"
+
+
+def test_extract_quote_text():
+    body = {"quote": {"msgtype": "text", "text": {"content": "上一句"}}}
+    assert api.extract_quote(body) == "上一句"
+
+
+def test_extract_quote_mixed():
+    body = {"quote": {"msgtype": "mixed", "mixed": {"msg_item": [
+        {"msgtype": "text", "text": {"content": "引用一"}},
+        {"msgtype": "text", "text": {"content": "引用二"}},
+    ]}}}
+    assert api.extract_quote(body) == "引用一\n引用二"
+
+
+def test_extract_quote_voice_image_file():
+    assert api.extract_quote(
+        {"quote": {"msgtype": "voice", "voice": {"content": "语音转写"}}}
+    ) == "语音转写"
+    assert api.extract_quote({"quote": {"msgtype": "image"}}) == "[引用图片]"
+    assert api.extract_quote(
+        {"quote": {"msgtype": "file", "file": {"name": "a.pdf"}}}
+    ) == "[引用文件: a.pdf]"
+    assert api.extract_quote({"quote": {"msgtype": "file"}}) == "[引用文件]"
+
+
+def test_extract_quote_absent():
+    assert api.extract_quote({}) == ""
+    assert api.extract_quote(None) == ""
 
 
 def test_extract_text_unsupported():

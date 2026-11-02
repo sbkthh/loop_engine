@@ -145,21 +145,27 @@ def test_self_and_foreign_bot_messages_ignored(env):
     assert calls["count"] == 0
 
 
-def test_ack_then_final_push(env, monkeypatch):
+def test_ack_then_final_update_same_stream(env, monkeypatch):
     server, calls, _, _ = env
     server.CONFIG["receipt_enabled"] = True
     _run(server, _callback(msgid="m7"), wait=0.3)
 
     frames = server._ws.sent
-    assert frames[0]["cmd"] == "aibot_respond_msg"
-    assert frames[0]["body"]["stream"]["id"] == "ack_m7"
-    assert frames[-1]["cmd"] == "aibot_respond_msg"
-    assert frames[-1]["headers"]["req_id"] == "r1"
-    assert frames[-1]["body"]["stream"]["id"] == "reply_m7"
-    assert frames[-1]["body"]["stream"]["content"] == "RESULT"
+    ack = frames[0]
+    assert ack["cmd"] == "aibot_respond_msg"
+    assert ack["body"]["stream"]["id"] == "reply_m7"
+    assert ack["body"]["stream"]["finish"] is False
+
+    final = frames[-1]
+    assert final["cmd"] == "aibot_respond_msg"
+    assert final["headers"]["req_id"] == "r1"
+    # same stream id: WeCom updates the quoted reply bubble, not a new message
+    assert final["body"]["stream"]["id"] == ack["body"]["stream"]["id"]
+    assert final["body"]["stream"]["finish"] is True
+    assert final["body"]["stream"]["content"] == "RESULT"
 
 
-def test_long_final_reply_quotes_first_segment_and_pushes_rest(env):
+def test_reply_fits_in_one_quoted_stream(env):
     server, calls, result, _ = env
     result["reply"] = "中" * 2000
     _run(server, _callback(msgid="m9"), wait=0.3)
@@ -169,7 +175,22 @@ def test_long_final_reply_quotes_first_segment_and_pushes_rest(env):
               and f["headers"]["req_id"] == "r1"]
     assert len(quoted) == 1
     assert quoted[0]["body"]["stream"]["id"] == "reply_m9"
-    assert len(quoted[0]["body"]["stream"]["content"].encode("utf-8")) <= 1800
+    assert quoted[0]["body"]["stream"]["finish"] is True
+    assert quoted[0]["body"]["stream"]["content"] == "中" * 2000
+    assert not [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
+
+
+def test_oversized_final_reply_quotes_first_segment_and_pushes_rest(env):
+    server, calls, result, _ = env
+    result["reply"] = "中" * 8000  # 24000 bytes > 20000 stream cap
+    _run(server, _callback(msgid="m10"), wait=0.3)
+
+    quoted = [f for f in server._ws.sent
+              if f["cmd"] == "aibot_respond_msg"
+              and f["headers"]["req_id"] == "r1"]
+    assert len(quoted) == 1
+    assert quoted[0]["body"]["stream"]["id"] == "reply_m10"
+    assert len(quoted[0]["body"]["stream"]["content"].encode("utf-8")) <= 20000
 
     pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
     assert pushed
@@ -240,7 +261,7 @@ def test_image_message_dispatches_with_media_fragment(env, monkeypatch):
 
     assert "[图片] image img1" in calls["message"]
     frames = server._ws.sent
-    assert frames[0]["body"]["stream"]["id"] == "ack_img1"
+    assert frames[0]["body"]["stream"]["id"] == "reply_img1"
     assert frames[-1]["cmd"] == "aibot_respond_msg"
     assert frames[-1]["headers"]["req_id"] == "r1"
     assert frames[-1]["body"]["stream"]["id"] == "reply_img1"
@@ -290,7 +311,7 @@ def test_group_image_without_text_is_dispatched_readonly(env, monkeypatch):
     assert "[图片] img2" in calls["message"]
 
 
-def test_media_failure_pushes_error_and_skips_dispatch(env, monkeypatch):
+def test_media_failure_finishes_reply_and_skips_dispatch(env, monkeypatch):
     server, calls, _, _ = env
 
     def boom(item, msgid):
@@ -302,8 +323,9 @@ def test_media_failure_pushes_error_and_skips_dispatch(env, monkeypatch):
     _run(server, frame)
 
     assert calls["count"] == 0
-    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
-    assert pushed and "附件处理失败" in pushed[-1]["body"]["markdown"]["content"]
+    replies = [f for f in server._ws.sent if f["cmd"] == "aibot_respond_msg"]
+    assert replies and "附件处理失败" in replies[-1]["body"]["stream"]["content"]
+    assert replies[-1]["body"]["stream"]["finish"] is True
 
 
 def test_image_message_uses_real_media_pipeline(env, monkeypatch):

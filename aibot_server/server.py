@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from constants import DATA_DIR as _DEFAULT_DATA_DIR
 
 from .aibot_api import (
+    STREAM_MAX_BYTES,
     WS_URL,
     extract_media,
     extract_quote,
@@ -142,10 +143,10 @@ async def _send(frame):
     await ws.send(json.dumps(frame, ensure_ascii=False))
 
 
-async def _reply(req_id, stream_id, content):
+async def _reply(req_id, stream_id, content, finish=True):
     if not req_id:
         return
-    await _send(respond_frame(req_id, stream_id, content))
+    await _send(respond_frame(req_id, stream_id, content, finish=finish))
 
 
 async def _send_markdown(chatid, content):
@@ -154,17 +155,19 @@ async def _send_markdown(chatid, content):
 
 
 async def _send_reply(req_id, msgid, chatid, content):
-    """Answer on the original callback so the client threads/quotes it.
+    """Finish the reply stream opened by the ack on the original callback.
 
-    Only the first segment goes through aibot_respond_msg; extra segments use
-    proactive pushes to avoid concurrent replies on the same req_id.
+    Ack and final must share one stream id: WeCom then updates the same
+    message bubble, so the final result stays quoted to the user's question.
+    Two ids would render as a second, unquoted message. Only content beyond
+    the stream limit spills into proactive pushes.
     """
-    segments = split(content)
+    segments = split(content, max_bytes=STREAM_MAX_BYTES)
     if not segments:
         return
     await _send(respond_frame(req_id, f"reply_{msgid}", segments[0],
                               finish=True))
-    for segment in segments[1:]:
+    for segment in split("\n".join(segments[1:])):
         await _send(send_msg_frame(chatid, segment))
 
 
@@ -214,7 +217,13 @@ async def _enqueue(kind, chatid, fn):
     try:
         _queue_for(key).put_nowait((fn, chatid))
     except asyncio.QueueFull:
-        await _send_markdown(chatid, "上一条还在处理中，完成后我会推送结果，请勿重复发送。")
+        note = "上一条还在处理中，完成后我会推送结果，请勿重复发送。"
+        req_id = getattr(fn, "reply_req_id", "")
+        msgid = getattr(fn, "reply_msgid", "")
+        if req_id and msgid:
+            await _reply(req_id, f"reply_{msgid}", note, finish=True)
+        else:
+            await _send_markdown(chatid, note)
 
 
 async def _handle_frame(frame):
@@ -261,7 +270,8 @@ async def _handle_frame(frame):
         receipt = receipt.strip().lower() not in ("0", "false", "no", "off")
     if receipt:
         try:
-            await _reply(req_id, f"ack_{msgid}", "已收到，正在处理…")
+            await _reply(req_id, f"reply_{msgid}", "已收到，正在处理…",
+                         finish=False)
         except Exception as e:
             logger.error("[aibot] ack failed: %s", e)
     fragments = []
@@ -279,7 +289,11 @@ async def _handle_frame(frame):
                 urlparse(first.get("url") or "").hostname,
                 len(first.get("aeskey") or ""))
             try:
-                await _send_markdown(chatid, "附件处理失败，请重发或改发文字。")
+                if req_id:
+                    await _reply(req_id, f"reply_{msgid}",
+                                 "附件处理失败，请重发或改发文字。", finish=True)
+                else:
+                    await _send_markdown(chatid, "附件处理失败，请重发或改发文字。")
             except Exception as send_err:
                 logger.error("[aibot] media error push failed: %s", send_err)
             return

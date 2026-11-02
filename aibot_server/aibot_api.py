@@ -11,6 +11,7 @@ from wecom_server.wecom_api import sanitize_markdown, split_segments
 
 WS_URL = "wss://openws.work.weixin.qq.com"
 MAX_BYTES = 1800  # keep under WeCom's 2048-byte markdown limit
+STREAM_MAX_BYTES = 20000  # stream replies allow up to 20480 bytes
 
 # Mentions arrive as "@机器人\u2005" (U+2005 four-per-em space) and may repeat.
 _MENTION_RE = re.compile(r"^(?:\s*@[^\s\u2005]+\u2005?\s*)+")
@@ -58,10 +59,10 @@ def send_msg_frame(chatid, content):
 _FONT_RE = re.compile(r'<font color="[^"]*">(.*?)</font>', flags=re.DOTALL)
 
 
-def split(content):
+def split(content, max_bytes=MAX_BYTES):
     """Flatten WeCom <font> tags (unsupported in aibot markdown), then segment."""
     text = _FONT_RE.sub(r"\1", content or "")
-    return split_segments(sanitize_markdown(text), max_bytes=MAX_BYTES)
+    return split_segments(sanitize_markdown(text), max_bytes=max_bytes)
 
 
 def strip_mentions(text):

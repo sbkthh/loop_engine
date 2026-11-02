@@ -247,6 +247,55 @@ class TestPoll(SchedulerBase):
         with open(state_path, "w") as f:
             json.dump(state, f)
 
+    def test_poll_skips_unreadable_state_without_aborting(self):
+        bad = self.register("bad", os.path.join(self.tmp.name, "bad"))
+        os.makedirs(os.path.join(bad, ".loop"), exist_ok=True)
+        bad_state = os.path.join(bad, ".loop", "state.json")
+        with open(bad_state, "w") as f:
+            f.write("{not json")
+        good = self.register("good", os.path.join(self.tmp.name, "good"))
+        _make_state(good, {"c/m": _module("c", "m", "READY")})
+
+        entries = scheduler.poll()
+
+        self.assertEqual([e["requirement"] for e in entries], ["good"])
+        self.assertEqual(open(bad_state).read(), "{not json")
+
+    def test_poll_archives_stale_drafts_atomically(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED", spec_hash=h)},
+                    drafts=[{"id": 1, "module": "c/m", "status": "pending"}])
+        _make_spec(root, "c", "m", content="changed spec")
+
+        scheduler.poll()
+
+        state_path = os.path.join(root, ".loop", "state.json")
+        state = json.load(open(state_path))
+        self.assertEqual(state["gray_drafts"][0]["status"], "rejected")
+        self.assertTrue(state["gray_drafts"][0]["_archived"])
+        # StateManager.save leaves the previous snapshot as .bak
+        self.assertTrue(os.path.exists(state_path + ".bak"))
+
+    def test_poll_does_not_archive_state_while_locked(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        h = _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED", spec_hash=h)},
+                    drafts=[{"id": 1, "module": "c/m", "status": "pending"}])
+        _make_spec(root, "c", "m", content="changed spec")
+        fd = _hold_flock(root)
+        try:
+            entries = scheduler.poll()
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+        self.assertEqual(len(entries), 1)
+        state_path = os.path.join(root, ".loop", "state.json")
+        state = json.load(open(state_path))
+        self.assertEqual(state["gray_drafts"][0]["status"], "pending")
+        self.assertFalse(os.path.exists(state_path + ".bak"))
+
     def test_poll_gray_list_trigger_when_drafts_pending(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {"c/m": _module("c", "m", "READY")})

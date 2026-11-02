@@ -117,6 +117,10 @@ def _is_doc_anchor_drift(desc, dtype=""):
 
 def resolve_gray_draft(sm, draft_id, decision):
     """Adjudicate one gray-list draft. Returns (changed, message)."""
+    import scheduler  # lazy to keep machine importable without the scheduler
+    if scheduler.is_locked(sm.root_dir):
+        return False, ("需求正在执行（持有锁），暂不能裁决草稿；"
+                       "等本次执行结束后再试。")
     state = sm.load()
     for d in state.get("gray_drafts", []):
         if d.get("id") == draft_id:

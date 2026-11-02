@@ -413,3 +413,16 @@ def test_file_wait_zero_processes_immediately(monkeypatch, tmp_path):
     assert len(seen) == 1
     assert saved in seen[0] and "请读取文件内容" in seen[0]
     assert pushes == [("ou_abc", "reply")]
+
+
+def test_feishu_config_set_writes_private_file(tmp_path, monkeypatch):
+    import argparse
+    import stat
+    import cli
+
+    monkeypatch.setattr(cli, "DATA_DIR", str(tmp_path))
+    cli.cmd_feishu_config(argparse.Namespace(show=False, set="app_secret=s"))
+
+    path = tmp_path / "feishu.json"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert json.loads(path.read_text()) == {"app_secret": "s"}

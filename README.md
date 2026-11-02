@@ -818,8 +818,6 @@ loop_engine feishu stop
 |------|------|
 | `app_id` | 应用 App ID（必填） |
 | `app_secret` | 应用 App Secret（必填） |
-| `encrypt_key` | 长连接模式下不使用（webhook 模式遗留，可忽略） |
-| `verification_token` | 长连接模式下不使用（可忽略） |
 | `receipt_enabled` | 收到消息即推「已收到，正在处理…」回执（缺省开；置 `false` 关闭） |
 
 依赖：`lark-oapi`（官方 SDK，`pip install lark-oapi`）。企业代理网络下默认 OpenSSL 路径不含劫持根证书时，`start()` 会自动把 `SSL_CERT_FILE` 指向 certifi 证书包。

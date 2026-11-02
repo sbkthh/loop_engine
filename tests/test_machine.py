@@ -80,6 +80,44 @@ def _checker_consistent_json():
     })
 
 
+class TestResolveGrayDraft(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.sm = StateManager(self.root)
+        state = self.sm.init_state()
+        state["gray_drafts"] = [{"id": 1, "module": "c/m",
+                                 "status": "pending"}]
+        self.sm.save(state)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_resolves_pending_draft(self):
+        from machine import resolve_gray_draft
+        ok, msg = resolve_gray_draft(self.sm, 1, "accept")
+        self.assertTrue(ok)
+        self.assertIn("接受", msg)
+        self.assertEqual(self.sm.load()["gray_drafts"][0]["status"],
+                         "accepted")
+
+    def test_refuses_while_requirement_locked(self):
+        import fcntl
+        from machine import resolve_gray_draft
+        lock = os.path.join(self.root, ".loop", "lock")
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            ok, msg = resolve_gray_draft(self.sm, 1, "accept")
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertFalse(ok)
+        self.assertIn("持有锁", msg)
+        self.assertEqual(self.sm.load()["gray_drafts"][0]["status"],
+                         "pending")
+
+
 class TestMachineFullRoundTrip(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

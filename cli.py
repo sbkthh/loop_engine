@@ -1148,11 +1148,12 @@ def cmd_feishu_config(args):
         config[parts[0]] = parts[1]
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
+        os.chmod(config_path, 0o600)
         print(f"Set {parts[0]} = {parts[1]}")
         return
     print("Enter Feishu configuration (press Enter to skip):")
     config = {}
-    for key in ["app_id", "app_secret", "encrypt_key", "verification_token"]:
+    for key in ["app_id", "app_secret"]:
         val = input(f"  {key}: ").strip()
         if val:
             config[key] = val
@@ -1160,6 +1161,7 @@ def cmd_feishu_config(args):
         os.makedirs(data_dir, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
+        os.chmod(config_path, 0o600)
         print(f"Saved to {config_path}")
     else:
         print("No values entered, config not saved.")

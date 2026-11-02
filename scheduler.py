@@ -2,7 +2,7 @@
 
 Pure Python, no LLM. Communicates with the loop engine core only through
 files (.loop/state.json, spec.md) and CLI subprocesses — never imports core
-modules, per the orchestration design spec.
+routing modules; StateManager is imported solely for its atomic state writer.
 """
 
 import datetime
@@ -26,6 +26,7 @@ from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE,
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
                         discover_modules, coerce_roots)
+from state import StateManager  # its atomic save only — no routing logic
 from wecom_server.wecom_api import md_bold, md_color
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -163,8 +164,13 @@ def _poll_requirement(root, name):
     state_path = os.path.join(root, STATE_FILE)
     if not os.path.exists(state_path):
         return None
-    with open(state_path) as f:
-        state = json.load(f)
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (OSError, ValueError) as e:
+        # One unreadable state.json must not abort the whole poll cycle.
+        _log(f"poll: skip {name}: unreadable state ({e})")
+        return None
     if state.get("current", {}).get("action") and is_locked(root):
         return None  # mid-progress — lock held, being executed, skip
     modules = state.get("modules", {})
@@ -303,22 +309,30 @@ def poll():
         state_path = os.path.join(root, STATE_FILE)
         if not os.path.exists(state_path):
             continue
-        try:
-            with open(state_path) as f:
-                state = json.load(f)
-        except (OSError, ValueError):
+        # Archiving rewrites a run's resume checkpoint: never do it behind a
+        # holder's back, and use the same atomic writer the loop uses.
+        if is_locked(root) or not acquire_lock(root):
             continue
-        changed_keys = {m["key"] for m in entry["modules"] if m.get("spec_hash_changed")}
-        archived = False
-        for d in state.get("gray_drafts", []):
-            if d.get("status") == "pending" and d.get("module") in changed_keys:
-                d["status"] = "rejected"
-                d["_archived"] = True
-                archived = True
-        if archived:
-            _log(f"poll: archived stale gray drafts for spec change in {entry['requirement']}")
-            with open(state_path, "w") as f:
-                json.dump(state, f, indent=2)
+        try:
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+            except (OSError, ValueError) as e:
+                _log(f"poll: archive skipped for {entry['requirement']}: {e}")
+                continue
+            changed_keys = {m["key"] for m in entry["modules"]
+                            if m.get("spec_hash_changed")}
+            archived = False
+            for d in state.get("gray_drafts", []):
+                if d.get("status") == "pending" and d.get("module") in changed_keys:
+                    d["status"] = "rejected"
+                    d["_archived"] = True
+                    archived = True
+            if archived:
+                _log(f"poll: archived stale gray drafts for spec change in {entry['requirement']}")
+                StateManager(root).save(state)
+        finally:
+            release_lock(root)
     _save_pending({"pending": fresh + carried})
     if newly_detected:
         notify_pending(newly_detected)

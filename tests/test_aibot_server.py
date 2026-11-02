@@ -53,9 +53,11 @@ def env(monkeypatch, tmp_path):
     result = {"reply": "RESULT"}
 
     def fake_dispatch(message, registry, data_dir, user_id,
-                      session_key=None, allowed_actions=None):
+                      session_key=None, allowed_actions=None,
+                      detect_text=None):
         calls.update(message=message, user_id=user_id,
-                     session_key=session_key, allowed=allowed_actions)
+                     session_key=session_key, allowed=allowed_actions,
+                     detect_text=detect_text)
         calls["count"] += 1
         reply = result["reply"]
         if isinstance(reply, Exception):
@@ -151,9 +153,28 @@ def test_ack_then_final_push(env, monkeypatch):
     frames = server._ws.sent
     assert frames[0]["cmd"] == "aibot_respond_msg"
     assert frames[0]["body"]["stream"]["id"] == "ack_m7"
-    assert frames[-1]["cmd"] == "aibot_send_msg"
-    assert frames[-1]["body"]["chatid"] == "alice"
-    assert frames[-1]["body"]["markdown"]["content"] == "RESULT"
+    assert frames[-1]["cmd"] == "aibot_respond_msg"
+    assert frames[-1]["headers"]["req_id"] == "r1"
+    assert frames[-1]["body"]["stream"]["id"] == "reply_m7"
+    assert frames[-1]["body"]["stream"]["content"] == "RESULT"
+
+
+def test_long_final_reply_quotes_first_segment_and_pushes_rest(env):
+    server, calls, result, _ = env
+    result["reply"] = "中" * 2000
+    _run(server, _callback(msgid="m9"), wait=0.3)
+
+    quoted = [f for f in server._ws.sent
+              if f["cmd"] == "aibot_respond_msg"
+              and f["headers"]["req_id"] == "r1"]
+    assert len(quoted) == 1
+    assert quoted[0]["body"]["stream"]["id"] == "reply_m9"
+    assert len(quoted[0]["body"]["stream"]["content"].encode("utf-8")) <= 1800
+
+    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
+    assert pushed
+    assert all(len(f["body"]["markdown"]["content"].encode("utf-8")) <= 1800
+               for f in pushed)
 
 
 def test_worker_exception_is_reported_and_loop_survives(env, monkeypatch):
@@ -161,8 +182,10 @@ def test_worker_exception_is_reported_and_loop_survives(env, monkeypatch):
     result["reply"] = RuntimeError("boom")
     _run(server, _callback(msgid="m8"), wait=0.3)
 
-    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
-    assert pushed and "处理失败" in pushed[-1]["body"]["markdown"]["content"]
+    pushed = [f for f in server._ws.sent
+              if f["cmd"] == "aibot_respond_msg"
+              and f["headers"]["req_id"] == "r1"]
+    assert pushed and "处理失败" in pushed[-1]["body"]["stream"]["content"]
 
 
 def test_queue_full_sends_busy_note(env):
@@ -191,6 +214,7 @@ def test_quote_is_prepended_to_current_message(env):
     message = calls["message"]
     assert "[引用消息]" in message
     assert message.index("原问题") < message.index("继续")
+    assert calls["detect_text"] == "继续"
 
 
 def test_group_quote_with_only_mention_still_dispatches(env):
@@ -217,7 +241,9 @@ def test_image_message_dispatches_with_media_fragment(env, monkeypatch):
     assert "[图片] image img1" in calls["message"]
     frames = server._ws.sent
     assert frames[0]["body"]["stream"]["id"] == "ack_img1"
-    assert frames[-1]["cmd"] == "aibot_send_msg"
+    assert frames[-1]["cmd"] == "aibot_respond_msg"
+    assert frames[-1]["headers"]["req_id"] == "r1"
+    assert frames[-1]["body"]["stream"]["id"] == "reply_img1"
 
 
 def test_file_message_dispatches_with_media_fragment(env, monkeypatch):

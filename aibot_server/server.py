@@ -153,12 +153,28 @@ async def _send_markdown(chatid, content):
         await _send(send_msg_frame(chatid, segment))
 
 
-def _build_job(text, userid, session_key, allowed_actions):
+async def _send_reply(req_id, msgid, chatid, content):
+    """Answer on the original callback so the client threads/quotes it.
+
+    Only the first segment goes through aibot_respond_msg; extra segments use
+    proactive pushes to avoid concurrent replies on the same req_id.
+    """
+    segments = split(content)
+    if not segments:
+        return
+    await _send(respond_frame(req_id, f"reply_{msgid}", segments[0],
+                              finish=True))
+    for segment in segments[1:]:
+        await _send(send_msg_frame(chatid, segment))
+
+
+def _build_job(text, userid, session_key, allowed_actions, detect_text=None):
     from wecom_server.router import dispatch
     import registry as reg_mod
     return dispatch(text, reg_mod.list_requirements(), DATA_DIR, userid,
                     session_key=session_key,
-                    allowed_actions=allowed_actions)
+                    allowed_actions=allowed_actions,
+                    detect_text=detect_text)
 
 
 def _queue_for(key):
@@ -179,7 +195,16 @@ async def _worker(q):
             logger.error("[aibot] handler failed: %s", e)
             reply = f"处理失败：{e}"
         try:
-            await _send_markdown(chatid, reply)
+            req_id = getattr(fn, "reply_req_id", "")
+            msgid = getattr(fn, "reply_msgid", "")
+            if req_id:
+                try:
+                    await _send_reply(req_id, msgid, chatid, reply)
+                except Exception as e:
+                    logger.error("[aibot] reply push failed, falling back: %s", e)
+                    await _send_markdown(chatid, reply)
+            else:
+                await _send_markdown(chatid, reply)
         except Exception as e:
             logger.error("[aibot] push failed: %s", e)
 
@@ -263,7 +288,10 @@ async def _handle_frame(frame):
     if quote:
         current = (f"[引用消息]\n{quote}\n\n[当前消息]\n{current}"
                    if current else f"[引用消息]\n{quote}")
-    fn = _build_job(current, userid, _session_key(kind, chatid), allowed)
+    fn = _build_job(current, userid, _session_key(kind, chatid), allowed,
+                    detect_text=text)
+    fn.reply_req_id = req_id
+    fn.reply_msgid = msgid
     await _enqueue(kind, chatid, fn)
 
 
@@ -434,6 +462,8 @@ def start(data_dir=None):
         print("aibot.json missing bot_id/secret. "
               "Run 'loop_engine aibot config' first.")
         raise SystemExit(1)
+    from wecom_server.router import configure_recent
+    configure_recent(os.path.join(DATA_DIR, "recent.json"))
     try:
         import websockets  # noqa: F401
     except ImportError:

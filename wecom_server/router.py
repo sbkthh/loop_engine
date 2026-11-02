@@ -321,16 +321,6 @@ _GLOBAL_INTENT_RE = re.compile(
     r"需求状态|模块状态|所有模块|全部模块"
 )
 
-# Post-close maintenance intent: a message that names a CLOSED requirement
-# is normally short-circuited to _closed_reply, but explicit worktree
-# cleanup must still reach G (the command self-gates on CLOSED/clean/merged;
-# the action gates keep approve/spec_result frozen regardless).
-_CLOSED_CLEANUP_RE = re.compile(
-    r"(?:清理|删除|移除|prune|remove)[^\n]*(?:worktree|work\s*tree|工作树)"
-    r"|(?:worktree|work\s*tree|工作树)[^\n]*(?:清理|删除|移除|prune|remove)",
-    re.IGNORECASE)
-
-
 def _detect_requirement(message, registry):
     """Deterministically find which requirement a message belongs to.
     Matches requirement names and their module keys/names; returns the
@@ -1079,13 +1069,74 @@ def _llm_lock(requirement):
 
 # Recent-activity routing fallback: when a reply lacks any requirement
 # keyword (typical for short grill-me answers), route to the requirement
-# this user most recently talked to. In-memory only — resets on server
-# restart, but the first message after restart carries the requirement
-# name (users are told to), so deterministic routing re-seeds it.
-# ponytail: 全进程内存 dict，不做磁盘持久化；重启后靠首条带名消息重建
+# this conversation most recently talked to. Daemons call configure_recent()
+# at startup so affinity survives a restart; tests leave it unset and stay
+# in-memory.
 _RECENT_WINDOW = 1800  # 30 min covers a grill-me round-trip
 _recent_activity = {}  # (scope, requirement) -> last-active timestamp
 _recent_guard = threading.Lock()
+_RECENT_PATH = ""
+
+
+def configure_recent(path):
+    """Enable disk persistence for recent-requirement affinity."""
+    global _RECENT_PATH
+    _RECENT_PATH = path or ""
+    with _recent_guard:
+        _recent_activity.clear()
+    if not _RECENT_PATH:
+        return
+    try:
+        with open(_RECENT_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    now = time.time()
+    with _recent_guard:
+        for scope, items in (data.get("scopes") or {}).items():
+            if not isinstance(items, dict):
+                continue
+            for req, ts in items.items():
+                try:
+                    ts = float(ts)
+                except (TypeError, ValueError):
+                    continue
+                if req and now - ts < _RECENT_WINDOW:
+                    _recent_activity[(scope, req)] = ts
+
+
+def _save_recent():
+    if not _RECENT_PATH:
+        return
+    now = time.time()
+    with _recent_guard:
+        snapshot = dict(_recent_activity)
+    # Merge entries written by another daemon since we last loaded.
+    try:
+        with open(_RECENT_PATH) as f:
+            disk = json.load(f)
+    except (OSError, ValueError):
+        disk = {}
+    for scope, items in (disk.get("scopes") or {}).items():
+        if not isinstance(items, dict):
+            continue
+        for req, ts in items.items():
+            try:
+                snapshot.setdefault((scope, req), float(ts))
+            except (TypeError, ValueError):
+                continue
+    scopes = {}
+    for (scope, req), ts in snapshot.items():
+        if now - ts < _RECENT_WINDOW:
+            scopes.setdefault(scope, {})[req] = ts
+    tmp = _RECENT_PATH + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"scopes": scopes}, f, ensure_ascii=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, _RECENT_PATH)
+    except OSError as e:
+        logger.warning("[wecom] recent save failed: %s", e)
 
 
 def _touch_recent(user_id, requirement, session_key=None):
@@ -1093,6 +1144,7 @@ def _touch_recent(user_id, requirement, session_key=None):
         return
     with _recent_guard:
         _recent_activity[(session_key or user_id, requirement)] = time.time()
+    _save_recent()
 
 
 def _recent_requirement(user_id, session_key=None):
@@ -1237,46 +1289,77 @@ def _run_llm_turn(session_id, is_new, prompt, settings=None, timeout=1800):
     return cli.clean_reply(r.stdout)
 
 
-def _closed_reply(entry):
-    """Canned reply for a deterministically matched CLOSED requirement
-    (name/module appears in the message). Nameless messages that merely fall
-    back to a closed requirement's session are NOT hijacked — post-close ops
-    like committing the main specs are legitimate; their freeze is enforced
-    by the action gate in _dispatch_json_action instead."""
-    domain = os.path.dirname(os.path.abspath(entry.get("root", "")))
-    return (f"需求「{entry.get('name')}」已结项（{entry.get('closed_at', '-')}）。"
-            f"主 spec 已沉淀至 {domain}/openspec/specs/；要继续演进请基于主 spec "
-            f"开新需求。如确需恢复，请管理员在注册表将 status 改回后重试。")
+def _closed_context(entry):
+    """(session_focus, prompt_note) for a CLOSED requirement.
+
+    Closed requirements are live: the worktree/loop session describes the
+    change process and is no longer the source of truth. Route to a separate
+    main-spec session when the main spec exists; otherwise stay in the
+    requirement session and say why."""
+    name = entry.get("name", "")
+    root = entry.get("root", "")
+    domain = os.path.dirname(os.path.abspath(root)) if root else ""
+    spec_dir = os.path.join(domain, "openspec", "specs") if domain else ""
+    try:
+        has_spec = bool(spec_dir and os.path.isdir(spec_dir)
+                        and os.listdir(spec_dir))
+    except OSError:
+        has_spec = False
+    if not has_spec:
+        return None, (
+            f"\n\n【已结项需求 · 主 spec 未找到】\n"
+            f"需求「{name}」已结项（{entry.get('closed_at', '-')}），但未在 "
+            f"{spec_dir or '(未知路径)'} 找到主 spec。请只基于现有需求 worktree "
+            f"的只读信息回答，不要修改代码或 spec；如需演进请先确认归档状态。\n")
+    repos = [f"- {p.get('name', '?')}: {p.get('source')}"
+             for p in (entry.get("projects") or [])
+             if p.get("source") and os.path.isdir(p["source"])]
+    lines = [
+        "\n\n【已结项需求】",
+        f"需求「{name}」已结项（{entry.get('closed_at', '-')}），"
+        f"代码与 spec 已合入主库。",
+        f"主 spec：{spec_dir}",
+    ]
+    if repos:
+        lines.append("主代码库（以主干/发布分支为准，读取前确认分支）：")
+        lines.extend(repos)
+    lines.append(
+        "需求 worktree 与 loop 状态可能已清理，不作为事实来源；请以主 spec "
+        "和主代码回答。不要修改代码或 spec；approve / run_spec / "
+        "spec_result / adjudicate 会被拦截。如需演进，基于主 spec 开新需求。")
+    return f"closed:{name}", "\n".join(lines)
 
 
 def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
-                  allowed_actions=None):
+                  allowed_actions=None, detect_text=None):
     """Background LLM direct response with per-conversation/per-requirement
     session. user_id identifies the human (approval attribution); session_key
-    identifies the conversation (aibot group chatid vs single user)."""
-    requirement = _detect_requirement(message, registry)
-    if not requirement and not _GLOBAL_INTENT_RE.search(message):
+    identifies the conversation (aibot group chatid vs single user).
+    detect_text is the user's current text only (quote/media excluded), so a
+    quoted bot reply can never steer requirement routing."""
+    focus_text = detect_text if detect_text is not None else message
+    requirement = _detect_requirement(focus_text, registry)
+    if not requirement and not _GLOBAL_INTENT_RE.search(focus_text):
         # no keyword hit — try the most recently active requirement session
         # first (covers short grill-me answers), then the LLM classifier.
         # Global-intent questions (总览/所有需求状态…) skip the fallback and
         # stay in the global session so the reply is prefixed 【通用】.
-        # NOTE: a closed requirement is deliberately NOT short-circuited here.
-        # A nameless message that falls back to a closed req via recent/classify
-        # (e.g. 提交推送spec文件 right after closing) must still reach G —
-        # committing the main specs is a legitimate post-close op. The freeze
-        # lives at the action gate (_dispatch_json_action), not at routing.
         if session_key:
             requirement = _recent_requirement(user_id, session_key)
         else:
             requirement = _recent_requirement(user_id)
-        requirement = requirement or _classify_requirement(message, registry)
+        requirement = requirement or _classify_requirement(focus_text, registry)
+    entry = next((r for r in registry if r.get("name") == requirement), None) \
+        if requirement else None
+    closed = bool(entry and entry.get("status") == "CLOSED")
+    closed_session, closed_note = _closed_context(entry) if closed else (None, "")
+    session_focus = closed_session or requirement or "global"
     if session_key:
         _touch_recent(user_id, requirement, session_key)
-        session_id, is_new = _get_session_id(user_id, requirement or "global",
-                                             session_key)
+        session_id, is_new = _get_session_id(user_id, session_focus, session_key)
     else:
         _touch_recent(user_id, requirement)
-        session_id, is_new = _get_session_id(user_id, requirement or "global")
+        session_id, is_new = _get_session_id(user_id, session_focus)
     prompt = _LLM_SYSTEM_PROMPT.replace("__SKILLS_DIR__", _agent_cli().asset_dirs()[0])
     prompt = prompt.replace("__MESSAGE__", message, 1)
     # Shared fact layer: real-time state injected into every session so
@@ -1284,22 +1367,23 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
     prompt += _system_state_snapshot(registry)
     # Tell G about background files so it can read them when needed, instead
     # of relying on static injection that would waste tokens on every message.
-    if requirement:
-        req_entry = next((r for r in registry if r.get("name") == requirement), None)
-        if req_entry:
-            root = req_entry.get("root", "")
-            if root:
-                prompt += (
-                    f"\n\n本需求的相关背景文件路径，需要时可自行读取：\n"
-                    f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿、SCORE 评分明细（评分不足时含具体缺口原因）\n"
-                    f"- {root}/.loop/context.json —— 环境上下文（数据库/Nacos/网关；setup 时可选写入，存在则被注入到每步指令）\n"
-                    f"- {os.path.join(DATA_DIR, 'requirements.json')} —— 全局需求注册表"
-                )
+    # A closed requirement with a main spec skips the stale worktree paths.
+    if requirement and (not closed or not closed_session):
+        root = entry.get("root", "") if entry else ""
+        if root:
+            prompt += (
+                f"\n\n本需求的相关背景文件路径，需要时可自行读取：\n"
+                f"- {root}/.loop/state.json —— 模块状态、spec 哈希、灰名单草稿、SCORE 评分明细（评分不足时含具体缺口原因）\n"
+                f"- {root}/.loop/context.json —— 环境上下文（数据库/Nacos/网关；setup 时可选写入，存在则被注入到每步指令）\n"
+                f"- {os.path.join(DATA_DIR, 'requirements.json')} —— 全局需求注册表"
+            )
+    if closed:
+        prompt += closed_note
     if allowed_actions is not None:
         prompt += _READONLY_NOTE
     # first message creates session, subsequent messages resume it
     settings = _chat_audit_settings(readonly=allowed_actions is not None)
-    with _llm_lock(requirement or "global"):
+    with _llm_lock(session_focus):
         try:
             reply = _run_llm_turn(session_id, is_new, prompt, settings)
             # resume failed (session lost, e.g. after server restart) → create fresh
@@ -1349,7 +1433,8 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
         rounds += 1
         missing = _unregistered_edits(session_id, reply)
     return _process_llm_reply(reply, message, requirement, registry,
-                              data_dir, user_id, allowed_actions)
+                              data_dir, user_id, allowed_actions,
+                              closed=closed, approve_text=focus_text)
 
 
 _REPLY_PREFIX_RE = re.compile(r"^【([^】]+)】")
@@ -1406,12 +1491,19 @@ def _normalize_action_requirement(payload, registry):
 
 
 def _process_llm_reply(reply, message, requirement, registry, data_dir,
-                       user_id, allowed_actions=None):
+                       user_id, allowed_actions=None, closed=False,
+                       approve_text=None):
     """Parse and execute a G reply: __JSON_ACTION__ block wins over legacy
-    prefixes; otherwise plain text passes through. Returns user-facing text."""
+    prefixes; otherwise plain text passes through. Returns user-facing text.
+    approve_text is the current user text only, so a quoted approval phrase
+    cannot authorize an approve action."""
     reply = _normalize_reply_prefix(reply, requirement, registry)
     if requirement and not reply.startswith(("__", "【")):
         reply = f"【{requirement}】\n{reply}"
+    if closed and requirement:
+        label = f"【{requirement}】"
+        if reply.startswith(label):
+            reply = f"【{requirement} · 已结项】" + reply[len(label):]
     payloads = _json_action_payloads(reply)
     if payloads:
         # Same-turn registration: G may run `requirement-add` during this
@@ -1430,8 +1522,10 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
                     for p in payloads]
         body = _JSON_ACTION_RE.sub("", reply).strip()
         results = []
+        approve_basis = approve_text if approve_text is not None else message
         for payload in payloads:
-            if payload.get("action") == "approve" and not _user_intends_approve(message):
+            if payload.get("action") == "approve" and \
+                    not _user_intends_approve(approve_basis):
                 name = payload.get("requirement") or ""
                 results.append(
                     f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
@@ -1452,7 +1546,7 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
 
 
 def dispatch(message, registry, data_dir, user_id="default",
-             session_key=None, allowed_actions=None):
+             session_key=None, allowed_actions=None, detect_text=None):
     """Classify and dispatch to the right handler.
 
     Returns Callable[[], str] for async (return "success" immediately,
@@ -1462,20 +1556,12 @@ def dispatch(message, registry, data_dir, user_id="default",
 
     session_key namespaces the LLM session per conversation (defaults to
     user_id). allowed_actions, when set, hard-limits __JSON_ACTION__ to that
-    set (aibot group chats pass the read-only actions).
+    set (aibot group chats pass the read-only actions). detect_text is the
+    current user text only; quoted/media content stays in the prompt but
+    never steers routing.
     """
+    focus_text = detect_text if detect_text is not None else message
     fn = lambda: _llm_dispatch(message, registry, data_dir, user_id,
-                               session_key, allowed_actions)
-    fn.requirement = _detect_requirement(message, registry)
-    if fn.requirement:
-        entry = next((r for r in registry
-                      if r.get("name") == fn.requirement), None)
-        if entry and entry.get("status") == "CLOSED":
-            # hard short-circuit before any LLM turn or JSON action: a closed
-            # requirement must not accept approve/spec_result traffic.
-            # Exception: explicit worktree-cleanup intent still reaches G
-            # (post-close maintenance); action gates keep the freeze.
-            if not _CLOSED_CLEANUP_RE.search(message):
-                fn = lambda e=entry: _closed_reply(e)
-                fn.requirement = entry["name"]
+                               session_key, allowed_actions, detect_text)
+    fn.requirement = _detect_requirement(focus_text, registry)
     return fn

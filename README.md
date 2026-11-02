@@ -591,7 +591,7 @@ Skill 会自动：
 4. **登记**：编辑完 G 在回复末尾追加 `__JSON_ACTION__` 动作块（spec_result）→ 服务器校验/备份/置 PARTIAL
 5. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
 6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 登记 → 批准
-7. **结项**：全部模块 SYNCED 后，说「结项 xx」→ G 执行 `loop_engine close` 并汇报（门禁、主 spec 落位、归档）；结项后对该需求的任何消息都会被短路为「已结项」提示（见「九、需求结项」）
+7. **结项**：全部模块 SYNCED 后，说「结项 xx」→ G 执行 `loop_engine close` 并汇报（门禁、主 spec 落位、归档）；结项后的消息进入主 spec 会话继续讨论，approve/run_spec 等变更动作仍被拦截（见「九、需求结项」）
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -753,9 +753,9 @@ loop_engine close <name>
 
 ### 结项后的行为
 
-- **点名消息短路**：消息中直接点名该需求（注册名/模块名）时收到固定回复「已结项（日期），主 spec 已沉淀至 …/openspec/specs/」，不再起 LLM 会话。系统快照里也会列出已结项需求
+- **主 spec 会话**：点名或经「最近会话」回退到已结项需求时，不再返回固定罐头；自动进入 `closed_<name>` 会话，以主 spec 和主代码为事实来源，worktree / `.loop` 状态不再注入。主 spec 缺失时退回原需求 worktree 并提示归档状态
 - **变更动作服务端硬门禁**：`approve` / `run_spec` / `spec_result` / `adjudicate` 对已结项需求一律拦截（无论消息经由哪条路由抵达）——这是冻结的基石，不依赖路由巧合
-- **不连坐日常消息**：没点名、只是经「最近会话」回退到该需求的运维/查询消息（如「提交推送spec文件」）**不再被短路**——会正常进入 G 会话，G 按结项上下文只读协助（git commit/push 主 spec、回答结项问题、引导基于主 spec 开新需求），历史/评分/灰名单只读查询照常可用
+- **讨论照常**：回答结项问题、历史/评分/灰名单只读查询、明确要求的 git commit/push 主 spec 或 worktree 清理仍可进行；引导基于主 spec 开新需求
 - **scheduler.poll 跳过**：CLOSED 需求不再参与轮询（spec hash 变化也不会触发 SPEC_CHANGED）
 - **恢复**：确需重开时手动把 `requirements.json` 里该需求的 `status` 改回后重试（v1 无 reopen 命令）
 
@@ -771,7 +771,7 @@ loop_engine prune-worktrees <name>
 
 审计需要的仍是需求根里的 `openspec/`、`plans/`、`.loop/state.json`（冻结）和 `LOOP_REPORT.md`，与代码检出无关。
 
-企微/飞书里可以直接点名：「**清理 <需求名> 的 worktree**」。已结项需求的点名消息默认短路为「已结项」，但明确的 worktree 清理意图会放行到 G 执行 `prune-worktrees`（approve/spec_result 等服务端动作门禁仍然生效）。
+企微/飞书里可以直接点名：「**清理 <需求名> 的 worktree**」。已结项需求默认进入主 spec 会话，明确的 worktree 清理意图仍可让 G 执行 `prune-worktrees`（approve/spec_result 等服务端动作门禁仍然生效；群聊还受只读门禁限制，需在单聊操作）。
 
 ### 主 spec 与基线继承
 
@@ -871,6 +871,8 @@ loop_engine aibot stop
 
 群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
 
+会话按「群/用户 + 需求」拆分，但不做群→需求静态绑定：需求焦点由当前文本决定，未命中时沿用该会话最近 30 分钟的需求（`recent.json`，重启不丢）；全局意图（总览/所有需求状态）直接走通用会话。引用内容和附件路径不参与路由，只作为 G 的上下文。
+
 v1 支持文本、图文混排中的文字与图片、独立图片、文件；语音/视频仍回复「暂不支持」。
 
 ### 图片与文件
@@ -893,11 +895,11 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 
 调度器通知按 `last_user.json` 的 `platform=aibot` 路由到**最后交互的会话**：群里触发回群（`chatid`），单聊触发回单聊（`chatid=userid`）。守护进程未运行或控制端口不可达时通知静默失败并记日志。
 
-### 与自建应用回调的差异
+### 传输细节
 
 - 凭证只有 Bot ID + Secret，不需要 CorpID/AgentID/Token/EncodingAESKey
 - 无公网回调，无 XML/AES 解密；消息是 JSON 帧
-- 回复必须带原回调 `req_id`（文本用 `stream` + `finish=true`）；异步结果用 `aibot_send_msg` 主动推送
+- 回复必须带原回调 `req_id`：ack 与最终结果都用 `aibot_respond_msg`（不同 stream id），因此最终结果也会引用原消息；只有调度器主动通知用 `aibot_send_msg`（没有原消息可引用）
 - 同一 Bot ID 只能一条活跃连接：在另一台机器启动会踢掉本机，因此控制端口兼作单实例锁
 - 订阅有频率保护：短时间断连会退避 60s，避免反复 `aibot_subscribe`
 

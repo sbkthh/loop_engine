@@ -357,6 +357,8 @@ def start():
         print("feishu.json missing app_id/app_secret. "
               "Run 'loop_engine feishu config' first.")
         raise SystemExit(1)
+    from wecom_server.router import configure_recent
+    configure_recent(os.path.join(DATA_DIR, "recent.json"))
     import lark_oapi as lark
     # Corporate TLS interception serves a self-signed root that is in
     # certifi's bundle but not in OpenSSL's default paths; without this the

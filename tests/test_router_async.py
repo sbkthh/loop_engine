@@ -99,33 +99,62 @@ _CLOSED_ENTRY = {"name": "req", "root": "/tmp/x",
                  "status": "CLOSED", "closed_at": "2026-10-15"}
 
 
-def test_closed_requirement_short_circuits_dispatch(monkeypatch):
-    """CLOSED registry entry: dispatch returns the canned 已结项 reply with
-    zero LLM turns — approve/spec_result traffic is blocked the same way."""
+def test_closed_requirement_uses_main_spec_session(tmp_path, monkeypatch):
+    """A CLOSED requirement no longer gets the canned reply: it enters a
+    separate main-spec session with a closed-context card, not the stale
+    worktree/loop session."""
     from wecom_server import router
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return types.SimpleNamespace(stdout="不应到达", returncode=0)
-
+    root = tmp_path / "req"
+    root.mkdir()
+    spec = tmp_path / "openspec" / "specs" / "req"
+    spec.mkdir(parents=True)
+    (spec / "spec.md").write_text("# main spec")
+    entry = dict(_CLOSED_ENTRY, root=str(root),
+                 projects=[{"name": "svc", "source": str(tmp_path)}])
+    routed = {}
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        routed.__setitem__("req", req) or
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    fake_run, state = _fake_llm_sequence(["【req】主 spec 说明"])
     monkeypatch.setattr(router.subprocess, "run", fake_run)
-    registry = [_CLOSED_ENTRY]
-    for msg in ("req 现在什么状态", "批准执行 req"):
-        fn = dispatch(msg, registry, "/tmp", "u1")
-        assert fn.requirement == "req"
-        reply = fn()
-        assert "已结项" in reply
-        assert "2026-10-15" in reply
-        assert "不应到达" not in reply
-    assert calls == [], "closed requirement must never spawn an LLM turn"
+
+    fn = dispatch("req 现在什么状态", [entry], "/tmp", "u1")
+    reply = fn()
+
+    assert routed["req"] == "closed:req"
+    prompt = state["inputs"][0]
+    specs_dir = tmp_path / "openspec" / "specs"
+    assert "已合入主库" in prompt and str(specs_dir) in prompt
+    assert "本需求的相关背景文件路径" not in prompt
+    assert "【req · 已结项】" in reply
+    assert "主 spec 说明" in reply
+
+
+def test_closed_requirement_without_main_spec_falls_back(tmp_path, monkeypatch):
+    from wecom_server import router
+    root = tmp_path / "req"
+    root.mkdir()
+    entry = dict(_CLOSED_ENTRY, root=str(root))
+    routed = {}
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global":
+                        routed.__setitem__("req", req) or
+                        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", True))
+    fake_run, state = _fake_llm_sequence(["【req】基于 worktree 回答"])
+    monkeypatch.setattr(router.subprocess, "run", fake_run)
+
+    fn = dispatch("req 现在什么状态", [entry], "/tmp", "u1")
+    fn()
+
+    assert routed["req"] == "req"
+    assert "主 spec 未找到" in state["inputs"][0]
 
 
 def test_closed_requirement_fallback_not_hijacked(monkeypatch):
-    """Regression: a nameless message that falls back to a CLOSED requirement
-    via the recent session (e.g. 提交推送spec文件 right after 结项) must reach
-    G — committing the main specs is a legitimate post-close op. It used to
-    be canned-blocked with 已结项."""
+    """A nameless message that falls back to a CLOSED requirement via the
+    recent session still reaches G (post-close ops such as committing the
+    main specs); the action gate keeps approve/spec_result frozen."""
     from wecom_server import router
     monkeypatch.setattr(router, "_recent_requirement", lambda uid: "req")
     monkeypatch.setattr(router, "_get_session_id",
@@ -135,14 +164,13 @@ def test_closed_requirement_fallback_not_hijacked(monkeypatch):
                         _fake_llm_reply("好的，正在提交推送主 spec"))
     fn = dispatch("提交推送spec文件", [_CLOSED_ENTRY], "/tmp", "u1")
     reply = fn()
-    assert "已结项" not in reply
+    assert "如确需恢复" not in reply
     assert "提交推送" in reply
 
 
 def test_closed_requirement_named_cleanup_reaches_llm(monkeypatch):
-    """Named worktree-cleanup intent on a CLOSED requirement bypasses the
-    canned reply (post-close maintenance); the command's own gates and the
-    action gates still enforce the freeze."""
+    """Named worktree-cleanup intent on a CLOSED requirement reaches G; the
+    command's own gates and the action gates still enforce the freeze."""
     from wecom_server import router
     monkeypatch.setattr(router, "_get_session_id",
                         lambda uid, req="global":
@@ -152,17 +180,7 @@ def test_closed_requirement_named_cleanup_reaches_llm(monkeypatch):
     fn = dispatch("清理 req 的 worktree", [_CLOSED_ENTRY], "/tmp", "u1")
     assert fn.requirement == "req"
     reply = fn()
-    assert "已结项" not in reply
     assert "清理完成" in reply
-
-
-def test_closed_cleanup_intent_regex():
-    from wecom_server import router
-    for msg in ("清理 req 的 worktree", "删除工作树", "prune-worktrees req",
-                "worktree 清理一下", "清理 cross-dock-v2-backend 的 worktree"):
-        assert router._CLOSED_CLEANUP_RE.search(msg), msg
-    for msg in ("req 现在什么状态", "提交推送spec文件", "批准执行 req"):
-        assert not router._CLOSED_CLEANUP_RE.search(msg), msg
 
 
 def test_closed_requirement_blocks_mutating_actions():
@@ -256,6 +274,43 @@ def test_recent_requirement_expires(monkeypatch):
     router._touch_recent("u1", "reqA")
     t[0] = 1000.0 + router._RECENT_WINDOW + 1
     assert router._recent_requirement("u1") is None
+
+
+def test_recent_affinity_persists_across_restart(tmp_path):
+    """Daemon restart reloads affinity from recent.json instead of losing it."""
+    from wecom_server import router
+    path = tmp_path / "recent.json"
+    router.configure_recent(str(path))
+    try:
+        router._touch_recent("alice", "reqA", "aibot:g:wr1")
+        router._recent_activity.clear()
+        router.configure_recent(str(path))
+        assert router._recent_requirement("alice", "aibot:g:wr1") == "reqA"
+        assert (path.stat().st_mode & 0o777) == 0o600
+    finally:
+        router.configure_recent("")
+
+
+def test_quote_text_does_not_steer_routing():
+    """A quoted bot reply may name a requirement; only the current user text
+    decides which requirement (if any) the message belongs to."""
+    from wecom_server import router
+    message = ("[引用消息]\n【req】已结项（2026-10-15）\n\n"
+               "[当前消息]\n展开Step1的细节")
+    fn = dispatch(message, [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1",
+                  detect_text="展开Step1的细节")
+    assert fn.requirement is None
+
+
+def test_quoted_approval_does_not_authorize_action():
+    """An approval phrase inside a quote is context, not user intent."""
+    from wecom_server import router
+    out = router._process_llm_reply(
+        '__JSON_ACTION__ {"action":"approve","requirement":"req"}',
+        "[引用消息]\n批准执行 req\n\n[当前消息]\n解释一下",
+        "req", [{"name": "req", "root": "/tmp/x"}], "/tmp", "u1",
+        approve_text="解释一下")
+    assert "无法自动批准" in out
 
 
 def test_recent_requirement_scoped_per_user(monkeypatch):

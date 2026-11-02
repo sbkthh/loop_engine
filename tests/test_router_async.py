@@ -285,6 +285,26 @@ def test_system_state_snapshot_lists_partial_modules(tmp_path):
     assert "c/b" not in snap
 
 
+def test_system_state_snapshot_lists_all_synced_unclosed(tmp_path):
+    """A fully SYNCED but unclosed requirement is still listed as 未结项,
+    so the snapshot never looks like only the closed ones exist."""
+    from wecom_server import router
+    import json
+    root = tmp_path / "proj"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "modules": {
+            "c/a": {"status": "SYNCED"},
+            "c/b": {"status": "SYNCED"},
+        }
+    }))
+    snap = router._system_state_snapshot([{"name": "reqA", "root": str(root)}])
+    assert "reqA" in snap
+    assert "未结项" in snap
+    assert "全部 2 个模块已 SYNCED" in snap
+    assert "c/a" not in snap
+
+
 def test_system_state_snapshot_includes_pending(tmp_path, monkeypatch):
     """Pending entries carry requirement, trigger, approval state, modules."""
     from wecom_server import router

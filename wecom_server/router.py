@@ -1110,10 +1110,11 @@ def _recent_requirement(user_id, session_key=None):
 
 
 def _system_state_snapshot(registry):
-    """Compact real-time state across requirements: PARTIAL modules and
-    pending approvals. Injected into every G prompt so answers about the
-    current state come from a shared fact layer, not session memory — a
-    spec edit made in one session is visible to every other session."""
+    """Compact real-time state across requirements: every registered
+    requirement (closed / unclosed), PARTIAL modules and pending approvals.
+    Injected into every G prompt so answers about the current state come
+    from a shared fact layer, not session memory — a spec edit made in one
+    session is visible to every other session."""
     lines = []
     for req in registry:
         root = req.get("root", "")
@@ -1129,12 +1130,19 @@ def _system_state_snapshot(registry):
             with open(os.path.join(root, ".loop", "state.json")) as f:
                 st = json.load(f)
         except (OSError, ValueError):
+            lines.append(f"- {name}：未结项（无法读取 .loop/state.json）")
             continue
         mods = sorted(f"{key}:{m.get('status')}"
                       for key, m in st.get("modules", {}).items()
                       if m.get("status") == "PARTIAL")
+        total = len(st.get("modules", {}))
         if mods:
-            lines.append(f"- {name}：{', '.join(mods)}")
+            lines.append(f"- {name}：未结项（{total} 个模块，"
+                         f"待同步 {', '.join(mods)}）")
+        elif total:
+            lines.append(f"- {name}：未结项（全部 {total} 个模块已 SYNCED）")
+        else:
+            lines.append(f"- {name}：未结项（无模块）")
     import scheduler as _sched
     try:
         with open(_sched.PENDING_PATH) as f:

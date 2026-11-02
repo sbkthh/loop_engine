@@ -614,6 +614,9 @@ loop_engine requirement-remove <name>
 # 结项需求：主 spec 沉淀到域级目录 + 变更归档 + 注册表 CLOSED（详见「九、需求结项」）
 loop_engine close <name>
 
+# 主 spec 已存在时，按 delta 增量合并（ADDED 追加 / MODIFIED 替换 / REMOVED 删除）
+loop_engine close <name> --merge-existing
+
 # 清理已结项需求的 worktree（仅删干净且已合入远程主干的 checkout，本地分支保留）
 loop_engine prune-worktrees <name>
 
@@ -745,7 +748,7 @@ loop_engine close <name>
 一条命令做四件事：
 
 1. **门禁校验**（任一不过则整体拒绝并打印原因）：注册名不存在 / 需求正在执行（持有 `.loop/lock`）/ 存在非 SYNCED 模块（逐个列出）/ 有未裁决的灰名单草稿 / 每个模块当前 spec 文件的 md5 与 `state.json` 记录的 `spec_hash` 不一致
-2. **delta → 域级主 spec**：模块 spec 落位到**需求根父目录**的 `openspec/specs/<module>/spec.md`（如 `~/loop-work/boss/openspec/specs/…`）。`## ADDED/MODIFIED Requirements` 段头剥掉归并为一个 `## Requirements`，Requirement 正文逐字保留；**两阶段**：先全量预检目标路径，任一已存在则整体 abort（v1 不做主 spec 合并，升级路径是 openspec CLI 的 delta apply）
+2. **delta → 域级主 spec**：模块 spec 落位到**需求根父目录**的 `openspec/specs/<module>/spec.md`（如 `~/loop-work/boss/openspec/specs/…`）。目标不存在时新建：`## ADDED/MODIFIED Requirements` 段头剥掉归并为一个 `## Requirements`，Requirement 正文逐字保留。目标已存在时**默认整体 abort**（防止误覆盖）；确认是同一能力的增量演进后加 `--merge-existing` 按 Requirement 名合并：ADDED 追加、MODIFIED 整块替换、REMOVED 删除，其余 Requirement 和 `## Purpose` 原样保留，`## External Dependencies` 等同名附加段替换（缺失则追加）。任何冲突（MODIFIED/REMOVED 在主 spec 找不到、ADDED 重名、delta 内重名、`## Requirements`/RENAMED 等无法判定的段）都在写盘前整体拒绝。合并前把原主 spec 备份到 `~/.qoder/loop_engine/spec-backups/<module>/<时间>.md`；所有输出先写临时文件，全部成功后再改名落位
 3. **归档**：`openspec/changes/` 下所有活跃变更目录移入 `archive/<date>-<change_id>/`
 4. **注册表标 CLOSED**：`requirements.json` 写入 `status: "CLOSED"` + `closed_at`
 
@@ -780,7 +783,7 @@ loop_engine prune-worktrees <name>
 
 ### 企微/飞书路径
 
-全部模块 SYNCED 后，直接发「**结项 <需求名或别名>**」：G 核对注册名（`requirement-list`）→ 执行 `loop_engine close` → 转述输出（门禁拒绝原因如实转达，不会绕过；仅限用户明确要求结项时执行）。成功后 G 会提醒 commit/push 主 spec。
+全部模块 SYNCED 后，直接发「**结项 <需求名或别名>**」：G 核对注册名（`requirement-list`）→ 执行 `loop_engine close` → 转述输出（门禁拒绝原因如实转达，不会绕过；仅限用户明确要求结项时执行）。若主 spec 已存在且拒绝原因提示 `--merge-existing`，G 确认是同一能力的增量演进后才带该参数重试。成功后 G 会提醒 commit/push 主 spec。
 
 ---
 

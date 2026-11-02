@@ -311,16 +311,22 @@ def cmd_requirement_rename(args):
 
 
 _DELTA_HEADER_RE = re.compile(r"^## (ADDED|MODIFIED|REMOVED) Requirements\s*$")
+_LEVEL2_RE = re.compile(r"^##\s+(.+?)\s*$")
+_REQUIREMENT_HEADER_RE = re.compile(r"^###\s+Requirement:\s*(.+?)\s*$")
+_DELTA_SECTION_KINDS = {
+    "added requirements": "added",
+    "modified requirements": "modified",
+    "removed requirements": "removed",
+}
 
 
 def _transform_delta_spec(src_path, requirement_name):
-    """Delta spec -> main spec: drop the ADDED/MODIFIED delta header lines and
-    home every requirement under one `## Requirements`. Preamble lines before
-    the first delta block and `### Requirement:` bodies survive verbatim;
-    `## REMOVED Requirements` sections are kept too — v1 has no main-spec
-    deletion semantics. ponytail: an existing main-spec target aborts in
-    cmd_close instead of merging; the upgrade path is the openspec CLI's
-    delta apply against the baseline."""
+    """Delta spec -> new main spec (target absent).
+
+    Drops the ADDED/MODIFIED delta header lines and homes every requirement
+    under one `## Requirements`. Preamble lines before the first delta block
+    and `### Requirement:` bodies survive verbatim. Existing targets are
+    handled by _merge_delta_spec instead."""
     module = os.path.basename(os.path.dirname(os.path.abspath(src_path)))
     out = [f"# {module}", "", "## Purpose", "",
            f"{module} 能力的当前规范（自需求 {requirement_name} 结项沉淀，"
@@ -336,6 +342,242 @@ def _transform_delta_spec(src_path, requirement_name):
             continue
         out.append(line)
     return "\n".join(out).rstrip() + "\n"
+
+
+def _normalize_req_name(name):
+    return re.sub(r"\s+", " ", (name or "").strip())
+
+
+def _split_sections(lines):
+    """[(title, heading_idx, body_start, body_end)] outside code fences."""
+    fence = False
+    heads = []
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = _LEVEL2_RE.match(line)
+        if m:
+            heads.append((m.group(1).strip(), i))
+    return [(title, i, i + 1,
+             heads[n + 1][1] if n + 1 < len(heads) else len(lines))
+            for n, (title, i) in enumerate(heads)]
+
+
+def _parse_requirement_blocks(body):
+    """(preamble_lines, [{'name', 'raw'}]) split by ### Requirement headers."""
+    preamble, blocks = [], []
+    current = None
+    fence = False
+    for line in body:
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+        if not fence:
+            m = _REQUIREMENT_HEADER_RE.match(line)
+            if m:
+                if current is not None:
+                    blocks.append(current)
+                current = {"name": m.group(1).strip(), "lines": [line]}
+                continue
+        if current is not None:
+            current["lines"].append(line)
+        else:
+            preamble.append(line)
+    if current is not None:
+        blocks.append(current)
+    for block in blocks:
+        block["raw"] = "\n".join(block.pop("lines")).rstrip()
+    return preamble, blocks
+
+
+def _parse_removed_names(body):
+    names = []
+    fence = False
+    for line in body:
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = _REQUIREMENT_HEADER_RE.match(line)
+        if m:
+            names.append(m.group(1).strip())
+            continue
+        m = re.match(r"^\s*-\s*`?###\s+Requirement:\s*(.+?)`?\s*$", line)
+        if m:
+            names.append(m.group(1).strip())
+    return names
+
+
+def _parse_delta_plan(delta_text):
+    """Parse ADDED/MODIFIED/REMOVED sections and extra ## sections."""
+    text = delta_text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    plan = {"added": [], "modified": [], "removed": [], "extras": []}
+    for title, _, start, end in _split_sections(lines):
+        key = _normalize_req_name(title).lower()
+        body = lines[start:end]
+        if key == "requirements":
+            raise ValueError(
+                "delta 中直接出现 ## Requirements，无法判断 ADDED/MODIFIED；"
+                "请使用标准 delta 段")
+        if key == "renamed requirements":
+            raise ValueError("RENAMED Requirements 暂不支持，请人工处理")
+        if key == "purpose":
+            continue
+        kind = _DELTA_SECTION_KINDS.get(key)
+        if kind == "added":
+            plan["added"].extend(_parse_requirement_blocks(body)[1])
+        elif kind == "modified":
+            plan["modified"].extend(_parse_requirement_blocks(body)[1])
+        elif kind == "removed":
+            plan["removed"].extend(_parse_removed_names(body))
+        else:
+            extra = list(body)
+            while extra and not extra[0].strip():
+                extra.pop(0)
+            while extra and not extra[-1].strip():
+                extra.pop()
+            plan["extras"].append((title.strip(), extra))
+    if not (plan["added"] or plan["modified"] or plan["removed"]):
+        raise ValueError("delta 中没有 ADDED/MODIFIED/REMOVED 变更")
+    return plan
+
+
+def _validate_delta_plan(plan):
+    groups = {}
+    for kind in ("added", "modified", "removed"):
+        seen = set()
+        for item in plan[kind]:
+            name = _normalize_req_name(
+                item["name"] if isinstance(item, dict) else item)
+            if not name:
+                raise ValueError(f"{kind.upper()} 中存在空需求名")
+            if name in seen:
+                raise ValueError(f"{kind.upper()} 内重复需求：{name}")
+            seen.add(name)
+        groups[kind] = seen
+    for left, right in (("added", "modified"), ("added", "removed"),
+                        ("modified", "removed")):
+        overlap = groups[left] & groups[right]
+        if overlap:
+            raise ValueError(
+                f"需求同时出现在 {left.upper()} 和 {right.upper()}："
+                f"{sorted(overlap)[0]}")
+
+
+def _replace_body(lines, start, end, new_body):
+    block = list(new_body)
+    while block and not block[-1].strip():
+        block.pop()
+    if end < len(lines):
+        block.append("")
+    lines[start:end] = block
+
+
+def _merge_delta_spec(main_text, delta_text, module=""):
+    """Merge a delta spec into an existing main spec.
+
+    ADDED appends, MODIFIED replaces by `### Requirement:` name, REMOVED
+    deletes. Non-requirement `##` sections replace the same main section (or
+    append when absent); `## Purpose` always stays the main spec's. Returns
+    (rebuilt_text, counts). Raises ValueError on any unsafe merge.
+    """
+    label = f"{module} " if module else ""
+    plan = _parse_delta_plan(delta_text)
+    _validate_delta_plan(plan)
+
+    lines = main_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    req_sec = next((s for s in _split_sections(lines)
+                    if _normalize_req_name(s[0]).lower() == "requirements"),
+                   None)
+    if req_sec:
+        _, _, req_start, req_end = req_sec
+        preamble, blocks = _parse_requirement_blocks(lines[req_start:req_end])
+    else:
+        req_start = req_end = None
+        preamble, blocks = [], []
+
+    by_name = {}
+    for block in blocks:
+        key = _normalize_req_name(block["name"])
+        if key in by_name:
+            raise ValueError(f"{label}主 spec 中需求重复：{key}")
+        by_name[key] = block
+
+    counts = {"added": 0, "modified": 0, "removed": 0}
+    for name in plan["removed"]:
+        key = _normalize_req_name(name)
+        if key not in by_name:
+            raise ValueError(f"{label}REMOVED 需求在现有主 spec 中不存在：{key}")
+        by_name.pop(key)
+        counts["removed"] += 1
+    for block in plan["modified"]:
+        key = _normalize_req_name(block["name"])
+        if key not in by_name:
+            raise ValueError(f"{label}MODIFIED 需求在现有主 spec 中不存在：{key}")
+        by_name[key] = block
+        counts["modified"] += 1
+    for block in plan["added"]:
+        key = _normalize_req_name(block["name"])
+        if key in by_name:
+            raise ValueError(f"{label}ADDED 需求已存在于主 spec：{key}")
+        by_name[key] = block
+        counts["added"] += 1
+
+    final_blocks, seen = [], set()
+    for block in blocks:
+        key = _normalize_req_name(block["name"])
+        if key in by_name:
+            final_blocks.append(by_name[key])
+            seen.add(key)
+    for block in plan["added"]:
+        key = _normalize_req_name(block["name"])
+        if key not in seen:
+            final_blocks.append(by_name[key])
+            seen.add(key)
+
+    body = []
+    pre = [line for line in preamble]
+    while pre and not pre[0].strip():
+        pre.pop(0)
+    while pre and not pre[-1].strip():
+        pre.pop()
+    if pre:
+        body.extend(pre)
+        body.append("")
+    for n, block in enumerate(final_blocks):
+        body.extend(block["raw"].split("\n"))
+        if n + 1 < len(final_blocks):
+            body.append("")
+
+    if req_sec:
+        _replace_body(lines, req_start, req_end, body)
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["## Requirements", ""])
+        lines.extend(body)
+
+    for title, extra in plan["extras"]:
+        target = next((s for s in _split_sections(lines)
+                       if _normalize_req_name(s[0]).lower()
+                       == _normalize_req_name(title).lower()), None)
+        if target:
+            _, _, start, end = target
+            _replace_body(lines, start, end, extra)
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(f"## {title}")
+            if extra:
+                lines.append("")
+                lines.extend(extra)
+
+    return "\n".join(lines).rstrip() + "\n", counts
 
 
 def cmd_close(args):
@@ -379,18 +621,64 @@ def cmd_close(args):
         dst = os.path.join(os.path.dirname(os.path.abspath(root)),
                            "openspec", "specs", module, "spec.md")
         specs.append((module, src, dst))
+    merge_existing = getattr(args, "merge_existing", False)
     existing = [dst for _, _, dst in specs if os.path.exists(dst)]
-    if existing:
-        print("Error: 以下主 spec 已存在，v1 不做合并，请人工处理后重试：")
+    if existing and not merge_existing:
+        print("Error: 以下主 spec 已存在，默认不合并：")
         for p in existing:
             print(f"  {p}")
+        print("确认是增量演进后加 --merge-existing 重试"
+              "（ADDED 追加 / MODIFIED 同名替换 / REMOVED 删除）。")
         sys.exit(1)
 
+    # Build every output before writing anything, so a merge conflict leaves
+    # specs, changes and registry untouched.
+    prepared = []  # (module, dst, text, counts, backup_path)
     for module, src, dst in specs:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(dst, "w") as f:
-            f.write(_transform_delta_spec(src, entry["name"]))
-        print(f"主 spec: {dst}")
+        if os.path.exists(dst):
+            try:
+                text, counts = _merge_delta_spec(
+                    open(dst).read(), open(src).read(), module)
+            except ValueError as e:
+                print(f"Error: 合并 {dst} 失败：{e}")
+                sys.exit(1)
+            backup = os.path.join(
+                DATA_DIR, "spec-backups", module,
+                datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".md")
+            prepared.append((module, dst, text, counts, backup))
+        else:
+            prepared.append((module, dst,
+                             _transform_delta_spec(src, entry["name"]),
+                             None, None))
+
+    for module, dst, text, counts, backup in prepared:
+        if not backup:
+            continue
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        shutil.copy2(dst, backup)
+        print(f"备份: {backup}")
+
+    temps = []
+    try:
+        for module, dst, text, counts, backup in prepared:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = dst + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(text)
+            temps.append((tmp, dst))
+        for tmp, dst in temps:
+            os.replace(tmp, dst)
+    finally:
+        for tmp, _ in temps:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    for module, dst, text, counts, backup in prepared:
+        if counts:
+            print(f"主 spec: {dst}（合并 +{counts['added']} "
+                  f"~{counts['modified']} -{counts['removed']}）")
+        else:
+            print(f"主 spec: {dst}")
 
     changes_dir = os.path.join(root, "openspec", "changes")
     archive_dir = os.path.join(changes_dir, "archive")
@@ -1109,6 +1397,10 @@ def main():
                        help="Close a finished requirement: sync domain main specs, "
                             "archive openspec changes, mark CLOSED in the registry")
     p.add_argument("name", help="Requirement name in the registry")
+    p.add_argument("--merge-existing", action="store_true",
+                   help="Merge deltas into existing main specs "
+                        "(ADDED append / MODIFIED replace / REMOVED delete) "
+                        "instead of aborting")
     p.set_defaults(func=cmd_close)
 
     p = sub.add_parser("prune-worktrees",

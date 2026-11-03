@@ -19,10 +19,17 @@ import uuid
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
+import pytest
+
 
 SOURCE = Path(__file__).resolve().parents[1]
 _ORIGINAL_RUN = subprocess.run
 KEY = "e2e/tiny"
+# The process-ownership harness reads BSD ps (macOS) `eww`/`lstart`; Linux ps
+# exits non-zero, so these unit tests are macOS-only.
+_BSD_PS_ONLY = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="process ownership harness requires BSD ps (macOS)")
 SPEC = "openspec/changes/e2e/specs/tiny/spec.md"
 JAVA = "tiny/src/main/java/example/DoubleController.java"
 STRONG_SPEC = """# Double controller
@@ -913,6 +920,7 @@ def test_preflight_blocked_reason_only_includes_allowlisted_diagnostics(tmp_path
         assert "PRIVATE" not in reason
 
 
+@_BSD_PS_ONLY
 def test_process_owner_matches_exact_tokens_and_birth_times():
     owner = uuid.uuid4().hex
     children = []
@@ -936,6 +944,7 @@ def test_process_owner_matches_exact_tokens_and_birth_times():
     assert 101 not in seen, "reused parent PID claimed an unrelated child"
 
 
+@_BSD_PS_ONLY
 def test_process_owner_replaced_without_mutating_supplied_environment(monkeypatch):
     inherited = uuid.uuid4().hex
     monkeypatch.setenv(_OWNER_ENV, inherited)
@@ -951,6 +960,7 @@ def test_process_owner_replaced_without_mutating_supplied_environment(monkeypatc
         assert env == before and os.environ[_OWNER_ENV] == inherited
 
 
+@_BSD_PS_ONLY
 def test_process_timeout_cleans_spawned_tree(tmp_path):
     pid_file = tmp_path / "pid"
     code = ("import subprocess,sys,time; from pathlib import Path; "
@@ -965,6 +975,7 @@ def test_process_timeout_cleans_spawned_tree(tmp_path):
     assert not status or status.startswith("Z"), status
 
 
+@_BSD_PS_ONLY
 def test_process_completion_cleans_immediately_reparented_child(tmp_path, monkeypatch):
     pid_file = tmp_path / "orphan-pid"
     owner = uuid.uuid4()
@@ -990,6 +1001,7 @@ def test_process_completion_cleans_immediately_reparented_child(tmp_path, monkey
                     os.kill(pid, signal.SIGKILL)
 
 
+@_BSD_PS_ONLY
 def test_child_isolation_and_real_fixture_scoping(tmp_path):
     base = tmp_path / "isolated"
     env = dict(os.environ, E2E_AUTH_SENTINEL="env-only", PI_MCP_CONFIG_MODE="exclusive",
@@ -1021,6 +1033,7 @@ def test_child_isolation_and_real_fixture_scoping(tmp_path):
     assert not (tmp_path / "must-not-write").exists()
 
 
+@_BSD_PS_ONLY
 def test_script_refuses_execution_without_opt_in(tmp_path):
     root = tmp_path / "unused"
     result = _run_process([sys.executable, str(Path(__file__).resolve()), "--run", str(root)],

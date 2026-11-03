@@ -138,7 +138,7 @@ maker/checker 能直接用——见「Agent 后端与资产目录」里 frontmat
 LOOP_ENGINE_PI_E2E=1 python3 -m pytest -s tests/test_pi_e2e.py
 ```
 
-显式 opt-in，默认不跑（普通 CI 里真假执行不混）。harness 自己建隔离树：`HOME` / XDG /
+显式 opt-in，默认不跑（普通 CI 里真假执行不混）。其中进程所有权相关用例依赖 BSD `ps`，只在 macOS 运行（Linux CI 会 skip）。harness 自己建隔离树：`HOME` / XDG /
 `PI_CODING_AGENT_DIR` / `LOOP_ENGINE_DATA_DIR` / `MAVEN_*` / `GIT_CONFIG_*` 全部指进临时目录，
 `skills/` 与 `agents/` 从仓库拷进去；凭证只把 `auth.json` **符号链接**过去、型号目录按文件复制，
 全程不读不打印内容。找不到 pi 可执行文件或 MCP 适配包时判 **blocked 并说明原因**，不算通过也不算失败。

@@ -39,6 +39,8 @@ def test_system_prompt_has_prd_bootstrap_rules():
         "G must route runtime troubleshooting to the troubleshoot skill"
     assert "ACCESS_DENIED is per database" in router._LLM_SYSTEM_PROMPT, \
         "G must not generalize a per-database denial to the whole instance"
+    assert "dgate_find_table.py" in router._LLM_SYSTEM_PROMPT, \
+        "G must locate tables via the grant-scoped helper"
     assert "manual-loop" not in router._LLM_SYSTEM_PROMPT, \
         "manual-loop skill deprecated, prompt should not reference it"
     assert "__JSON_ACTION__" in router._LLM_SYSTEM_PROMPT

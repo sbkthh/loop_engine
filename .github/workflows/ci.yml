@@ -15,4 +15,12 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest requests cryptography
       - name: Run tests
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short 2>&1 | tee pytest.log
+      - name: Surface failures
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest.log | head -30 | while IFS= read -r line; do
+            echo "::error title=pytest::${line}"
+          done

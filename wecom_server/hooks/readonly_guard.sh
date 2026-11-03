@@ -41,13 +41,20 @@ patterns = [
     r"\bgh\s+pr\b",
     r"\bglab\s+mr\b",
     r"\b(sed\s+-i|perl\s+-i|tee\b|rm\s+-|mv\s+|cp\s+)",
-    # file redirection, but allow 2>&1 and friends
-    r"(?<![0-9])>{1,2}(?![&])",
 ]
 for p in patterns:
     if re.search(p, cmd):
         print("Bash\t" + " ".join(cmd.split())[:300])
         sys.exit(0)
+
+# Redirection must be matched outside quotes and must not be a comparison
+# operator: SQL comparisons (addTime >= date) and awk (NR>=1690) are not
+# shell writes.
+q = chr(39)  # a literal quote would close the shell -c '...' block
+unquoted = re.sub(q + "[^" + q + "]*" + q + "|\"[^\"]*\"", "", cmd)
+if re.search(r"(?<![0-9])>{1,2}(?![&=])", unquoted):
+    print("Bash\t" + " ".join(cmd.split())[:300])
+    sys.exit(0)
 
 if "dgate exec" in cmd and re.search(
         r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE)\b", cmd, re.I):

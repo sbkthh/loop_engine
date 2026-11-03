@@ -63,7 +63,7 @@ Skill-spec-session  OK       /Users/.../spec-session/SKILL.md
 Skill-prd-to-spec   OK       /Users/.../prd-to-spec/SKILL.md
 Skill-grill-me      OK       /Users/.../grill-me/SKILL.md
 Skill-requirement-register OK  /Users/.../requirement-register/SKILL.md
-Skill-manual-loop   DEPRECATED  /Users/.../manual-loop/SKILL.md（改为引导走 approve）
+Skill-manual-loop   OK       /Users/.../manual-loop/SKILL.md（手动调试：先 manual-begin 持锁）
 Agent-checker       OK       /Users/.../.qoder/agents/checker.md
 Agent-maker         OK       /Users/.../.qoder/agents/maker.md
 Data dir            OK       /Users/.../.qoder/loop_engine
@@ -646,10 +646,10 @@ loop_engine resolve-draft --root <path> <id> accept|reject
 # 审计未申报改动：比对模块声明的 files_created/files_modified 与实际 git 工作区改动
 loop_engine scope-audit --root <path>
 
-# 手动接管锁（调试用，已废弃——优先用 approve 走调度器）
+# 手动接管锁（手动调试；next/commit 必须有锁，日常用 approve 走调度器）
 loop_engine manual-begin --root <path>
 
-# 手动结束循环（调试用，已废弃）
+# 手动结束循环（手动调试用）
 loop_engine manual-end --root <path>
 ```
 
@@ -933,11 +933,11 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 │  A: loop_engine CLI 主进程（argparse 分发）                         │
 │     cmd_poll = scheduler.poll() + dispatch(已 approved 项) 兜底     │
 │     poll / pending / approve / run / schedule / session-clean /    │
-│     manual-begin|end (deprecated) / feishu / aibot ...            │
+│     manual-begin|end (manual) / feishu / aibot ...                 │
 │     approve 不含 dispatch → dispatch 由各触发者各自负责              │
 └──────┬──────────────────────────────────────┬──────────────────────┘
-       │ dispatch 兜底                         │ manual-begin/end（废弃）
-       ▼（仅捡 approved 项）                   ▼（不再使用）
+       │ dispatch 兜底                         │ manual-begin/end（手动调试）
+       ▼（仅捡 approved 项）                   ▼（需先持锁）
 ┌────────────────────────────────────────────────────────────────────┐
 │  B: run_requirement 子进程（G 或 A fork，start_new_session）        │
 │     循环: next → qodercli → commit → next → ... → IDLE             │
@@ -987,7 +987,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 
 | 进程 | 身份 | 触发者 | 关键特征 |
 |------|------|--------|----------|
-| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end（废弃）；scheduler.poll() 只检测不启动 |
+| A | loop_engine CLI | crontab / 手动 / F | 命令分发；manual-begin/end（手动调试）；scheduler.poll() 只检测不启动 |
 | B | run_requirement | G (聊天通道即时) / A (poll 兜底) | 循环驱动；flock 锁 + 三层超时（步骤/命令/门禁）；并发上限 max_concurrency |
 | C/D/E | 每步一次性 | B | C 路由、D 干活、E 推进；D 无会话记忆，靠 previous_result 传续 |
 | F | chat 守护进程 | A (feishu / aibot start) | 长连接 + 会话队列；LLM 分类 → JSON 动作块 → handler 进程内执行 |
@@ -1072,7 +1072,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 ├── prd-to-spec/                # PRD 摘要 → OpenSpec artifacts
 ├── grill-me/                   # 需求澄清追问
 ├── requirement-register/       # 注册需求 + PRD 引导（微信 G 使用）
-└── manual-loop/                # 手动循环执行（已废弃，用 approve 替代）
+└── manual-loop/                # 手动循环执行（手动调试，需先持锁）
 
 ~/.local/bin/loop_engine        # 命令行 shim
 ~/.qoder/agents/{maker,checker}.md   # 子代理定义（self-install 从仓库 agents/ 拷来）

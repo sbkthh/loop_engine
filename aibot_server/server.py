@@ -59,8 +59,9 @@ _last_user_write = {}
 _queues = {}
 _workers = {}
 
-# Same set as router._GROUP_READONLY_ACTIONS; imported lazily in _build_job
-# to keep this module importable without the router's dependencies.
+# Same set as router._GROUP_READONLY_ACTIONS, kept in sync by
+# test_group_readonly_set_matches_router; importing the router here would
+# pull its module-level dependencies into every aibot import.
 GROUP_READONLY_ACTIONS = frozenset({"history", "gray_list", "score_view"})
 
 

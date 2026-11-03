@@ -296,6 +296,19 @@ class TestPoll(SchedulerBase):
         self.assertEqual(state["gray_drafts"][0]["status"], "pending")
         self.assertFalse(os.path.exists(state_path + ".bak"))
 
+    def test_poll_preserves_dispatch_attempts(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        scheduler.poll()
+        data = scheduler.load_pending()
+        scheduler._find_entry(data, "req")["attempts"] = 2
+        scheduler._save_pending(data)
+
+        scheduler.poll()
+
+        entry = scheduler._find_entry(scheduler.load_pending(), "req")
+        self.assertEqual(entry["attempts"], 2)
+
     def test_poll_gray_list_trigger_when_drafts_pending(self):
         root = self.register("req", os.path.join(self.tmp.name, "req"))
         _make_state(root, {"c/m": _module("c", "m", "READY")})
@@ -2032,6 +2045,19 @@ class TestRun(SchedulerBase):
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
+    def test_run_setup_failure_releases_lock(self):
+        """An exception before the run loop (e.g. notify) must not leak the
+        flock: the run process would otherwise block the requirement until
+        it exits, and the next dispatch would see a phantom running lock."""
+        root = self._register_pending("req")
+        scheduler.notify_text.side_effect = RuntimeError("notify boom")
+        try:
+            with self.assertRaises(RuntimeError):
+                scheduler.run_requirement("req")
+        finally:
+            scheduler.notify_text.side_effect = None
+        self.assertFalse(scheduler.is_locked(root))
+
 
 class TestDispatch(SchedulerBase):
     def _pending_entry(self, name, trigger, approved=True, status="READY"):
@@ -2043,6 +2069,49 @@ class TestDispatch(SchedulerBase):
             "detected_at": "t",
             "approved": approved,
         }
+
+    def _persist(self, entry):
+        scheduler._save_pending({"pending": [entry]})
+
+    def test_dispatch_counts_attempts(self):
+        entry = self._pending_entry("req-a", "READY_PENDING")
+        self._persist(entry)
+        with mock.patch.object(scheduler.subprocess, "Popen",
+                               return_value=types.SimpleNamespace(pid=1)):
+            forked = scheduler.dispatch([entry], max_concurrency=2)
+
+        self.assertEqual(forked, ["req-a"])
+        stored = scheduler._find_entry(scheduler.load_pending(), "req-a")
+        self.assertEqual(stored["attempts"], 1)
+        self.assertIn("last_attempt_at", stored)
+
+    def test_dispatch_suspends_after_unclean_runs(self):
+        entry = self._pending_entry("req-a", "READY_PENDING")
+        entry["attempts"] = scheduler.MAX_AUTO_RETRIES
+        self._persist(entry)
+        with mock.patch.object(scheduler.subprocess, "Popen",
+                               return_value=types.SimpleNamespace(pid=1)) as p:
+            forked = scheduler.dispatch([entry], max_concurrency=2)
+
+        self.assertEqual(forked, [])
+        self.assertEqual(p.call_count, 0)
+        stored = scheduler._find_entry(scheduler.load_pending(), "req-a")
+        self.assertFalse(stored["approved"])
+        self.assertTrue(stored["suspended"])
+        scheduler.notify_text.assert_called()
+
+    def test_approve_resets_attempts_and_suspension(self):
+        entry = self._pending_entry("req-a", "READY_PENDING", approved=False)
+        entry.update(attempts=scheduler.MAX_AUTO_RETRIES, suspended=True,
+                     last_attempt_at="t")
+        self._persist(entry)
+
+        self.assertEqual(scheduler.approve("req-a"), 1)
+
+        stored = scheduler._find_entry(scheduler.load_pending(), "req-a")
+        self.assertTrue(stored["approved"])
+        self.assertEqual(stored["attempts"], 0)
+        self.assertNotIn("suspended", stored)
 
     def test_dispatch_respects_concurrency(self):
         entries = [self._pending_entry("req-a", "READY_PENDING"),

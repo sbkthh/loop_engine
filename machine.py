@@ -133,6 +133,35 @@ def resolve_gray_draft(sm, draft_id, decision):
     return False, f"找不到草稿 {draft_id}"
 
 
+def record_spec_change(state, key, module, new_hash, new_norm_hash=None):
+    """Mark a module's spec as changed for the next loop cycle.
+
+    Single writer for both next()'s scan and the chat-side SPEC_RESULT path:
+    keeps prev_spec_hash as the delta baseline (CLASSIFY_CHANGE / MAKER_STEP0
+    diff against it), clears the per-round file footprint, and moves the
+    resume checkpoint to the entry action. Returns that action.
+    """
+    old_hash = module.get("spec_hash")
+    module["prev_spec_hash"] = (
+        old_hash if old_hash and old_hash != new_hash else None)
+    module["spec_hash"] = new_hash
+    if new_norm_hash:
+        module["spec_norm_hash"] = new_norm_hash
+    module["status"] = PARTIAL
+    module["maker_attempt"] = 0
+    module["review_fix_attempt"] = 0
+    # 足迹按轮并集，轮起点必须清空：上一轮申报的文件不属于本轮
+    # 的 -pl 测试 scope 与 CHECKER/CODE_REVIEW 上下文
+    module["files_created"] = []
+    module["files_modified"] = []
+    # 入口分流：只有"曾经真正 SYNCED 过（磁盘有代码）"的模块，
+    # 才按"改动大小"CLASSIFY；从未实现的 spec 没有代码可比，一律回 SCORE
+    # 全量重判，否则会走轻量通道跳过 MAKER → 无代码却 SYNCED。
+    entry = CLASSIFY_CHANGE if module.get("ever_synced") else SCORE
+    StateManager.set_current(state, key, entry)
+    return entry
+
+
 class StateMachine:
     def __init__(self, root_dir="."):
         self.root_dir = os.path.abspath(root_dir)
@@ -215,23 +244,8 @@ class StateMachine:
                         self._trace(state, "SCAN", key,
                                     "spec changed (cosmetic) -> loop skipped")
                         continue
-                    module["prev_spec_hash"] = module.get("spec_hash")
-                    module["spec_hash"] = current_hash
-                    if norm_hash:
-                        module["spec_norm_hash"] = norm_hash
-                    module["status"] = PARTIAL
-                    module["maker_attempt"] = 0
-                    module["review_fix_attempt"] = 0
-                    # 足迹按轮并集，轮起点必须清空：上一轮申报的文件不属于本轮
-                    # 的 -pl 测试 scope 与 CHECKER/CODE_REVIEW 上下文
-                    module["files_created"] = []
-                    module["files_modified"] = []
-                    # 入口分流：只有"曾经真正 SYNCED 过（磁盘有代码）"的模块，
-                    # 才按"改动大小"CLASSIFY；从未实现的 spec（NEEDS_REFINEMENT
-                    # 完善后、或首次登记）没有代码可比，一律回 SCORE 全量重判，
-                    # 否则会走轻量通道跳过 MAKER → 无代码却 SYNCED。
-                    entry = CLASSIFY_CHANGE if module.get("ever_synced") else SCORE
-                    StateManager.set_current(state, key, entry)
+                    entry = record_spec_change(
+                        state, key, module, current_hash, norm_hash)
                     self._trace(state, "SCAN", key,
                                 f"spec hash changed -> PARTIAL ({entry})")
                     dirty = True

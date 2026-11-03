@@ -144,6 +144,17 @@ LOOP_ENGINE_PI_E2E=1 python3 -m pytest -s tests/test_pi_e2e.py
 全程不读不打印内容。找不到 pi 可执行文件或 MCP 适配包时判 **blocked 并说明原因**，不算通过也不算失败。
 可选覆盖：`LOOP_ENGINE_PI_E2E_NATIVE_BIN`、`LOOP_ENGINE_PI_E2E_ADAPTER`。整体预算约 59 分钟。
 
+**普通 CI**：`.github/workflows/ci.yml` 在每次 push / PR 跑全量 pytest（Python 3.12，安装 `pytest requests cryptography`）。
+
+**真实长连接冒烟**（默认不跑，也不在 CI 跑）：
+
+```bash
+loop_engine aibot stop   # 同一 Bot ID 只允许一条活跃连接
+LOOP_ENGINE_LIVE_SMOKE=1 python3 -m pytest -s tests/test_live_smoke.py
+```
+
+探针读取 `~/.qoder/loop_engine/aibot.json` 的凭证真实订阅，要求 `errcode=0`；daemon 的控制端口仍有响应时直接 fail，避免把正在服务的连接踢掉。
+
 > **临时目录不是沙箱**：pi 没有逐工具确认、也没有沙箱，`--tools` 白名单就是全部的收敛手段。
 > 同理，需求 root 路径必须 `realpath(root) == root`——macOS 的 `/tmp`、`mktemp -d` 都在符号链接后面，
 > qodercli 按解析后的真实路径存会话目录，未解析的 root 会让第二步对着已存在的 sid 传 `--session-id`

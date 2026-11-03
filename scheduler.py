@@ -90,6 +90,7 @@ LOOP_AGENT_PROMPT = (
 MAX_SAME_ACTION = 3
 MAX_TOTAL_STEPS = 200
 MAX_FAILURE_RETRIES = 1  # transient qodercli/commit failures get one retry
+MAX_AUTO_RETRIES = 3  # crash-loop guard: dispatches without a clean exit
 MAX_RUNS = 100  # runs.json history cap — oldest entries trimmed on write
 MAX_FORMAT_REPAIRS = 2  # format errors resume the same LLM session to rewrite result.md
 # Per-step caps are hung-call backstops, not task budgets.
@@ -148,6 +149,55 @@ def load_pending():
 
 def _save_pending(data):
     _atomic_write_json(PENDING_PATH, data)
+
+
+def _with_pending_lock(fn):
+    """Run a pending.json read-modify-write under an exclusive file lock.
+
+    poll, approve and dispatch can touch pending.json from different
+    processes; atomic rename alone prevents torn files but not lost updates.
+    """
+    lock_path = PENDING_PATH + ".lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fn()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _update_pending(name, mutate):
+    """Locked read-modify-write of one pending entry; returns a copy."""
+    def apply():
+        data = load_pending()
+        entry = _find_entry(data, name)
+        if entry is None:
+            return None
+        mutate(entry)
+        _atomic_write_json(PENDING_PATH, data)
+        return dict(entry)
+    try:
+        return _with_pending_lock(apply)
+    except (OSError, ValueError) as e:
+        # Bookkeeping must never block a dispatch that is otherwise safe.
+        _log(f"pending update skipped for {name}: {e}")
+        return None
+
+
+def _bump_attempt(entry):
+    """Count one dispatch; suspend auto-exec after too many unclean runs.
+
+    A clean run clears its pending entry, so this counter only accumulates
+    when runs die before their finally block (kill -9/OOM) and poll keeps
+    re-approving the entry.
+    """
+    entry["attempts"] = int(entry.get("attempts", 0)) + 1
+    entry["last_attempt_at"] = datetime.datetime.now().isoformat()
+    if entry["attempts"] > MAX_AUTO_RETRIES:
+        entry["approved"] = False
+        entry["suspended"] = True
 
 
 def _find_entry(data, name):
@@ -257,6 +307,41 @@ def _poll_requirement(root, name):
     }
 
 
+def _merge_pending(fresh):
+    """Merge fresh detections into pending.json under the pending lock.
+
+    Carries approval, attempt counters and detected_at forward: the counters
+    are what lets dispatch notice a crash loop, and an approved entry must
+    survive a poll that observes its run mid-flight.
+    """
+    def apply():
+        prev = load_pending()
+        fresh_names = {e["requirement"] for e in fresh}
+        carried = [e for e in prev.get("pending", [])
+                   if e.get("approved")
+                   and is_locked(e.get("root", ""))
+                   and e["requirement"] not in fresh_names]
+        newly_detected = []
+        for entry in fresh:
+            old = _find_entry(prev, entry["requirement"])
+            if old:
+                for field in ("attempts", "last_attempt_at", "suspended"):
+                    if field in old:
+                        entry[field] = old[field]
+            if old and old.get("approved"):
+                entry["approved"] = True
+                entry["detected_at"] = old.get("detected_at",
+                                               entry["detected_at"])
+            elif not old:
+                newly_detected.append(entry)
+            elif old.get("trigger") != entry.get("trigger"):
+                # trigger changed (e.g., GRAY_LIST → SPEC_CHANGED) — re-notify
+                newly_detected.append(entry)
+        _save_pending({"pending": fresh + carried})
+        return newly_detected
+    return _with_pending_lock(apply)
+
+
 def poll():
     """Run one detection cycle and merge into pending.json."""
     for req in _read_registry():
@@ -278,27 +363,7 @@ def poll():
         entry = _poll_requirement(req.get("root"), req.get("name"))
         if entry:
             fresh.append(entry)
-    prev = load_pending()
-    fresh_names = {e["requirement"] for e in fresh}
-    # Carry over approved entries whose requirement is mid-execution:
-    # _poll_requirement returns None while the lock is held, but the approved
-    # entry must survive the run so a gray_list pause stays resumable — the
-    # run's finally block decides whether to clear it afterwards.
-    carried = [e for e in prev.get("pending", [])
-               if e.get("approved")
-               and is_locked(e.get("root", ""))
-               and e["requirement"] not in fresh_names]
-    newly_detected = []
-    for entry in fresh:
-        old = _find_entry(prev, entry["requirement"])
-        if old and old.get("approved"):
-            entry["approved"] = True
-            entry["detected_at"] = old.get("detected_at", entry["detected_at"])
-        elif not old:
-            newly_detected.append(entry)
-        elif old.get("trigger") != entry.get("trigger"):
-            # trigger changed (e.g., GRAY_LIST → SPEC_CHANGED) — re-notify
-            newly_detected.append(entry)
+    newly_detected = _merge_pending(fresh)
     # Auto-archive stale gray drafts when a module goes through a new spec
     # change cycle: the old findings are from a previous spec version and
     # the new loop will regenerate them if still relevant.
@@ -333,7 +398,6 @@ def poll():
                 StateManager(root).save(state)
         finally:
             release_lock(root)
-    _save_pending({"pending": fresh + carried})
     if newly_detected:
         notify_pending(newly_detected)
     return fresh
@@ -387,6 +451,9 @@ def approve(name=None, all_=False, approved_by=None):
                     and not e.get("approved")
                     and not _has_pending_gray_drafts(e.get("root", ""))):
                 e["approved"] = True
+                e["attempts"] = 0
+                e.pop("suspended", None)
+                e.pop("last_attempt_at", None)
                 if approved_by:
                     e["approved_by"] = approved_by
                 count += 1
@@ -409,6 +476,9 @@ def approve(name=None, all_=False, approved_by=None):
         raise ValueError(
             f"{name} 有灰名单草稿待裁决，请先处理后再批准执行")
     entry["approved"] = True
+    entry["attempts"] = 0
+    entry.pop("suspended", None)
+    entry.pop("last_attempt_at", None)
     if approved_by:
         entry["approved_by"] = approved_by
     _save_pending(data)
@@ -1178,13 +1248,18 @@ def run_requirement(name, module=None):
         return {"error": f"Requirement already running (lock held): {root}"}
     user_id = None
     try:
-        entry = _find_entry(load_pending(), name)
-        user_id = entry.get("approved_by") if entry else None
-    except (OSError, ValueError):
-        pass
-    start = time.time()
-    notify_text(f"[调度] 开始执行 {md_bold(name)} ({root})", user_id)
-    _log(f"run {name}: start ({root})")
+        try:
+            entry = _find_entry(load_pending(), name)
+            user_id = entry.get("approved_by") if entry else None
+        except (OSError, ValueError):
+            pass
+        start = time.time()
+        notify_text(f"[调度] 开始执行 {md_bold(name)} ({root})", user_id)
+        _log(f"run {name}: start ({root})")
+    except BaseException:
+        # The run loop's finally is not reached when setup itself fails.
+        release_lock(root)
+        raise
     try:
         steps = 0
         same_action = 0
@@ -1423,6 +1498,16 @@ def dispatch(entries, max_concurrency=2):
             continue
         if _has_pending_gray_drafts(root):
             _log(f"dispatch: skip {entry['requirement']} — pending gray drafts")
+            continue
+        state = _update_pending(entry["requirement"], _bump_attempt)
+        if state is not None and state.get("suspended"):
+            _log(f"dispatch: {entry['requirement']} suspended after "
+                 f"{MAX_AUTO_RETRIES} unclean runs")
+            notify_text(
+                f"[调度] {md_bold(entry['requirement'])} 连续 "
+                f"{MAX_AUTO_RETRIES} 次未正常结束，已暂停自动执行。"
+                f"修复后回复「批准执行 {entry['requirement']}」重试",
+                entry.get("approved_by"))
             continue
         pin = entry.get("module")
         with open(LOG_PATH, "a") as logf:

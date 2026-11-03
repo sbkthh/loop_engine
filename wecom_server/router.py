@@ -810,6 +810,7 @@ def _execute_spec_result(name, module_key, registry, data_dir):
     from constants import SPEC_PATH_TEMPLATE, PARTIAL, DRAFT, SYNCED
     import spec_utils
     from state import StateManager
+    from machine import record_spec_change
 
     req = next((r for r in registry if r.get("name") == name), None)
     if not req:
@@ -854,9 +855,10 @@ def _execute_spec_result(name, module_key, registry, data_dir):
             spec_hash=new_hash, spec_norm_hash=new_norm_hash)
         old_hash = None
     else:
-        old_hash = st["modules"][module_key].get("spec_hash")
+        module = st["modules"][module_key]
+        old_hash = module.get("spec_hash")
         if old_hash == new_hash:
-            status = st["modules"][module_key].get("status")
+            status = module.get("status")
             if status == PARTIAL:
                 return (f"{module_key} 已登记（spec hash {new_hash[:8]}），"
                         f"等待『批准执行 {name}』触发实现")
@@ -866,6 +868,8 @@ def _execute_spec_result(name, module_key, registry, data_dir):
                         "如需发起新的 spec 变更，请先编辑 spec.md 再登记")
             if status != DRAFT:
                 return f"{module_key} 的 spec 没有变化（hash 未变），请先修改 spec.md"
+    record_spec_change(st, module_key, st["modules"][module_key],
+                       new_hash, new_norm_hash)
     backup_dir = os.path.join(root, ".loop", "backup")
     os.makedirs(backup_dir, exist_ok=True)
     backup_path = os.path.join(
@@ -882,12 +886,6 @@ def _execute_spec_result(name, module_key, registry, data_dir):
         # at least a registration-time rollback point
         shutil.copy2(spec_path, backup_path)
         backup_note = backup_path + " (registration-time copy, NOT pre-edit: no git HEAD)"
-    sm.set_module_field(st, module_key, "spec_hash", new_hash)
-    if new_norm_hash:
-        sm.set_module_field(st, module_key, "spec_norm_hash", new_norm_hash)
-    sm.set_module_field(st, module_key, "status", PARTIAL)
-    sm.set_module_field(st, module_key, "maker_attempt", 0)
-    sm.set_module_field(st, module_key, "review_fix_attempt", 0)
     sm.save(st)
     _audit_line(f"SPEC {name} {module_key} {old_hash or 'new'}->{new_hash} "
                 f"backup={backup_note}")

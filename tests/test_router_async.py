@@ -954,6 +954,7 @@ def test_spec_result_registers_change(monkeypatch, tmp_path):
     import spec_utils
 
     root, spec_path = _make_spec_root(tmp_path)
+    old_hash = StateManager(root).load()["modules"]["chg1/m1"]["spec_hash"]
     with open(spec_path, "w") as f:
         f.write("# v2 changed")
 
@@ -978,10 +979,46 @@ def test_spec_result_registers_change(monkeypatch, tmp_path):
     mod = st["modules"]["chg1/m1"]
     assert mod["status"] == "PARTIAL"
     assert mod["spec_hash"] == spec_utils.compute_spec_hash(spec_path)
+    # P1: chat-side registration must write the same fields as the scan path
+    assert mod["prev_spec_hash"] == old_hash
+    assert mod["files_created"] == [] and mod["files_modified"] == []
+    assert st["current"]["module"] == "chg1/m1"
+    assert st["current"]["action"] == "SCORE"  # never synced → full re-score
     backups = os.listdir(os.path.join(root, ".loop", "backup"))
     assert len(backups) == 1
     with open(os.path.join(root, ".loop", "backup", backups[0])) as f:
         assert f.read() == "# v1"  # HEAD version, not the edited one
+
+
+def test_spec_result_routes_ever_synced_module_to_classify(monkeypatch, tmp_path):
+    """A module that has shipped code enters CLASSIFY_CHANGE (light/heavy),
+    not a full re-score, and keeps the old hash as its delta baseline."""
+    from wecom_server import router
+    from state import StateManager
+    import constants
+    import registry as reg_mod
+
+    root, spec_path = _make_spec_root(tmp_path)
+    sm = StateManager(root)
+    st = sm.load()
+    st["modules"]["chg1/m1"]["ever_synced"] = True
+    sm.save(st)
+    old_hash = st["modules"]["chg1/m1"]["spec_hash"]
+    with open(spec_path, "w") as f:
+        f.write("# v2 changed")
+
+    monkeypatch.setattr(router, "_audit_line", lambda text: None)
+    monkeypatch.setattr(reg_mod, "list_requirements",
+                        lambda: [{"name": "req", "root": root}])
+    reply = ('__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"chg1/m1"}\n已完成')
+    out = router._process_llm_reply(reply, "改 spec", None, [],
+                                    str(tmp_path), "u1")
+
+    assert "已登记" in out
+    st = StateManager(root).load()
+    assert st["current"]["action"] == constants.CLASSIFY_CHANGE
+    assert st["modules"]["chg1/m1"]["prev_spec_hash"] == old_hash
 
 
 def test_spec_result_backup_fallback_without_git(monkeypatch, tmp_path):

@@ -871,6 +871,7 @@ loop_engine aibot stop
 | `secret` | 机器人 Secret（必填，明文仅靠 0600 保护，切勿入库） |
 | `port` | 本机回环控制端口，默认 `5099`（启停/通知走这里，必须单实例） |
 | `receipt_enabled` | 收到消息即回「已收到，正在处理…」，缺省开 |
+| `allowed_users` | 允许单聊的企微 userid 列表（可逗号分隔）；为空/缺失时**拒绝所有单聊**。群聊不受此限制（只读） |
 
 依赖：`websockets` + `cryptography`（`pip install websockets cryptography`，本机已随环境安装）。
 
@@ -878,10 +879,10 @@ loop_engine aibot stop
 
 | 场景 | 触发 | 会话上下文 | 动作权限 |
 |------|------|------------|----------|
-| 单聊 | 直接发消息 | 按用户独立 | 全部动作（批准/执行/结项等） |
+| 单聊 | 直接发消息 | 按用户独立 | 仅 `allowed_users` 内用户可用全部动作（批准/执行/结项等）；其他人直接拒绝 |
 | 群聊 | **@机器人** | 按群共享 | **只读**：仅 `history` / `gray_list` / `score_view` |
 
-群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
+单聊白名单在进入 LLM 之前判定：非白名单用户只收到「该机器人仅限授权用户使用」，不会启动 agent，也不会写 `last_user.json`（避免把调度通知改投给外部用户）。白名单为空或缺失时按拒绝处理（fail closed）。群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
 
 会话按「群/用户 + 需求」拆分，但不做群→需求静态绑定：需求焦点由当前文本决定，未命中时沿用该会话最近 30 分钟的需求（`recent.json`，重启不丢）；全局意图（总览/所有需求状态）直接走通用会话。引用内容和附件路径不参与路由，只作为 G 的上下文。
 

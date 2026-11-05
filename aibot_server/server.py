@@ -6,7 +6,8 @@ loopback HTTP control port for scheduler notifications and stop/status.
 
 Group chats are read-only: the router receives a read-only action
 allowlist and a tool-level guard hook, so no approve/close/edit can run
-from a group.
+from a group. Single chats are restricted to the `allowed_users` userids
+in aibot.json; missing/empty means every DM is rejected before the LLM.
 """
 import asyncio
 import json
@@ -137,6 +138,15 @@ def _session_key(kind, chatid):
     return f"aibot:{'u' if kind == 'single' else 'g'}:{chatid}"
 
 
+def _is_allowed_user(userid):
+    """Single-chat allowlist. Missing/empty config means deny all DMs."""
+    allowed = CONFIG.get("allowed_users") or []
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    return bool(userid) and userid in {
+        u.strip() for u in allowed if isinstance(u, str) and u.strip()}
+
+
 async def _send(frame):
     ws = _ws
     if ws is None:
@@ -243,6 +253,19 @@ async def _handle_frame(frame):
     if not conv:
         return
     kind, chatid, userid = conv
+    if kind == "single" and not _is_allowed_user(userid):
+        # Gate before _remember_user/LLM: an outsider must not be able to
+        # steer the agent or redirect scheduler notifications to themselves.
+        logger.warning("[aibot] unauthorized single chat: %s", userid)
+        try:
+            if req_id:
+                await _reply(req_id, f"reply_{msgid}",
+                             "该机器人仅限授权用户使用。", finish=True)
+            else:
+                await _send_markdown(chatid, "该机器人仅限授权用户使用。")
+        except Exception as e:
+            logger.error("[aibot] denial reply failed: %s", e)
+        return
     msgtype = body.get("msgtype")
     if msgtype == "event":
         return

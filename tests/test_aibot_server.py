@@ -41,7 +41,8 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CONFIG", {
-        "bot_id": "bot1", "secret": "s", "receipt_enabled": False})
+        "bot_id": "bot1", "secret": "s", "receipt_enabled": False,
+        "allowed_users": ["alice"]})
     monkeypatch.setattr(server, "_seen", {})
     monkeypatch.setattr(server, "_last_user_write", {})
     monkeypatch.setattr(server, "_queues", {})
@@ -396,3 +397,27 @@ def test_control_health_and_validation(env):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_unauthorized_single_chat_is_rejected_before_dispatch(env):
+    server, calls, _, tmp_path = env
+    _run(server, _callback(msgid="deny1", userid="mallory"))
+
+    assert calls["count"] == 0
+    frame = server._ws.sent[-1]
+    assert frame["body"]["stream"]["content"] == "该机器人仅限授权用户使用。"
+    assert frame["body"]["stream"]["finish"] is True
+    assert not (tmp_path / "last_user.json").exists()
+
+
+def test_missing_allowlist_denies_every_single_chat(env, monkeypatch):
+    server, calls, _, _ = env
+    monkeypatch.setitem(server.CONFIG, "allowed_users", [])
+    _run(server, _callback(msgid="deny2", userid="alice"))
+    assert calls["count"] == 0
+
+
+def test_allowed_user_single_chat_still_dispatches(env):
+    server, calls, _, _ = env
+    _run(server, _callback(msgid="ok1", userid="alice"))
+    assert calls["count"] == 1

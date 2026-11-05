@@ -1205,16 +1205,27 @@ def cmd_aibot_config(args):
         if os.path.exists(config_path):
             with open(config_path) as f:
                 config = json.load(f)
-        config[parts[0]] = parts[1]
+        if parts[0] == "allowed_users":
+            config[parts[0]] = [u.strip() for u in parts[1].split(",")
+                                if u.strip()]
+        else:
+            config[parts[0]] = parts[1]
         _write_aibot_config(config)
         print(f"Set {parts[0]} = {parts[1]}")
         return
     print("Enter aibot configuration (press Enter to skip):")
     config = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
     for key in ["bot_id", "secret", "port"]:
         val = input(f"  {key}: ").strip()
         if val:
             config[key] = val
+    val = input("  allowed_users (comma-separated userids): ").strip()
+    if val:
+        config["allowed_users"] = [u.strip() for u in val.split(",")
+                                   if u.strip()]
     config.setdefault("port", "5099")
     config.setdefault("receipt_enabled", True)
     _write_aibot_config(config)

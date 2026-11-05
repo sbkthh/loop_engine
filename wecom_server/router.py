@@ -250,7 +250,7 @@ def _audit_settings(readonly=False):
         })
     if readonly and os.path.exists(_READONLY_HOOK):
         pre_tool.append({
-            "matcher": "Bash|Edit|Write",
+            "matcher": "Bash|Edit|Write|Read",
             "hooks": [{"type": "command", "command": _READONLY_HOOK}],
         })
     return json.dumps({"hooks": {"PreToolUse": pre_tool}})
@@ -990,6 +990,7 @@ _CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "spec_result", "adjudicate"}
 
 # Group chats are read-only: only these JSON actions may run there.
 _GROUP_READONLY_ACTIONS = frozenset({"history", "gray_list", "score_view"})
+GROUP_READONLY_ACTIONS = _GROUP_READONLY_ACTIONS  # public alias for transports
 
 _READONLY_NOTE = (
     "\n\n当前是群聊只读模式：禁止执行 close / prune-worktrees / approve / "

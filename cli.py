@@ -1164,7 +1164,7 @@ def cmd_feishu_config(args):
         val = input(f"  {key}: ").strip()
         if val:
             config[key] = val
-    val = input("  allowed_users (comma-separated open_ids): ").strip()
+    val = input("  allowed_users (full-access open_ids, comma-separated): ").strip()
     if val:
         config["allowed_users"] = [u.strip() for u in val.split(",")
                                    if u.strip()]
@@ -1233,7 +1233,7 @@ def cmd_aibot_config(args):
         val = input(f"  {key}: ").strip()
         if val:
             config[key] = val
-    val = input("  allowed_users (comma-separated userids): ").strip()
+    val = input("  allowed_users (full-access userids, comma-separated): ").strip()
     if val:
         config["allowed_users"] = [u.strip() for u in val.split(",")
                                    if u.strip()]

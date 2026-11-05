@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from feishu_server import server
+from wecom_server.router import GROUP_READONLY_ACTIONS
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +99,7 @@ def test_receipt_disabled_by_config(monkeypatch):
 
 
 def test_text_event_dispatch_and_push(monkeypatch, tmp_path):
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         return "hello reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
 
@@ -110,7 +111,7 @@ def test_text_event_dispatch_and_push(monkeypatch, tmp_path):
 
 
 def test_async_callable_queued_and_pushed(monkeypatch):
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         def fn():
             return "async result"
         fn.requirement = "req1"
@@ -125,7 +126,7 @@ def test_async_callable_queued_and_pushed(monkeypatch):
 def test_duplicate_event_processed_once(monkeypatch):
     count = {"n": 0}
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         count["n"] += 1
         return "ok"
     pushed, _ = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -158,7 +159,7 @@ def test_file_message_downloaded_and_dispatched(monkeypatch, tmp_path):
                         lambda mid, fk, cfg: saved)
     seen = {}
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen["content"] = content
         return "file reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -185,7 +186,7 @@ def test_post_message_text_plus_file(monkeypatch, tmp_path):
                         lambda mid, fk, cfg: saved)
     seen = {}
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen["content"] = content
         return "post reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -214,7 +215,7 @@ def test_post_message_text_plus_file(monkeypatch, tmp_path):
 def test_post_message_text_only(monkeypatch):
     seen = {}
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen["content"] = content
         return "ok"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -311,7 +312,7 @@ def test_on_message_translates_sdk_event(monkeypatch):
         ),
     )
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         return "sdk reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
 
@@ -359,7 +360,7 @@ def test_file_then_text_merges_into_one_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
     seen = []
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen.append(content)
         return "reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -382,7 +383,7 @@ def test_file_without_text_flushes_alone_after_window(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
     seen = []
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen.append(content)
         return "reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -407,7 +408,7 @@ def test_file_wait_zero_processes_immediately(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
     seen = []
 
-    def dispatch(content, reg, data_dir, user):
+    def dispatch(content, reg, data_dir, user, **kwargs):
         seen.append(content)
         return "reply"
     pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
@@ -432,33 +433,47 @@ def test_feishu_config_set_writes_private_file(tmp_path, monkeypatch):
     assert json.loads(path.read_text()) == {"app_secret": "s"}
 
 
-def test_unauthorized_user_is_rejected_before_dispatch(monkeypatch, tmp_path):
+def test_non_owner_is_readonly(monkeypatch, tmp_path):
     calls = []
 
-    def dispatch(*args, **kwargs):
-        calls.append(1)
+    def dispatch(content, reg, data_dir, user, **kwargs):
+        calls.append(kwargs.get("allowed_actions"))
         return "reply"
 
-    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+    pushed, _ = _wire_dispatch_and_push(monkeypatch, dispatch)
     server._handle_event(_msg_event("hi", open_id="ou_evil"))
 
     assert pushed.wait(timeout=2)
-    assert pushes == [("ou_evil", "该机器人仅限授权用户使用。")]
-    assert calls == []
+    assert calls == [GROUP_READONLY_ACTIONS]
     assert not (tmp_path / "last_user.json").exists()
 
 
-def test_missing_allowlist_rejects_everyone(monkeypatch):
+def test_missing_allowlist_makes_everyone_readonly(monkeypatch):
     monkeypatch.setattr(server, "CONFIG", {"app_id": "a", "app_secret": "s"})
     calls = []
 
-    def dispatch(*args, **kwargs):
-        calls.append(1)
+    def dispatch(content, reg, data_dir, user, **kwargs):
+        calls.append(kwargs.get("allowed_actions"))
         return "reply"
 
-    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+    pushed, _ = _wire_dispatch_and_push(monkeypatch, dispatch)
     server._handle_event(_msg_event("hi", open_id="ou_abc"))
 
     assert pushed.wait(timeout=2)
-    assert pushes == [("ou_abc", "该机器人仅限授权用户使用。")]
-    assert calls == []
+    assert calls == [GROUP_READONLY_ACTIONS]
+
+
+def test_owner_is_writable_and_records_last_user(monkeypatch, tmp_path):
+    calls = []
+
+    def dispatch(content, reg, data_dir, user, **kwargs):
+        calls.append(kwargs.get("allowed_actions"))
+        return "reply"
+
+    pushed, _ = _wire_dispatch_and_push(monkeypatch, dispatch)
+    server._handle_event(_msg_event("hi", open_id="ou_abc"))
+
+    assert pushed.wait(timeout=2)
+    assert calls == [None]
+    data = json.loads((tmp_path / "last_user.json").read_text())
+    assert data["user"] == "ou_abc"

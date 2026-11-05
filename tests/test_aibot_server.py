@@ -98,10 +98,7 @@ def test_group_chat_uses_group_session_and_readonly_actions(env):
     assert calls["session_key"] == "aibot:g:wr123"
     assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
     assert calls["user_id"] == "bob"
-    last = json.loads((tmp_path / "last_user.json").read_text())
-    assert last["chatid"] == "wr123"
-    assert last["chattype"] == "group"
-    assert last["user"] == "bob"
+    assert not (tmp_path / "last_user.json").exists()
 
 
 def test_duplicate_msgid_dispatched_once(env):
@@ -399,25 +396,36 @@ def test_control_health_and_validation(env):
         httpd.server_close()
 
 
-def test_unauthorized_single_chat_is_rejected_before_dispatch(env):
+def test_non_owner_single_chat_is_readonly(env):
     server, calls, _, tmp_path = env
-    _run(server, _callback(msgid="deny1", userid="mallory"))
+    _run(server, _callback(msgid="ro1", userid="mallory"))
 
-    assert calls["count"] == 0
-    frame = server._ws.sent[-1]
-    assert frame["body"]["stream"]["content"] == "该机器人仅限授权用户使用。"
-    assert frame["body"]["stream"]["finish"] is True
+    assert calls["count"] == 1
+    assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
     assert not (tmp_path / "last_user.json").exists()
 
 
-def test_missing_allowlist_denies_every_single_chat(env, monkeypatch):
+def test_missing_allowlist_makes_every_single_chat_readonly(env, monkeypatch):
     server, calls, _, _ = env
     monkeypatch.setitem(server.CONFIG, "allowed_users", [])
-    _run(server, _callback(msgid="deny2", userid="alice"))
-    assert calls["count"] == 0
+    _run(server, _callback(msgid="ro2", userid="alice"))
+    assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
 
 
-def test_allowed_user_single_chat_still_dispatches(env):
-    server, calls, _, _ = env
+def test_owner_single_chat_is_writable_and_records_last_user(env):
+    server, calls, _, tmp_path = env
     _run(server, _callback(msgid="ok1", userid="alice"))
-    assert calls["count"] == 1
+
+    assert calls["allowed"] is None
+    data = json.loads((tmp_path / "last_user.json").read_text())
+    assert data["user"] == "alice"
+    assert data["chattype"] == "single"
+
+
+def test_group_chat_never_records_last_user(env):
+    server, calls, _, tmp_path = env
+    _run(server, _callback(msgid="grp1", kind="group", chatid="wr1",
+                           userid="bob"))
+
+    assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
+    assert not (tmp_path / "last_user.json").exists()

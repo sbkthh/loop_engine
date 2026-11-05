@@ -830,11 +830,11 @@ loop_engine feishu stop
 | `app_id` | 应用 App ID（必填） |
 | `app_secret` | 应用 App Secret（必填） |
 | `receipt_enabled` | 收到消息即推「已收到，正在处理…」回执（缺省开；置 `false` 关闭） |
-| `allowed_users` | 允许使用的飞书 open_id 列表；为空/缺失时拒绝所有消息（fail closed） |
+| `allowed_users` | 全权限用户 open_id 列表；其他用户只读。为空/缺失时所有用户只读 |
 
 依赖：`lark-oapi`（官方 SDK，`pip install lark-oapi`）。企业代理网络下默认 OpenSSL 路径不含劫持根证书时，`start()` 会自动把 `SSL_CERT_FILE` 指向 certifi 证书包。
 
-发送者身份在事件入口按 `open_id` 校验：未授权用户只收到「该机器人仅限授权用户使用。」，不会进入 LLM、不下载附件，也不写 `last_user.json`。
+发送者身份在事件入口按 `open_id` 校验：非白名单用户进入只读模式（仅 `history` / `gray_list` / `score_view` + 只读工具钩子），不写 `last_user.json`；只有白名单本人的消息会更新调度通知目标。
 
 ### 与企微的差异
 
@@ -874,7 +874,7 @@ loop_engine aibot stop
 | `secret` | 机器人 Secret（必填，明文仅靠 0600 保护，切勿入库） |
 | `port` | 本机回环控制端口，默认 `5099`（启停/通知走这里，必须单实例） |
 | `receipt_enabled` | 收到消息即回「已收到，正在处理…」，缺省开 |
-| `allowed_users` | 允许单聊的企微 userid 列表（可逗号分隔）；为空/缺失时**拒绝所有单聊**。群聊不受此限制（只读） |
+| `allowed_users` | 全权限单聊 userid 列表（owner）；其他人单聊只读。为空/缺失时所有单聊只读 |
 
 依赖：`websockets` + `cryptography`（`pip install websockets cryptography`，本机已随环境安装）。
 
@@ -882,10 +882,10 @@ loop_engine aibot stop
 
 | 场景 | 触发 | 会话上下文 | 动作权限 |
 |------|------|------------|----------|
-| 单聊 | 直接发消息 | 按用户独立 | 仅 `allowed_users` 内用户可用全部动作（批准/执行/结项等）；其他人直接拒绝 |
+| 单聊 | 直接发消息 | 按用户独立 | `allowed_users` 内用户全权限；其他人**只读**（仅 `history` / `gray_list` / `score_view`） |
 | 群聊 | **@机器人** | 按群共享 | **只读**：仅 `history` / `gray_list` / `score_view` |
 
-单聊白名单在进入 LLM 之前判定：非白名单用户只收到「该机器人仅限授权用户使用」，不会启动 agent，也不会写 `last_user.json`（避免把调度通知改投给外部用户）。白名单为空或缺失时按拒绝处理（fail closed）。群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`wecom_server/hooks/readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。要变更需求，请到单聊操作。
+单聊分级在进入 LLM 前判定：只有 `allowed_users` 内用户能执行变更动作，并会更新 `last_user.json`；其他单聊和所有群聊都是只读，且**不写** `last_user.json`，调度通知始终回到本人。只读会话额外注入 `readonly_guard.sh`：阻止 Edit/Write、变更类 Bash，以及读取 `~/.qoder/loop_engine/{aibot,feishu}.json`、`~/.dgate/`、`~/.ssh/`、`.env` 等凭证文件（best-effort，不是沙箱）。群聊只读是双层硬门禁：router 拒绝有副作用的 `__JSON_ACTION__`；`readonly_guard.sh` 在工具层阻止 `loop_engine close/prune-worktrees/approve/run`、`git push`、Edit/Write 等。
 
 会话按「群/用户 + 需求」拆分，但不做群→需求静态绑定：需求焦点由当前文本决定，未命中时沿用该会话最近 30 分钟的需求（`recent.json`，重启不丢）；全局意图（总览/所有需求状态）直接走通用会话。引用内容和附件路径不参与路由，只作为 G 的上下文。
 

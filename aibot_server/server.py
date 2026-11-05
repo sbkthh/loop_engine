@@ -6,8 +6,9 @@ loopback HTTP control port for scheduler notifications and stop/status.
 
 Group chats are read-only: the router receives a read-only action
 allowlist and a tool-level guard hook, so no approve/close/edit can run
-from a group. Single chats are restricted to the `allowed_users` userids
-in aibot.json; missing/empty means every DM is rejected before the LLM.
+from a group. Single chats: `allowed_users` gets full actions and owns
+`last_user.json` (scheduler notifications); every other single chat is
+read-only. Missing/empty `allowed_users` means all DMs are read-only.
 """
 import asyncio
 import json
@@ -253,22 +254,14 @@ async def _handle_frame(frame):
     if not conv:
         return
     kind, chatid, userid = conv
-    if kind == "single" and not _is_allowed_user(userid):
-        # Gate before _remember_user/LLM: an outsider must not be able to
-        # steer the agent or redirect scheduler notifications to themselves.
-        logger.warning("[aibot] unauthorized single chat: %s", userid)
-        try:
-            if req_id:
-                await _reply(req_id, f"reply_{msgid}",
-                             "该机器人仅限授权用户使用。", finish=True)
-            else:
-                await _send_markdown(chatid, "该机器人仅限授权用户使用。")
-        except Exception as e:
-            logger.error("[aibot] denial reply failed: %s", e)
-        return
     msgtype = body.get("msgtype")
     if msgtype == "event":
         return
+    # Only the owner's single chat is writable and may redirect scheduler
+    # notifications. Everyone else (and every group) is read-only.
+    is_owner = kind == "single" and _is_allowed_user(userid)
+    if kind == "single" and not is_owner:
+        logger.info("[aibot] read-only single chat: %s", userid)
     if msgtype not in ("text", "mixed", "image", "file"):
         try:
             await _reply(req_id, f"unsup_{msgid}",
@@ -287,8 +280,9 @@ async def _handle_frame(frame):
             except Exception as e:
                 logger.error("[aibot] empty reply failed: %s", e)
         return
-    _remember_user(chatid, kind, userid)
-    allowed = None if kind == "single" else GROUP_READONLY_ACTIONS
+    if is_owner:
+        _remember_user(chatid, kind, userid)
+    allowed = None if is_owner else GROUP_READONLY_ACTIONS
     receipt = CONFIG.get("receipt_enabled", True)
     if isinstance(receipt, str):
         receipt = receipt.strip().lower() not in ("0", "false", "no", "off")

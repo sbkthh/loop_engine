@@ -24,10 +24,35 @@ if tool in ("Edit", "Write", "NotebookEdit"):
     print(tool + "\t" + target)
     sys.exit(0)
 
+# Best-effort secret-file guard for read-only sessions: without this an
+# outsider could ask the agent to print bot/agent credentials.
+SENSITIVE = (
+    r"(^|/)\.ssh/",
+    r"(^|/)\.aws/",
+    r"(^|/)\.dgate/",
+    r"(^|/)\.kube/config",
+    r"(^|/)\.git-credentials",
+    r"(^|/)\.config/gh/",
+    r"(^|/)\.qoder/(settings|mcp)\.json",
+    r"(^|/)\.qoder/loop_engine/(aibot|feishu)\.json",
+    r"(^|/)\.env($|[.\s])",
+    r"\.(pem|key)($|[.\s])",
+)
+
+if tool == "Read":
+    target = ti.get("file_path") or ""
+    if any(re.search(p, target) for p in SENSITIVE):
+        print("Read\t" + target)
+        sys.exit(0)
+    sys.exit(0)
+
 if tool != "Bash":
     sys.exit(0)
 
 cmd = ti.get("command", "") or ""
+if any(re.search(p, cmd) for p in SENSITIVE):
+    print("Bash\t" + " ".join(cmd.split())[:300])
+    sys.exit(0)
 patterns = [
     r"\bloop_engine\s+(close|prune-worktrees|approve|run|next|reset|set-status|"
     r"add-blocker|remove-blocker|resolve-draft|requirement-add|requirement-remove|"

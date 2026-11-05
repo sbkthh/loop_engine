@@ -74,10 +74,6 @@ def _handle_event(payload):
     event = payload.get("event", {})
     message = event.get("message", {})
     open_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
-    if not _is_allowed_user(open_id):
-        logger.warning("[feishu] unauthorized user: %s", open_id)
-        _push(open_id, "该机器人仅限授权用户使用。")
-        return
     mtype = message.get("message_type")
     if mtype == "file":
         try:
@@ -167,12 +163,16 @@ def _process(content, open_id, send_receipt=True):
     """Background: dispatch through the shared router, push the reply."""
     if send_receipt:
         _receipt(open_id)
-    _remember_user(open_id)
+    is_owner = _is_allowed_user(open_id)
+    if is_owner:
+        _remember_user(open_id)
     try:
-        from wecom_server.router import dispatch
+        from wecom_server.router import GROUP_READONLY_ACTIONS, dispatch
         import registry as reg_mod
         reg = reg_mod.list_requirements()
-        result = dispatch(content, reg, DATA_DIR, open_id)
+        result = dispatch(
+            content, reg, DATA_DIR, open_id,
+            allowed_actions=None if is_owner else GROUP_READONLY_ACTIONS)
         if callable(result):
             _submit_async(result, open_id, CONFIG)
             logger.info("[feishu] ack: async processing")

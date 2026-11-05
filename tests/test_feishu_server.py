@@ -17,7 +17,8 @@ def _server_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CONFIG",
                         {"app_id": "cli_a", "app_secret": "s",
-                         "receipt_enabled": False, "file_wait_seconds": 0.3})
+                         "receipt_enabled": False, "file_wait_seconds": 0.3,
+                         "allowed_users": ["ou_abc", "ou_sdk"]})
     monkeypatch.setattr(server, "_seen_events", {})
     monkeypatch.setattr(server, "_pending", {})
     monkeypatch.setattr(server, "_last_user_write", {})
@@ -69,7 +70,8 @@ def _wire_dispatch_and_push(monkeypatch, dispatch):
 
 def test_receipt_pushed_before_reply_by_default(monkeypatch):
     """Missing receipt_enabled key defaults to on; receipt precedes reply."""
-    monkeypatch.setattr(server, "CONFIG", {"app_id": "a", "app_secret": "s"})
+    monkeypatch.setattr(server, "CONFIG", {"app_id": "a", "app_secret": "s",
+                        "allowed_users": ["ou_abc"]})
     pushed, pushes = _wire_dispatch_and_push(
         monkeypatch, lambda *a, **k: "reply")
 
@@ -86,7 +88,7 @@ def test_receipt_pushed_before_reply_by_default(monkeypatch):
 def test_receipt_disabled_by_config(monkeypatch):
     monkeypatch.setattr(server, "CONFIG",
                         {"app_id": "a", "app_secret": "s",
-                         "receipt_enabled": False})
+                         "receipt_enabled": False, "allowed_users": ["ou_abc"]})
     pushed, pushes = _wire_dispatch_and_push(
         monkeypatch, lambda *a, **k: "reply")
 
@@ -351,7 +353,8 @@ def test_file_then_text_merges_into_one_prompt(monkeypatch, tmp_path):
     into a single dispatch; the file is never processed on its own."""
     monkeypatch.setattr(server, "CONFIG",
                         {"app_id": "a", "app_secret": "s",
-                         "receipt_enabled": False, "file_wait_seconds": 5})
+                         "receipt_enabled": False, "file_wait_seconds": 5,
+                         "allowed_users": ["ou_abc"]})
     saved = str(tmp_path / "prd.pdf")
     monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
     seen = []
@@ -398,7 +401,8 @@ def test_file_wait_zero_processes_immediately(monkeypatch, tmp_path):
     right away instead of waiting out a (here absurd) 30s window."""
     monkeypatch.setattr(server, "CONFIG",
                         {"app_id": "a", "app_secret": "s",
-                         "receipt_enabled": False, "file_wait_seconds": 0})
+                         "receipt_enabled": False, "file_wait_seconds": 0,
+                         "allowed_users": ["ou_abc"]})
     saved = str(tmp_path / "prd.pdf")
     monkeypatch.setattr(server, "download_file", lambda mid, fk, cfg: saved)
     seen = []
@@ -426,3 +430,35 @@ def test_feishu_config_set_writes_private_file(tmp_path, monkeypatch):
     path = tmp_path / "feishu.json"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert json.loads(path.read_text()) == {"app_secret": "s"}
+
+
+def test_unauthorized_user_is_rejected_before_dispatch(monkeypatch, tmp_path):
+    calls = []
+
+    def dispatch(*args, **kwargs):
+        calls.append(1)
+        return "reply"
+
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+    server._handle_event(_msg_event("hi", open_id="ou_evil"))
+
+    assert pushed.wait(timeout=2)
+    assert pushes == [("ou_evil", "该机器人仅限授权用户使用。")]
+    assert calls == []
+    assert not (tmp_path / "last_user.json").exists()
+
+
+def test_missing_allowlist_rejects_everyone(monkeypatch):
+    monkeypatch.setattr(server, "CONFIG", {"app_id": "a", "app_secret": "s"})
+    calls = []
+
+    def dispatch(*args, **kwargs):
+        calls.append(1)
+        return "reply"
+
+    pushed, pushes = _wire_dispatch_and_push(monkeypatch, dispatch)
+    server._handle_event(_msg_event("hi", open_id="ou_abc"))
+
+    assert pushed.wait(timeout=2)
+    assert pushes == [("ou_abc", "该机器人仅限授权用户使用。")]
+    assert calls == []

@@ -45,6 +45,15 @@ _file_buffer = {}
 _file_buffer_guard = threading.Lock()
 
 
+def _is_allowed_user(open_id):
+    """User allowlist. Missing/empty config means deny everyone."""
+    allowed = CONFIG.get("allowed_users") or []
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    return bool(open_id) and open_id in {
+        u.strip() for u in allowed if isinstance(u, str) and u.strip()}
+
+
 def _handle_event(payload):
     """payload: dict shape of im.message.receive_v1. Spawns processing."""
     global _seen_events  # reassigned below (cleanup dict comp), needs global
@@ -65,6 +74,10 @@ def _handle_event(payload):
     event = payload.get("event", {})
     message = event.get("message", {})
     open_id = event.get("sender", {}).get("sender_id", {}).get("open_id", "")
+    if not _is_allowed_user(open_id):
+        logger.warning("[feishu] unauthorized user: %s", open_id)
+        _push(open_id, "该机器人仅限授权用户使用。")
+        return
     mtype = message.get("message_type")
     if mtype == "file":
         try:

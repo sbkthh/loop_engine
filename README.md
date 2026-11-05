@@ -830,8 +830,11 @@ loop_engine feishu stop
 | `app_id` | 应用 App ID（必填） |
 | `app_secret` | 应用 App Secret（必填） |
 | `receipt_enabled` | 收到消息即推「已收到，正在处理…」回执（缺省开；置 `false` 关闭） |
+| `allowed_users` | 允许使用的飞书 open_id 列表；为空/缺失时拒绝所有消息（fail closed） |
 
 依赖：`lark-oapi`（官方 SDK，`pip install lark-oapi`）。企业代理网络下默认 OpenSSL 路径不含劫持根证书时，`start()` 会自动把 `SSL_CERT_FILE` 指向 certifi 证书包。
+
+发送者身份在事件入口按 `open_id` 校验：未授权用户只收到「该机器人仅限授权用户使用。」，不会进入 LLM、不下载附件，也不写 `last_user.json`。
 
 ### 与企微的差异
 

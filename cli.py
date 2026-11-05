@@ -1145,7 +1145,11 @@ def cmd_feishu_config(args):
         if os.path.exists(config_path):
             with open(config_path) as f:
                 config = json.load(f)
-        config[parts[0]] = parts[1]
+        if parts[0] == "allowed_users":
+            config[parts[0]] = [u.strip() for u in parts[1].split(",")
+                                if u.strip()]
+        else:
+            config[parts[0]] = parts[1]
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         os.chmod(config_path, 0o600)
@@ -1153,10 +1157,17 @@ def cmd_feishu_config(args):
         return
     print("Enter Feishu configuration (press Enter to skip):")
     config = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
     for key in ["app_id", "app_secret"]:
         val = input(f"  {key}: ").strip()
         if val:
             config[key] = val
+    val = input("  allowed_users (comma-separated open_ids): ").strip()
+    if val:
+        config["allowed_users"] = [u.strip() for u in val.split(",")
+                                   if u.strip()]
     if config:
         os.makedirs(data_dir, exist_ok=True)
         with open(config_path, "w") as f:

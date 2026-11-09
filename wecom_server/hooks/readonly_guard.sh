@@ -54,10 +54,10 @@ if any(re.search(p, cmd) for p in SENSITIVE):
     print("Bash\t" + " ".join(cmd.split())[:300])
     sys.exit(0)
 patterns = [
-    r"\bloop_engine\s+(close|prune-worktrees|approve|run|next|reset|set-status|"
+    r"\bloop_engine\s+(close|prune-worktrees|approve|run|score|next|reset|set-status|"
     r"add-blocker|remove-blocker|resolve-draft|requirement-add|requirement-remove|"
     r"requirement-rename|scope-audit)\b",
-    r"__main__\.py\s+(close|prune-worktrees|approve|run|next|reset|set-status|"
+    r"__main__\.py\s+(close|prune-worktrees|approve|run|score|next|reset|set-status|"
     r"add-blocker|remove-blocker|resolve-draft|requirement-add|requirement-remove|"
     r"requirement-rename)\b",
     r"\b(import|from)\s+(scheduler|machine|state)\b",

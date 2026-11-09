@@ -36,6 +36,7 @@ _LLM_SYSTEM_PROMPT = (
     "System actions: to trigger a backend action, append on its own line:\n"
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
     "Actions: approve | run_spec(requirement+module) | "
+    "score(requirement[+module]) | "
     "spec_result(requirement+module) | history | "
     "score_view(requirement[+module]) | "
     "gray_list | adjudicate(requirement+target+decision, "
@@ -62,6 +63,11 @@ _LLM_SYSTEM_PROMPT = (
     "\"module\": \"<module>\"}. "
     "Do NOT read score_dimensions from state.json and answer directly — "
     "the backend owns the two-tier rendering (push summary vs full detail).\n\n"
+    "Score run rule (distinct from score_view): when the user asks to RUN a "
+    "scoring pass (评分/打分/重新评分, e.g. '先打一次分'、'评分 xxx'), emit "
+    "action=score with the requirement (add module when the user names one). "
+    "This runs ONLY the SCORE step — it needs no execution approval and makes "
+    "no code changes. score_view only displays an existing score.\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
     "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
@@ -774,6 +780,36 @@ def _execute_run_spec(name, module, registry, data_dir, user_id=None):
     return f"已开始单独执行 spec：{name} / {key.split('/')[-1]}"
 
 
+def _execute_score(name, module, registry, data_dir, user_id=None):
+    """Run ONLY the SCORE step for one module — no approval, no MAKER.
+
+    Lock and gray-draft gates are enforced by the forked CLI itself; the
+    pre-checks here only make the refusal legible in chat."""
+    req = next((r for r in registry if r.get("name") == name), None)
+    if not req:
+        available = ", ".join(r.get("name", "?") for r in registry) or "无"
+        return f"没有找到需求：{name}（可用：{available}）"
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import scheduler
+    root = req.get("root", "")
+    if scheduler.is_locked(root):
+        return f"需求「{name}」正在执行中，请等结束后再评分"
+    if scheduler._has_pending_gray_drafts(root):
+        return (f"需求「{name}」有待裁决的灰名单草稿，先裁决再评分"
+                f"（评分会把状态推进到待执行，绕过裁决恢复点）")
+    proc = subprocess.Popen(
+        scheduler._engine_cmd("score", name,
+                              *(["--module", module] if module else [])),
+        stdout=open(scheduler.LOG_PATH, "a"),
+        stderr=subprocess.STDOUT, start_new_session=True)
+    _log_line = getattr(scheduler, "_log", None)
+    if callable(_log_line):
+        _log_line(f"wecom score: forked {name} {module or ''} "
+                  f"(pid {proc.pid})")
+    return (f"已开始评分：{name}" + (f" / {module}" if module else "")
+            + "（只跑 SCORE，不进实现）")
+
+
 def _audit_line(text):
     """Append a line to the shared audit log (same file as audit_hook.sh)."""
     try:
@@ -986,7 +1022,8 @@ def _user_intends_approve(message):
     return bool(_APPROVE_INTENT_RE.search(message))
 
 
-_CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "spec_result", "adjudicate"}
+_CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "score", "spec_result",
+                           "adjudicate"}
 
 # Group chats are read-only: only these JSON actions may run there.
 _GROUP_READONLY_ACTIONS = frozenset({"history", "gray_list", "score_view"})
@@ -994,7 +1031,7 @@ GROUP_READONLY_ACTIONS = _GROUP_READONLY_ACTIONS  # public alias for transports
 
 _READONLY_NOTE = (
     "\n\n当前是群聊只读模式：禁止执行 close / prune-worktrees / approve / "
-    "run_spec / spec_result / adjudicate，禁止编辑 spec 或代码；只回答问题和"
+    "run_spec / score / spec_result / adjudicate，禁止编辑 spec 或代码；只回答问题和"
     "查看状态。需要变更时请用户到单聊操作。\n"
 )
 
@@ -1033,6 +1070,12 @@ def _dispatch_json_action(payload, registry, data_dir, user_id,
         if not name or not module:
             return "缺少参数：requirement/module"
         return _execute_run_spec(name, module, registry, data_dir, user_id)
+    if action == "score":
+        name = payload.get("requirement")
+        if not name:
+            return "缺少参数：requirement"
+        return _execute_score(name, payload.get("module"), registry,
+                              data_dir, user_id)
     if action == "spec_result":
         name = payload.get("requirement")
         module = payload.get("module")
@@ -1081,7 +1124,12 @@ def _llm_lock(requirement):
 # at startup so affinity survives a restart; tests leave it unset and stay
 # in-memory.
 _RECENT_WINDOW = 1800  # 30 min covers a grill-me round-trip
-_recent_activity = {}  # (scope, requirement) -> last-active timestamp
+# Sentinel stored in place of a requirement after a turn routed to the global
+# session. Without it a keywordless follow-up (e.g. answering the bot's own
+# clarifying question) fell back to an unrelated requirement touched earlier
+# in the same conversation and resumed that stale session.
+_FOCUS_GLOBAL = "__global__"
+_recent_activity = {}  # (scope, requirement|_FOCUS_GLOBAL) -> last-active ts
 _recent_guard = threading.Lock()
 _RECENT_PATH = ""
 
@@ -1148,14 +1196,20 @@ def _save_recent():
 
 
 def _touch_recent(user_id, requirement, session_key=None):
-    if not requirement:
-        return
+    """Record the focus this turn was routed to, including the global session.
+
+    A global turn must overwrite an older requirement affinity: the next
+    keywordless message is usually an answer to the bot's clarifying
+    question, so it belongs in the same (global) session.
+    """
     with _recent_guard:
-        _recent_activity[(session_key or user_id, requirement)] = time.time()
+        _recent_activity[(session_key or user_id,
+                          requirement or _FOCUS_GLOBAL)] = time.time()
     _save_recent()
 
 
 def _recent_requirement(user_id, session_key=None):
+    """Most recent focus: a requirement name, _FOCUS_GLOBAL, or None."""
     now = time.time()
     scope = session_key or user_id
     with _recent_guard:
@@ -1167,6 +1221,49 @@ def _recent_requirement(user_id, session_key=None):
         return None
     candidates.sort(reverse=True)
     return candidates[0][1]
+
+
+_WORKSPACE_PATH = os.path.join(DATA_DIR, "workspace.json")
+
+
+def _workspace_snapshot():
+    """Local source-repo and worktree roots from workspace.json.
+
+    Injected into every prompt so the bot can locate an unregistered
+    system's code itself instead of asking the user for paths it already
+    knows. Read per message so edits need no daemon restart.
+    """
+    try:
+        with open(_WORKSPACE_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    roots = [os.path.expanduser(r) for r in (data.get("repo_roots") or [])
+             if isinstance(r, str) and r.strip()]
+    worktree = data.get("worktree_root") or ""
+    worktree = os.path.expanduser(worktree) if isinstance(worktree, str) \
+        and worktree.strip() else ""
+    if not roots and not worktree:
+        return ""
+    lines = ["\n\n【本地工作区】"]
+    if roots:
+        lines.append("- 原始代码仓库根目录（只读检索）：" + "、".join(roots))
+    if worktree:
+        lines.append(f"- 需求 worktree 根目录：{worktree}/<需求名>")
+    lines.append(
+        "- 用 codegraph 查询某个仓库前，先执行 `codegraph sync <仓库路径>` "
+        "更新索引（增量，通常 1 秒内）；未建索引的仓库不要自动 init，直接用 "
+        "grep/Read；只读会话只查询现有索引，不执行 sync。")
+    lines.append(
+        "当用户提到未注册的需求或系统、要求按代码整理逻辑/设计时：先在上述"
+        "仓库根目录下按业务关键词检索目录名、README 和代码。一个业务/系统可能"
+        "跨多个仓库，凡有涉及的仓库都要纳入只读分析，不要只挑一个；证据足以"
+        "确定涉及范围时，直接给出结论、涉及仓库清单和依据并继续整理，无需再"
+        "确认；只有在无法确定、候选之间无法区分或证据冲突时，才列出候选请"
+        "用户确认。先看目录名和 README，再按关键词定向搜索，避免全量扫描。"
+        "不要凭空编造路径。新建需求时 root 用 "
+        f"{worktree}/<需求名>，--projects 填定位到的真实仓库路径。")
+    return "\n".join(lines)
 
 
 def _system_state_snapshot(registry):
@@ -1348,15 +1445,18 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
     focus_text = detect_text if detect_text is not None else message
     requirement = _detect_requirement(focus_text, registry)
     if not requirement and not _GLOBAL_INTENT_RE.search(focus_text):
-        # no keyword hit — try the most recently active requirement session
-        # first (covers short grill-me answers), then the LLM classifier.
-        # Global-intent questions (总览/所有需求状态…) skip the fallback and
-        # stay in the global session so the reply is prefixed 【通用】.
+        # No keyword hit — continue the focus of the previous turn (covers
+        # short grill-me answers), then fall back to the LLM classifier.
+        # A previous global turn must stay global: otherwise a keywordless
+        # answer to the bot's clarifying question jumps into an unrelated
+        # requirement session that was active within the window.
+        # Global-intent questions (总览/所有需求状态…) skip this block.
         if session_key:
-            requirement = _recent_requirement(user_id, session_key)
+            recent = _recent_requirement(user_id, session_key)
         else:
-            requirement = _recent_requirement(user_id)
-        requirement = requirement or _classify_requirement(focus_text, registry)
+            recent = _recent_requirement(user_id)
+        if recent != _FOCUS_GLOBAL:
+            requirement = recent or _classify_requirement(focus_text, registry)
     entry = next((r for r in registry if r.get("name") == requirement), None) \
         if requirement else None
     closed = bool(entry and entry.get("status") == "CLOSED")
@@ -1373,6 +1473,7 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
     # Shared fact layer: real-time state injected into every session so
     # answers never depend on which session the message landed in.
     prompt += _system_state_snapshot(registry)
+    prompt += _workspace_snapshot()
     # Tell G about background files so it can read them when needed, instead
     # of relying on static injection that would waste tokens on every message.
     # A closed requirement with a main spec skips the stale worktree paths.

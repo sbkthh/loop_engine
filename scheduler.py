@@ -21,7 +21,7 @@ import uuid
 import requests  # noqa: E402 — used by notify_pending()
 
 import agent_cli
-from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE,
+from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE, SCORE,
                        FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS)
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
@@ -1148,9 +1148,25 @@ def _no_advance_reason(root, module=None):
     return "状态机未推进（无下一步可执行）"
 
 
-def _end_message(name, end, steps, elapsed_min, failure_detail, root, module=None):
+def _end_message(name, end, steps, elapsed_min, failure_detail, root,
+                 module=None, only_action=None):
     """User-facing run-end notification: outcome + what to do next."""
     base = f"[调度] {md_bold(name)} "
+    if end == "score_done":
+        state = _read_state(root) or {}
+        m = state.get("modules", {}).get(module or "", {})
+        score = m.get("last_score")
+        short = (module or "?").rsplit("/", 1)[-1]
+        ok = m.get("status") == READY
+        tail = (f"回复「批准执行 {name}」开始实现" if ok
+                else "完善 spec 后再说「评分」重评")
+        return (f"{base}{md_color('SCORE 完成', 'info')}："
+                f"{md_bold(short)} {score}/100"
+                f"（{'可执行' if ok else '待完善'}）。{tail}")
+    if end == "unexpected_action":
+        return (f"{base}{md_color('评分未执行', 'warning')}："
+                f"{failure_detail or end}，共 {steps} 步，"
+                f"耗时 {elapsed_min} 分钟")
     if end == "idle":
         return (f"{base}{md_color('执行完成（成功）', 'info')}：所有模块已同步 SYNCED，"
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
@@ -1174,8 +1190,11 @@ def _end_message(name, end, steps, elapsed_min, failure_detail, root, module=Non
     if end in ("qodercli_failed", "commit_error",
                "bad_next_output", "bad_commit_output"):
         detail = failure_detail or end
-        return (f"{base}{md_color('执行失败', 'warning')}：{detail}，共 {steps} 步，"
-                f"耗时 {elapsed_min} 分钟。修复后回复「批准执行 {name}」重试")
+        label = "评分" if only_action else "执行"
+        retry = (f"再说「{label}」重试" if only_action
+                 else f"回复「批准执行 {name}」重试")
+        return (f"{base}{md_color(f'{label}失败', 'warning')}：{detail}，"
+                f"共 {steps} 步，耗时 {elapsed_min} 分钟。修复后{retry}")
     if end == "repeat_limit":
         return (f"{base}{md_color('执行停止', 'comment')}：同一步骤重复多次未推进，需人工检查，"
                 f"共 {steps} 步，耗时 {elapsed_min} 分钟")
@@ -1228,9 +1247,63 @@ def _repair_result(root, sid, detail, action=None):
     return True
 
 
-def run_requirement(name, module=None):
+_SCORABLE_STATUSES = (PARTIAL, READY, NEEDS_REFINEMENT)
+
+
+def _prepare_only_action(root, module, action):
+    """Pin one module to `action` for a single-step run (score-only).
+
+    Resolves the module when omitted (must be unambiguous), refuses statuses
+    where scoring would bypass a gate (DRAFT unregistered / BLOCKED / SYNCED),
+    and refuses to overwrite a resume checkpoint that points at real code
+    work. Returns {"module": key} or {"error": ...}.
+    """
+    sm = StateManager(root)
+    state = sm.load()
+    modules = state.get("modules", {})
+    if module:
+        if module not in modules:
+            matches = [k for k in modules
+                       if k.rsplit("/", 1)[-1] == module]
+            if len(matches) != 1:
+                return {"error": (f"找不到模块 {module}；可用："
+                                  + (", ".join(sorted(modules)) or "无"))}
+            module = matches[0]
+    else:
+        candidates = [k for k, m in modules.items()
+                      if m.get("status") in _SCORABLE_STATUSES]
+        if not candidates:
+            return {"error": "没有可评分的模块"
+                             "（需处于 PARTIAL / READY / NEEDS_REFINEMENT）"}
+        if len(candidates) > 1:
+            return {"error": ("有多个可评分模块，请用 --module 指定："
+                              + ", ".join(sorted(candidates)))}
+        module = candidates[0]
+    status = modules[module].get("status")
+    if status not in _SCORABLE_STATUSES:
+        hint = {
+            DRAFT: "尚未登记执行，先走 spec_result 登记",
+            BLOCKED: "先修改 spec 再登记",
+            SYNCED: "已同步，无需评分",
+        }.get(status, "")
+        return {"error": f"模块 {module} 当前状态 {status}，不能评分（{hint}）"}
+    cur = state.get("current") or {}
+    if cur.get("module") == module and cur.get("action") not in (
+            None, SCORE, "CLASSIFY_CHANGE"):
+        return {"error": (f"模块 {module} 停在上一步 {cur['action']}，"
+                          f"请先用 run 续跑，避免覆盖进度")}
+    StateManager.set_current(state, module, action)
+    sm.save(state)
+    return {"module": module}
+
+
+def run_requirement(name, module=None, only_action=None):
     """Execute one requirement (or a single module) to completion:
-    next → qodercli → commit."""
+    next → qodercli → commit.
+
+    only_action pins the run to a single action (e.g. SCORE) and stops right
+    after its commit — no approval, no MAKER chain.
+    """
     req = next((r for r in _read_registry() if r.get("name") == name), None)
     if not req:
         return {"error": f"Requirement not registered: {name}"}
@@ -1246,6 +1319,12 @@ def run_requirement(name, module=None):
             f"（或在聊天里回复裁决）再执行")}
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
+    if only_action:
+        prep = _prepare_only_action(root, module, only_action)
+        if "error" in prep:
+            release_lock(root)
+            return prep
+        module = prep["module"]
     user_id = None
     try:
         try:
@@ -1254,7 +1333,8 @@ def run_requirement(name, module=None):
         except (OSError, ValueError):
             pass
         start = time.time()
-        notify_text(f"[调度] 开始执行 {md_bold(name)} ({root})", user_id)
+        verb = "评分" if only_action else "执行"
+        notify_text(f"[调度] 开始{verb} {md_bold(name)} ({root})", user_id)
         _log(f"run {name}: start ({root})")
     except BaseException:
         # The run loop's finally is not reached when setup itself fails.
@@ -1291,6 +1371,12 @@ def run_requirement(name, module=None):
             action = directives.get("action")
             if action == "IDLE":
                 end = "idle"
+                break
+            if only_action and action != only_action:
+                _log(f"run {name}: next action {action} != {only_action}, "
+                     f"stopping")
+                end = "unexpected_action"
+                failure_detail = f"当前下一步是 {action}，不是 {only_action}"
                 break
             if action == last_action:
                 same_action += 1
@@ -1453,6 +1539,11 @@ def run_requirement(name, module=None):
                     + _blocked_module_lines(mkey, m), user_id)
                 end = "no_advance"
                 break
+            if only_action:
+                # score < threshold commits with next_action=None; that is a
+                # finished score, not a stalled run
+                end = "score_done" if only_action == SCORE else "done"
+                break
             if not commit.get("next_action"):
                 _log(f"run {name}: no state advance, stopping")
                 end = "no_advance"
@@ -1470,14 +1561,16 @@ def run_requirement(name, module=None):
         return {"requirement": name, "steps": steps, "end": end}
     finally:
         release_lock(root)
-        if end != "gray_list":
+        if end != "gray_list" and not only_action:
+            # a score-only run must not consume an approval granted earlier
+            # for full execution
             _clear_approval(name)
         finished_at = time.time()
         elapsed_min = int((finished_at - start) // 60)
         _record_run(name, end, steps, start, finished_at)
         notify_text(
             _end_message(name, end, steps, elapsed_min, failure_detail, root,
-                         module),
+                         module, only_action),
             user_id)
 
 

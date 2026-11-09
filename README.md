@@ -412,6 +412,21 @@ loop_engine approve --all
 loop_engine run strategic-stockup-system-upgrade
 ```
 
+### 只跑 SCORE（不批准、不进实现）
+
+```bash
+loop_engine score strategic-stockup-system-upgrade            # 自动选唯一的可评分模块
+loop_engine score strategic-stockup-system-upgrade --module ai-recommend
+```
+
+只执行 SCORE 一步：commit 后立即停止，状态落在 READY（≥90）或 NEEDS_REFINEMENT（<90），
+不进入 MAKER。用于「先看评分再决定是否批准执行」，也是 spec 精炼后重评的唯一入口
+（NEEDS_REFINEMENT 本来就不能被 approve 驱动）。
+
+- 可评分状态：PARTIAL / READY / NEEDS_REFINEMENT；DRAFT（未登记）、BLOCKED、SYNCED 会被拒绝
+- 同一需求有多个可评分模块时必须用 `--module` 指定（key 或裸模块名均可）
+- 不消耗、也不清除已有的「批准执行」授权；灰名单草稿未裁决时同样拒绝
+
 > 有未裁决的灰名单草稿时 `run` 直接拒绝执行（与 `approve`/自动派发同一道闸）：
 > `machine.next()` 在草稿未裁决前拿不到 `_gray_resume`，硬跑会退回 SCORE 把整链
 > 重付一遍。先 `resolve-draft` 裁决，再 run。
@@ -600,9 +615,11 @@ Skill 会自动：
 2. **生成 artifacts**：说"按 PRD 生成 spec"→ G 按 prd-to-spec 流程生成 proposal/design/specs/tasks
 3. **澄清**：G 自动进入 grill-me 逐个追问，确认后编辑 spec.md
 4. **登记**：编辑完 G 在回复末尾追加 `__JSON_ACTION__` 动作块（spec_result）→ 服务器校验/备份/置 PARTIAL
-5. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
-6. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 登记 → 批准
-7. **结项**：全部模块 SYNCED 后，说「结项 xx」→ G 执行 `loop_engine close` 并汇报（门禁、主 spec 落位、归档）；结项后的消息进入主 spec 会话继续讨论，approve/run_spec 等变更动作仍被拦截（见「九、需求结项」）
+5. **评分（可选）**：说「评分 <需求/模块>」只跑 SCORE 一步——不需要批准执行、不改代码，
+   回复里给分数与缺口；≥90 再批准进入实现，<90 说「完善spec」精炼
+6. **批准**：微信"批准执行"→ 调度器自动跑 SCORE → MAKER → SYNCED
+7. **后续修改**：微信里直接说改需求 → 同样走澄清 → 编辑 → 登记 → 批准
+8. **结项**：全部模块 SYNCED 后，说「结项 xx」→ G 执行 `loop_engine close` 并汇报（门禁、主 spec 落位、归档）；结项后的消息进入主 spec 会话继续讨论，approve/run_spec 等变更动作仍被拦截（见「九、需求结项」）
 
 ### 可用命令（在 skill 内，使用绝对路径）
 
@@ -630,6 +647,9 @@ loop_engine close <name> --merge-existing
 
 # 清理已结项需求的 worktree（仅删干净且已合入远程主干的 checkout，本地分支保留）
 loop_engine prune-worktrees <name>
+
+# 只跑 SCORE 一步（不需要"批准执行"；commit 后即停，不进 MAKER）
+loop_engine score <name> [--module <change_id>/<module_name>]
 
 # 重置模块到 DRAFT
 loop_engine reset --root <path> <change_id/module_name>
@@ -982,6 +1002,7 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 │                                                                     │
 │     __JSON_ACTION__ 动作（服务器按动作分发，不经过二次 LLM）：        │
 │     approve     → 批准 + dispatch → fork B                         │
+│     score       → 只跑 SCORE 单步（不需批准，不进 MAKER）           │
 │     spec_result → 校验 spec 变更（备份/置 PARTIAL）→ 等批准          │
 │     history     → 读取执行历史（runs.json）                         │
 │     gray_list   → 列出待裁决灰名单草稿（带证据）                    │

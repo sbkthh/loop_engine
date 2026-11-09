@@ -2673,6 +2673,84 @@ class TestNotify(SchedulerBase):
         self.assertIn("SYNCED", done[0])
 
 
+class TestScoreOnly(SchedulerBase):
+    """`loop_engine score`: one SCORE step, no approval, no MAKER chain."""
+
+    def test_score_stops_after_one_step(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE", "SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req", only_action="SCORE")
+
+        self.assertEqual(result["end"], "score_done")
+        self.assertEqual(result["steps"], 1)
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_score_keeps_existing_approval(self):
+        """A score-only run must not consume an approval granted earlier
+        for full execution."""
+        self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            scheduler.run_requirement("req", only_action="SCORE")
+
+        pending = scheduler.load_pending()["pending"]
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0]["approved"])
+
+    def test_score_refuses_non_scorable_status(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "SYNCED")})
+
+        result = scheduler.run_requirement("req", only_action="SCORE")
+
+        self.assertIn("error", result)
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_score_requires_module_when_ambiguous(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m1")
+        _make_spec(root, "c", "m2")
+        _make_state(root, {"c/m1": _module("c", "m1", "READY"),
+                           "c/m2": _module("c", "m2", "PARTIAL")})
+
+        result = scheduler.run_requirement("req", only_action="SCORE")
+
+        self.assertIn("error", result)
+        self.assertIn("--module", result["error"])
+
+    def test_score_accepts_bare_module_name(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req", module="m",
+                                               only_action="SCORE")
+        self.assertEqual(result["end"], "score_done")
+
+    def test_score_refuses_to_override_code_progress(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "PARTIAL")},
+                    current={"module": "c/m", "action": "MAKER_STEP1_RED",
+                             "attempt": 0})
+
+        result = scheduler.run_requirement("req", only_action="SCORE")
+
+        self.assertIn("error", result)
+        self.assertIn("MAKER_STEP1_RED", result["error"])
+
+    def test_score_stops_when_next_action_is_not_score(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["CHECKER"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement("req", only_action="SCORE")
+
+        self.assertEqual(result["end"], "unexpected_action")
+        self.assertEqual(result["steps"], 0)
+        self.assertFalse(scheduler.is_locked(root))
+
+
 class TestTimeoutBudgets(unittest.TestCase):
     """COMMIT_TIMEOUT_SECONDS wraps the whole commit subprocess; inside it the
     final gate runs one mvn per bound repo serially, each bounded by

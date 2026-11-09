@@ -12,7 +12,7 @@ import time
 
 from state import StateManager
 from machine import StateMachine
-from constants import DRAFT, ALL_STATUSES, DATA_DIR
+from constants import DRAFT, SCORE, ALL_STATUSES, DATA_DIR
 from setup import setup_requirement, init_from_prd, add_project_to_requirement
 from spec_utils import coerce_roots, compute_spec_hash
 import report
@@ -877,6 +877,15 @@ def cmd_run(args):
         sys.exit(1)
 
 
+def cmd_score(args):
+    result = scheduler.run_requirement(
+        args.requirement, module=getattr(args, "module", None),
+        only_action=SCORE)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if "error" in result:
+        sys.exit(1)
+
+
 def cmd_manual_hold(args):
     """(internal) Detached lock holder spawned by manual-begin."""
     if not scheduler.manual_hold(args.root):
@@ -1464,6 +1473,14 @@ def main():
     p.add_argument("--module", default=None,
                    help="Pin to one module key (change_id/module_name)")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("score", parents=[common],
+                       help="Run ONLY the SCORE step (no approval, no MAKER)")
+    p.add_argument("requirement", help="Requirement name")
+    p.add_argument("--module", default=None,
+                   help="Module key or bare name; omitted = the single "
+                        "scorable module")
+    p.set_defaults(func=cmd_score)
 
     p = sub.add_parser("manual-hold", parents=[common],
                        help="(internal) Hold the requirement lock (spawned by manual-begin)")

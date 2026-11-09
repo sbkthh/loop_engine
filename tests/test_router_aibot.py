@@ -114,3 +114,46 @@ def test_readonly_audit_settings_include_guard():
     payload = router._audit_settings(readonly=True)
     assert "readonly_guard.sh" in payload
     assert "readonly_guard.sh" not in router._audit_settings(readonly=False)
+
+
+def test_group_readonly_blocks_score(monkeypatch):
+    from wecom_server import router
+    called = []
+    monkeypatch.setattr(router, "_execute_score",
+                        lambda *a, **k: called.append(a) or "scored")
+
+    reply = router._dispatch_json_action(
+        {"action": "score", "requirement": "req"}, [], "/tmp", "u1",
+        router._GROUP_READONLY_ACTIONS)
+
+    assert "群聊只读" in reply
+    assert called == []
+
+
+def test_closed_requirement_blocks_score(monkeypatch):
+    from wecom_server import router
+    called = []
+    monkeypatch.setattr(router, "_execute_score",
+                        lambda *a, **k: called.append(a) or "scored")
+    registry = [{"name": "req", "root": "/tmp/req", "status": "CLOSED",
+                 "closed_at": "2026-01-01"}]
+
+    reply = router._dispatch_json_action(
+        {"action": "score", "requirement": "req"}, registry, "/tmp", "u1")
+
+    assert "已结项" in reply
+    assert called == []
+
+
+def test_score_dispatches_to_executor(monkeypatch):
+    from wecom_server import router
+    called = []
+    monkeypatch.setattr(router, "_execute_score",
+                        lambda *a, **k: called.append(a) or "scored")
+
+    reply = router._dispatch_json_action(
+        {"action": "score", "requirement": "req", "module": "c/m"},
+        [], "/tmp", "u1")
+
+    assert reply == "scored"
+    assert called

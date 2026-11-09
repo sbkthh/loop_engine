@@ -1,5 +1,6 @@
 """Tests for router async dispatch (all messages go through LLM)."""
 import datetime
+import json
 import os
 import sys
 import types
@@ -256,6 +257,51 @@ def _seed_spec_snapshot(snap_dir, session_id, module, ts=None):
     return str(path)
 
 
+def test_workspace_snapshot_injects_roots(monkeypatch, tmp_path):
+    """workspace.json tells the bot where source repos and worktrees live."""
+    from wecom_server import router
+    path = tmp_path / "workspace.json"
+    path.write_text(json.dumps({
+        "repo_roots": ["~/IdeaProjects", "~/fluxProjects"],
+        "worktree_root": "~/loop-work"}))
+    monkeypatch.setattr(router, "_WORKSPACE_PATH", str(path))
+
+    snap = router._workspace_snapshot()
+    assert os.path.expanduser("~/IdeaProjects") in snap
+    assert os.path.expanduser("~/fluxProjects") in snap
+    assert os.path.expanduser("~/loop-work") + "/<需求名>" in snap
+    assert "只读" in snap
+    assert "跨多个仓库" in snap
+    assert "无需再" in snap and "确认" in snap
+    assert "列出候选" in snap
+    assert "codegraph sync" in snap and "不执行 sync" in snap
+
+
+def test_workspace_snapshot_absent_is_empty(monkeypatch, tmp_path):
+    """No config file means no prompt section (unchanged behavior)."""
+    from wecom_server import router
+    monkeypatch.setattr(router, "_WORKSPACE_PATH", str(tmp_path / "none.json"))
+    assert router._workspace_snapshot() == ""
+
+
+def test_dispatch_prompt_includes_workspace_roots(monkeypatch, tmp_path):
+    """The workspace section reaches the actual LLM prompt."""
+    from wecom_server import router
+    path = tmp_path / "workspace.json"
+    path.write_text(json.dumps({"repo_roots": ["~/IdeaProjects"],
+                                "worktree_root": "~/loop-work"}))
+    monkeypatch.setattr(router, "_WORKSPACE_PATH", str(path))
+    monkeypatch.setattr(router, "_detect_requirement", lambda msg, reg: None)
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global": ("sid", True))
+    fake, state = _fake_llm_sequence(["【通用】好的"])
+    monkeypatch.setattr(router.subprocess, "run", fake)
+
+    fn = dispatch("帮我整理一下上海自动化的整体逻辑设计", [], "/tmp", "u1")
+    fn()
+    assert os.path.expanduser("~/IdeaProjects") in state["inputs"][0]
+
+
 def test_recent_requirement_returns_most_recent(monkeypatch):
     """Most recently touched requirement wins for a user."""
     from wecom_server import router
@@ -267,6 +313,20 @@ def test_recent_requirement_returns_most_recent(monkeypatch):
     router._touch_recent("u1", "reqB")
     t[0] = 1002.0
     assert router._recent_requirement("u1") == "reqB"
+
+
+def test_global_turn_wins_over_older_requirement(monkeypatch):
+    """A global turn overwrites older requirement affinity so the next
+    keywordless reply continues the global conversation."""
+    from wecom_server import router
+    t = [1000.0]
+    monkeypatch.setattr(router.time, "time", lambda: t[0])
+    router._recent_activity.clear()
+    router._touch_recent("u1", "reqA")
+    t[0] = 1001.0
+    router._touch_recent("u1", None)
+    t[0] = 1002.0
+    assert router._recent_requirement("u1") == router._FOCUS_GLOBAL
 
 
 def test_recent_requirement_expires(monkeypatch):
@@ -541,6 +601,31 @@ def test_global_intent_message_stays_global(monkeypatch):
     fn()
     assert routed.get("req") == "global"
     assert "recent" not in routed
+    assert "classified" not in routed
+
+
+def test_keywordless_reply_after_global_turn_stays_global(monkeypatch):
+    """Answering the bot's global clarifying question must not resume an
+    unrelated requirement session touched earlier in the same conversation."""
+    from wecom_server import router
+
+    routed = {}
+    monkeypatch.setattr(router, "_detect_requirement",
+                        lambda msg, reg: None)
+    monkeypatch.setattr(router, "_recent_requirement",
+                        lambda uid, key=None: router._FOCUS_GLOBAL)
+    monkeypatch.setattr(router, "_classify_requirement",
+                        lambda msg, reg: routed.__setitem__("classified", True) or "reqA")
+    monkeypatch.setattr(router, "_get_session_id",
+                        lambda uid, req="global", key=None:
+                        routed.__setitem__("req", req) or ("sid", True))
+    monkeypatch.setattr(router.subprocess, "run",
+                        _fake_llm_reply("【通用】请给出原始代码库路径。"))
+
+    fn = dispatch("当前没有对应的需求，需要去原始代码库根据代码整理",
+                  [{"name": "reqA", "root": "/tmp/x"}], "/tmp", "u1")
+    fn()
+    assert routed.get("req") == "global"
     assert "classified" not in routed
 
 

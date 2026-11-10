@@ -54,6 +54,15 @@ _DUP_CACHE_TTL = 900
 _DUP_CACHE_MAX = 200
 _LAST_USER_TTL = 5
 
+# WeCom rejects stream updates on a bubble older than 10 minutes
+# (errcode 846608). Past this age the final reply is pushed proactively
+# instead of updating a stream that is bound to fail.
+STREAM_MAX_AGE = 9 * 60
+# How long a sent stream stays available for a late server error frame to
+# trigger the same proactive fallback.
+_STREAM_FALLBACK_TTL = 180
+_fallback_replies = {}  # req_id -> (chatid, content, sent_at)
+
 _seen = {}
 _seen_guard = threading.Lock()
 _last_user_write = {}
@@ -177,10 +186,40 @@ async def _send_reply(req_id, msgid, chatid, content):
     segments = split(content, max_bytes=STREAM_MAX_BYTES)
     if not segments:
         return
+    _remember_stream(req_id, chatid, content)
     await _send(respond_frame(req_id, f"reply_{msgid}", segments[0],
                               finish=True))
     for segment in split("\n".join(segments[1:])):
         await _send(send_msg_frame(chatid, segment))
+
+
+def _remember_stream(req_id, chatid, content):
+    """Keep the sent reply around so a late error frame (e.g. an expired
+    stream) can fall back to a proactive push instead of losing it."""
+    now = time.time()
+    for rid, (_, _, sent_at) in list(_fallback_replies.items()):
+        if now - sent_at > _STREAM_FALLBACK_TTL:
+            _fallback_replies.pop(rid, None)
+    _fallback_replies[req_id] = (chatid, content, now)
+
+
+async def _handle_error_frame(frame):
+    """Log a server error frame; on a rejected reply stream, push the reply
+    proactively so the user still receives it."""
+    logger.error("[aibot] server error frame: %s", frame)
+    if _is_subscribe_frame(frame):
+        raise RuntimeError(frame.get("errmsg") or "subscribe failed")
+    req_id = (frame.get("headers") or {}).get("req_id", "")
+    pending = _fallback_replies.pop(req_id, None)
+    if not pending:
+        return
+    chatid, content, _ = pending
+    try:
+        await _send_markdown(chatid, content)
+        logger.warning("[aibot] stream update rejected (errcode=%s), "
+                       "pushed proactively", frame.get("errcode"))
+    except Exception as e:
+        logger.error("[aibot] proactive fallback failed: %s", e)
 
 
 def _build_job(text, userid, session_key, allowed_actions, detect_text=None):
@@ -204,21 +243,32 @@ def _queue_for(key):
 async def _worker(q):
     while True:
         fn, chatid = await q.get()
+        req_id = getattr(fn, "reply_req_id", "")
+        msgid = getattr(fn, "reply_msgid", "")
+        received_at = getattr(fn, "reply_received_at", None) or time.time()
+        logger.info("[aibot] process start msgid=%s queued=%.1fs",
+                    msgid, time.time() - received_at)
+        started = time.time()
         try:
             reply = await asyncio.get_running_loop().run_in_executor(None, fn)
         except Exception as e:
             logger.error("[aibot] handler failed: %s", e)
             reply = f"处理失败：{e}"
+        logger.info("[aibot] reply ready msgid=%s took=%.1fs chars=%d",
+                    msgid, time.time() - started, len(reply or ""))
         try:
-            req_id = getattr(fn, "reply_req_id", "")
-            msgid = getattr(fn, "reply_msgid", "")
-            if req_id:
+            age = time.time() - received_at
+            if req_id and age < STREAM_MAX_AGE:
                 try:
                     await _send_reply(req_id, msgid, chatid, reply)
                 except Exception as e:
                     logger.error("[aibot] reply push failed, falling back: %s", e)
                     await _send_markdown(chatid, reply)
             else:
+                if req_id:
+                    logger.warning(
+                        "[aibot] msgid=%s stream age %.0fs >= %ss, pushing "
+                        "proactively", msgid, age, STREAM_MAX_AGE)
                 await _send_markdown(chatid, reply)
         except Exception as e:
             logger.error("[aibot] push failed: %s", e)
@@ -324,6 +374,10 @@ async def _handle_frame(frame):
                     detect_text=text)
     fn.reply_req_id = req_id
     fn.reply_msgid = msgid
+    fn.reply_received_at = time.time()
+    logger.info("[aibot] recv msgid=%s kind=%s chatid=%s chars=%d media=%d "
+                "owner=%s", msgid, kind, chatid, len(text or ""),
+                len(media_items), is_owner)
     await _enqueue(kind, chatid, fn)
 
 
@@ -366,10 +420,7 @@ async def _session(config):
                 except ValueError:
                     continue
                 if frame.get("errcode") not in (None, 0):
-                    logger.error("[aibot] server error frame: %s", frame)
-                    if _is_subscribe_frame(frame):
-                        raise RuntimeError(
-                            frame.get("errmsg") or "subscribe failed")
+                    await _handle_error_frame(frame)
                     continue
                 await _handle_frame(frame)
         finally:
@@ -506,7 +557,9 @@ def start(data_dir=None):
     except ImportError:
         print("cryptography not installed. Run 'pip install cryptography'.")
         raise SystemExit(1)
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
     try:
         import certifi
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())

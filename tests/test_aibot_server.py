@@ -49,6 +49,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_workers", {})
     monkeypatch.setattr(server, "_ws", FakeWS())
     monkeypatch.setattr(server, "_connected", True)
+    monkeypatch.setattr(server, "_fallback_replies", {})
 
     calls = {"count": 0}
     result = {"reply": "RESULT"}
@@ -194,6 +195,48 @@ def test_oversized_final_reply_quotes_first_segment_and_pushes_rest(env):
     assert pushed
     assert all(len(f["body"]["markdown"]["content"].encode("utf-8")) <= 1800
                for f in pushed)
+
+
+def test_stale_stream_pushes_proactively(env, monkeypatch):
+    """A reply that outlives the stream window must not update the expired
+    bubble (WeCom 846608); it is pushed proactively instead."""
+    server, calls, _, _ = env
+    server.CONFIG["receipt_enabled"] = True
+    monkeypatch.setattr(server, "STREAM_MAX_AGE", 0)
+    _run(server, _callback(msgid="m11"), wait=0.3)
+
+    finished = [f for f in server._ws.sent
+                if f["cmd"] == "aibot_respond_msg"
+                and f["body"]["stream"]["finish"]]
+    assert not finished, "expired stream must not receive the final reply"
+    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
+    assert pushed and pushed[-1]["body"]["markdown"]["content"] == "RESULT"
+
+
+def test_rejected_stream_update_falls_back_to_push(env):
+    """A late server error frame (stream expired) pushes the remembered
+    reply proactively instead of losing it."""
+    server, calls, _, _ = env
+
+    async def scenario():
+        server._fallback_replies["r9"] = ("alice", "回退内容", time.time())
+        await server._handle_error_frame({
+            "headers": {"req_id": "r9"}, "errcode": 846608,
+            "errmsg": "stream message update expired (>10 minutes)"})
+
+    asyncio.run(scenario())
+    pushed = [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
+    assert pushed and pushed[-1]["body"]["markdown"]["content"] == "回退内容"
+    assert "r9" not in server._fallback_replies
+
+
+def test_error_frame_without_stream_does_not_push(env):
+    server, calls, _, _ = env
+
+    asyncio.run(server._handle_error_frame({
+        "headers": {"req_id": "unknown"}, "errcode": 846608,
+        "errmsg": "expired"}))
+    assert not [f for f in server._ws.sent if f["cmd"] == "aibot_send_msg"]
 
 
 def test_worker_exception_is_reported_and_loop_survives(env, monkeypatch):
@@ -429,3 +472,11 @@ def test_group_chat_never_records_last_user(env):
 
     assert calls["allowed"] == server.GROUP_READONLY_ACTIONS
     assert not (tmp_path / "last_user.json").exists()
+
+
+def test_subscribe_error_frame_raises(env):
+    server, _, _, _ = env
+    with pytest.raises(RuntimeError):
+        asyncio.run(server._handle_error_frame({
+            "headers": {"req_id": "aibot_subscribe_123"},
+            "errcode": 853000, "errmsg": "invalid bot_id or secret"}))

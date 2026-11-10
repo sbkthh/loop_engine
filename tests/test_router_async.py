@@ -528,28 +528,50 @@ def test_installed_skills_resolve_siblings_without_production_registry(backend, 
         "registration skill must cover module-repo binding"
 
 
-def test_unregistered_edits_missing_detection(monkeypatch, tmp_path):
-    """Correction gap = edited modules minus registered spec_result modules;
-    full registration yields an empty gap."""
+def test_unregistered_edits_uses_registered_hash(monkeypatch, tmp_path):
+    """A recent snapshot alone must not re-fire the correction loop: the
+    authoritative check is state.spec_hash vs the file on disk, so a module
+    registered minutes ago is not reported again."""
     from wecom_server import router
+    import spec_utils
 
-    snap_dir = tmp_path / "snaps"
-    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m1")
-    _seed_spec_snapshot(snap_dir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "m2")
-    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
     sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    snap_dir = tmp_path / "snaps"
+    for name in ("m1", "m2", "m3"):
+        _seed_spec_snapshot(snap_dir, sid, name)
+    monkeypatch.setattr(router, "_SPEC_SNAP_DIR", str(snap_dir))
 
-    missing = router._unregistered_edits(
-        sid, '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
-             '"module":"chg1/m1"}')
-    assert missing == {"m2"}
+    root = tmp_path / "req"
+    modules = {}
 
-    missing = router._unregistered_edits(
+    def add(name, text, registered):
+        p = root / "openspec" / "changes" / "c" / "specs" / name / "spec.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        modules[f"c/{name}"] = {
+            "change_id": "c", "module_name": name, "status": "PARTIAL",
+            "spec_hash": (spec_utils.compute_spec_hash(str(p)) if registered
+                          else "stale-hash")}
+
+    add("m1", "m1 spec", registered=True)   # 已登记：不该再触发纠正
+    add("m2", "m2 spec", registered=False)  # 编辑后未登记
+    # m3 在快照里但 state 中不存在：新模块，未登记
+    registry = [{"name": "req", "root": str(root)}]
+    (root / ".loop").mkdir(parents=True, exist_ok=True)
+    (root / ".loop" / "state.json").write_text(json.dumps({
+        "version": 1, "root_dir": str(root),
+        "current": {"module": None, "action": None, "attempt": 0},
+        "modules": modules, "gray_drafts": [], "trace": [],
+        "audit_trail": []}))
+
+    assert router._unregistered_edits(sid, "无动作", registry) == {"m2", "m3"}
+    # 本轮回复里声明的登记即使 hash 尚未重读也不算缺失
+    assert router._unregistered_edits(
         sid, '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
-             '"module":"chg1/m1"}\n'
-             '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
-             '"module":"m2"}')
-    assert missing == set()
+             '"module":"m1"}', registry) == {"m2", "m3"}
+    assert router._unregistered_edits(
+        sid, '__JSON_ACTION__ {"action":"spec_result","requirement":"req",'
+             '"module":"m2"}', registry) == {"m3"}
 
 
 def test_keywordless_reply_routes_to_recent_requirement(monkeypatch):

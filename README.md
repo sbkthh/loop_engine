@@ -936,6 +936,8 @@ v1 支持文本、图文混排中的文字与图片、独立图片、文件；�
 - 凭证只有 Bot ID + Secret，不需要 CorpID/AgentID/Token/EncodingAESKey
 - 无公网回调，无 XML/AES 解密；消息是 JSON 帧
 - 回复必须带原回调 `req_id`：ack 与最终结果共用同一个 stream id（先 `finish=false`，再 `finish=true`），企微原地刷新同一个气泡，最终结果因此保持引用原消息；单条 stream 上限 20480 字节，超出部分才用 `aibot_send_msg` 主动推送；调度器主动通知没有原消息可引用
+- stream 气泡在消息发出 **10 分钟后失效**（企微 846608）：回复耗时超过 9 分钟时直接改用
+  `aibot_send_msg` 主动推送；已被企微拒收的 stream 更新也走同一兜底，不再静默丢回复
 - 同一 Bot ID 只能一条活跃连接：在另一台机器启动会踢掉本机，因此控制端口兼作单实例锁
 - 订阅有频率保护：短时间断连会退避 60s，避免反复 `aibot_subscribe`
 

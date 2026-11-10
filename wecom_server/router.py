@@ -1356,14 +1356,53 @@ def _json_action_payloads(reply):
     return payloads
 
 
-def _unregistered_edits(session_id, reply):
-    """Modules this session edited within the window but not covered by a
-    spec_result block in reply. Drives the correction loop."""
+def _spec_registered(module_name, registry):
+    """True when the module's registered spec_hash matches the file on disk.
+
+    Authoritative "already registered" signal — the same comparison
+    machine.next uses for SPEC_CHANGED. The snapshot window alone only says
+    "edited in the last 5 minutes"; treating that as unregistered re-fired the
+    correction loop on every turn after the edit had been registered, and
+    each correction reply replaced the user's substantive answer.
+
+    A module with no state entry (edited before registration) counts as
+    unregistered; a module present in several requirements counts as
+    unregistered when any of them is out of sync.
+    """
+    import spec_utils
+    from state import StateManager
+    seen = False
+    for req in registry or []:
+        root = req.get("root") or ""
+        if not root:
+            continue
+        try:
+            st = StateManager(root).load()
+        except Exception:
+            continue
+        for key, m in (st.get("modules") or {}).items():
+            name = m.get("module_name") or key.rsplit("/", 1)[-1]
+            if name != module_name:
+                continue
+            path = spec_utils.derive_spec_path(
+                m.get("change_id") or key.split("/", 1)[0], module_name, root)
+            current = spec_utils.compute_spec_hash(path)
+            if current and current != m.get("spec_hash"):
+                return False
+            seen = True
+    return seen
+
+
+def _unregistered_edits(session_id, reply, registry):
+    """Modules this session edited within the window that are still not
+    registered: no spec_result in this reply, and the on-disk spec hash does
+    not match state.json. Drives the correction loop."""
     edited = set(_recent_spec_snapshots(session_id))
     registered = {p.get("module", "").rsplit("/", 1)[-1]
                   for p in _json_action_payloads(reply)
                   if p.get("action") == "spec_result"}
-    return edited - registered
+    return {name for name in edited - registered
+            if not _spec_registered(name, registry)}
 
 
 def _spec_correction_prompt(session_id):
@@ -1515,7 +1554,7 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
     # Read-only sessions cannot register a spec edit, so re-driving G for a
     # missing spec_result would only burn turns and loop.
     missing = (set() if allowed_actions is not None
-               else _unregistered_edits(session_id, reply))
+               else _unregistered_edits(session_id, reply, registry))
     while rounds < _CORRECTION_MAX_ROUNDS and missing:
         correction = _spec_correction_prompt(session_id)
         if not correction:
@@ -1540,7 +1579,7 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
             corrected = corrected.rstrip() + "\n\n" + keep
         reply = corrected
         rounds += 1
-        missing = _unregistered_edits(session_id, reply)
+        missing = _unregistered_edits(session_id, reply, registry)
     return _process_llm_reply(reply, message, requirement, registry,
                               data_dir, user_id, allowed_actions,
                               closed=closed, approve_text=focus_text)

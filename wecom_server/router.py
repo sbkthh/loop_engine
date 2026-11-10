@@ -1103,19 +1103,20 @@ def _dispatch_json_action(payload, registry, data_dir, user_id,
 
 _JSON_ACTION_RE = re.compile(r"__JSON_ACTION__\s*(\{[^{}]*\})", re.DOTALL)
 
-# Per-requirement LLM lock: same requirement shares one session, so its
-# LLM chat sessions must never overlap. Server-side queues already serialize
-# detected requirements; this covers messages that only classify (LLM) to a
-# requirement and would otherwise run on the "global" queue in parallel.
+# Per-SESSION LLM lock: one agent session must never have two overlapping
+# turns (that would interleave its jsonl history). The key is the session id
+# — NOT the focus string: sessions are already per conversation/requirement,
+# and keying by "global" made every user's global question share one lock,
+# so one person's long turn delayed everyone else's.
 # ponytail: 队列按 detect 结果分流，classify 结果只有执行时才知道，
 # 锁是防同 session 并发写的兜底，key 与 session 维度一致
 _llm_locks = {}
 _llm_locks_guard = threading.Lock()
 
 
-def _llm_lock(requirement):
+def _llm_lock(session_id):
     with _llm_locks_guard:
-        return _llm_locks.setdefault(requirement, threading.Lock())
+        return _llm_locks.setdefault(session_id, threading.Lock())
 
 
 # Recent-activity routing fallback: when a reply lacks any requirement
@@ -1531,7 +1532,7 @@ def _llm_dispatch(message, registry, data_dir, user_id, session_key=None,
         prompt += _READONLY_NOTE
     # first message creates session, subsequent messages resume it
     settings = _chat_audit_settings(readonly=allowed_actions is not None)
-    with _llm_lock(session_focus):
+    with _llm_lock(session_id):
         try:
             reply = _run_llm_turn(session_id, is_new, prompt, settings)
             # resume failed (session lost, e.g. after server restart) → create fresh

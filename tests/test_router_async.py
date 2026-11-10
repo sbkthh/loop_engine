@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import sys
+import threading
 import types
 
 import pytest
@@ -2534,3 +2535,85 @@ def test_pin_resumed_module_spans_modules():
 
     assert _pin_resumed_module(sched, "req", drafts, {1, 2}) is None
     assert pinned == []
+
+
+def _patch_global_dispatch_env(monkeypatch, tmp_path):
+    from wecom_server import router
+    monkeypatch.setattr(router, "_SESSION_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(router, "_system_state_snapshot", lambda registry: "")
+    monkeypatch.setattr(router, "_workspace_snapshot", lambda: "")
+    monkeypatch.setattr(router, "_chat_audit_settings",
+                        lambda readonly=False: None)
+    router._recent_activity.clear()
+
+
+def test_global_turns_of_different_users_do_not_serialize(monkeypatch, tmp_path):
+    """The LLM lock is per session: alice's slow global turn must not make
+    bob's global turn wait (the old focus-keyed lock turned every user's
+    global question into one global queue)."""
+    from wecom_server import router
+    _patch_global_dispatch_env(monkeypatch, tmp_path)
+
+    entered, release = threading.Event(), threading.Event()
+
+    def fake_turn(session_id, is_new, prompt, settings=None):
+        if "SLOW" in prompt:
+            entered.set()
+            assert release.wait(10), "release never fired"
+        return "【通用】ok"
+
+    monkeypatch.setattr(router, "_run_llm_turn", fake_turn)
+    data_dir = str(tmp_path)
+
+    slow = threading.Thread(
+        target=router.dispatch("总览 SLOW", [], data_dir, "alice"))
+    slow.start()
+    assert entered.wait(5), "slow turn never started"
+
+    fast = threading.Thread(
+        target=router.dispatch("总览 FAST", [], data_dir, "bob"))
+    fast.start()
+    fast.join(5)
+    try:
+        assert not fast.is_alive(), "bob's global turn waited for alice's"
+    finally:
+        release.set()
+        slow.join(10)
+        fast.join(10)
+
+
+def test_same_session_turns_still_serialize(monkeypatch, tmp_path):
+    """One session must never run two turns at once: same user, same focus."""
+    from wecom_server import router
+    _patch_global_dispatch_env(monkeypatch, tmp_path)
+
+    entered, release = threading.Event(), threading.Event()
+    started = []
+
+    def fake_turn(session_id, is_new, prompt, settings=None):
+        tag = "SLOW" if "SLOW" in prompt else "FAST"
+        started.append(tag)
+        if tag == "SLOW":
+            entered.set()
+            release.wait(10)
+        return "【通用】ok"
+
+    monkeypatch.setattr(router, "_run_llm_turn", fake_turn)
+    data_dir = str(tmp_path)
+
+    slow = threading.Thread(
+        target=router.dispatch("总览 SLOW", [], data_dir, "alice"))
+    slow.start()
+    assert entered.wait(5), "slow turn never started"
+
+    fast = threading.Thread(
+        target=router.dispatch("总览 FAST", [], data_dir, "alice"))
+    fast.start()
+    fast.join(1)
+    try:
+        assert fast.is_alive() and started == ["SLOW"], \
+            "same session must serialize its turns"
+    finally:
+        release.set()
+        slow.join(10)
+        fast.join(10)

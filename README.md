@@ -430,6 +430,7 @@ loop_engine score strategic-stockup-system-upgrade --module ai-recommend
   `--force`（聊天里「强制评分」）才重打。这保证同一份 spec 不会出现两个不同的分数
 - 每次评分把 `{hash, 分数, cross, 维度}` 追加到模块的 `score_history`（保留 10 条，`查看评分` 显示趋势）；
   结项/阻塞时向 `~/.qoder/loop_engine/score_calibration.jsonl` 追加一行实现期指标，供评分等级校准
+- 评分机制后续改进（确定性事实 / 等级门禁）见 `docs/SPEC_SCORE.md`（内部文档、不随仓库分发）
 
 > 有未裁决的灰名单草稿时 `run` 直接拒绝执行（与 `approve`/自动派发同一道闸）：
 > `machine.next()` 在草稿未裁决前拿不到 `_gray_resume`，硬跑会退回 SCORE 把整链

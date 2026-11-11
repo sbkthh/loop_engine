@@ -1250,34 +1250,31 @@ def _repair_result(root, sid, detail, action=None):
 _SCORABLE_STATUSES = (PARTIAL, READY, NEEDS_REFINEMENT)
 
 
-def _prepare_only_action(root, module, action):
-    """Pin one module to `action` for a single-step run (score-only).
+def resolve_score_module(state, module):
+    """Pick the module a score-only run targets: (key, None) or (None, error).
 
-    Resolves the module when omitted (must be unambiguous), refuses statuses
-    where scoring would bypass a gate (DRAFT unregistered / BLOCKED / SYNCED),
-    and refuses to overwrite a resume checkpoint that points at real code
-    work. Returns {"module": key} or {"error": ...}.
+    Pure — no state writes. Shared by the CLI preflight and the chat action
+    so a rejected target is explained in the reply instead of the forked
+    CLI failing silently into schedule.log.
     """
-    sm = StateManager(root)
-    state = sm.load()
     modules = state.get("modules", {})
     if module:
         if module not in modules:
             matches = [k for k in modules
                        if k.rsplit("/", 1)[-1] == module]
             if len(matches) != 1:
-                return {"error": (f"找不到模块 {module}；可用："
-                                  + (", ".join(sorted(modules)) or "无"))}
+                return None, (f"找不到模块 {module}；可用："
+                              + (", ".join(sorted(modules)) or "无"))
             module = matches[0]
     else:
         candidates = [k for k, m in modules.items()
                       if m.get("status") in _SCORABLE_STATUSES]
         if not candidates:
-            return {"error": "没有可评分的模块"
-                             "（需处于 PARTIAL / READY / NEEDS_REFINEMENT）"}
+            return None, ("没有可评分的模块"
+                          "（需处于 PARTIAL / READY / NEEDS_REFINEMENT）")
         if len(candidates) > 1:
-            return {"error": ("有多个可评分模块，请用 --module 指定："
-                              + ", ".join(sorted(candidates)))}
+            return None, ("有多个可评分模块，请指定一个："
+                          + ", ".join(sorted(candidates)))
         module = candidates[0]
     status = modules[module].get("status")
     if status not in _SCORABLE_STATUSES:
@@ -1286,12 +1283,26 @@ def _prepare_only_action(root, module, action):
             BLOCKED: "先修改 spec 再登记",
             SYNCED: "已同步，无需评分",
         }.get(status, "")
-        return {"error": f"模块 {module} 当前状态 {status}，不能评分（{hint}）"}
+        return None, f"模块 {module} 当前状态 {status}，不能评分（{hint}）"
     cur = state.get("current") or {}
     if cur.get("module") == module and cur.get("action") not in (
             None, SCORE, "CLASSIFY_CHANGE"):
-        return {"error": (f"模块 {module} 停在上一步 {cur['action']}，"
-                          f"请先用 run 续跑，避免覆盖进度")}
+        return None, (f"模块 {module} 停在上一步 {cur['action']}，"
+                      f"请先用 run 续跑，避免覆盖进度")
+    return module, None
+
+
+def _prepare_only_action(root, module, action):
+    """Pin one module to `action` for a single-step run (score-only).
+
+    Validation lives in resolve_score_module; this only adds the checkpoint
+    write. Returns {"module": key} or {"error": ...}.
+    """
+    sm = StateManager(root)
+    state = sm.load()
+    module, err = resolve_score_module(state, module)
+    if err:
+        return {"error": err}
     StateManager.set_current(state, module, action)
     sm.save(state)
     return {"module": module}

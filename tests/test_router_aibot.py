@@ -157,3 +157,68 @@ def test_score_dispatches_to_executor(monkeypatch):
 
     assert reply == "scored"
     assert called
+
+
+def _score_fixture(tmp_path, statuses):
+    import json as _json
+    root = tmp_path / "req"
+    (root / ".loop").mkdir(parents=True)
+    (root / ".loop" / "state.json").write_text(_json.dumps({
+        "version": 1, "root_dir": str(root),
+        "current": {"module": None, "action": None, "attempt": 0},
+        "modules": {f"c/{name}": {"change_id": "c", "module_name": name,
+                                  "status": status}
+                    for name, status in statuses.items()},
+        "gray_drafts": [], "trace": [], "audit_trail": []}))
+    return [{"name": "req", "root": str(root)}]
+
+
+def test_score_action_reports_ambiguous_module_instead_of_silent_fork(
+        tmp_path, monkeypatch):
+    """Multiple scorable modules and no --module: the reply must carry the
+    rejection. The forked CLI's error only reached schedule.log, leaving the
+    user waiting forever for a score that never started."""
+    from wecom_server import router
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY", "m2": "PARTIAL"})
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts",
+                        lambda root: False)
+    monkeypatch.setattr(scheduler, "_engine_cmd",
+                        lambda *a: (_ for _ in ()).throw(
+                            AssertionError("must not fork")))
+    monkeypatch.setattr(router.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not fork")))
+
+    reply = router._execute_score("req", None, registry, str(tmp_path))
+
+    assert "无法评分" in reply
+    assert "m1" in reply and "m2" in reply
+
+
+def test_score_action_resolves_single_module_and_forks(tmp_path, monkeypatch):
+    from wecom_server import router
+    import types
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY", "m2": "SYNCED"})
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts",
+                        lambda root: False)
+    monkeypatch.setattr(scheduler, "LOG_PATH", str(tmp_path / "schedule.log"))
+    forked = []
+
+    def fake_engine_cmd(*args):
+        forked.append(args)
+        return ["loop_engine", *args]
+
+    monkeypatch.setattr(scheduler, "_engine_cmd", fake_engine_cmd)
+    monkeypatch.setattr(router.subprocess, "Popen",
+                        lambda *a, **k: types.SimpleNamespace(pid=42))
+
+    reply = router._execute_score("req", None, registry, str(tmp_path))
+
+    assert "已开始评分" in reply and "m1" in reply
+    assert forked and forked[0][-2:] == ("--module", "c/m1")

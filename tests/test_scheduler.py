@@ -2718,7 +2718,7 @@ class TestScoreOnly(SchedulerBase):
         result = scheduler.run_requirement("req", only_action="SCORE")
 
         self.assertIn("error", result)
-        self.assertIn("--module", result["error"])
+        self.assertIn("请指定", result["error"])
 
     def test_score_accepts_bare_module_name(self):
         root = self._register_pending("req")
@@ -2739,6 +2739,21 @@ class TestScoreOnly(SchedulerBase):
 
         self.assertIn("error", result)
         self.assertIn("MAKER_STEP1_RED", result["error"])
+
+    def test_resolve_score_module_is_pure_and_reports_ambiguity(self):
+        state = {"modules": {"c/m1": _module("c", "m1", "READY"),
+                             "c/m2": _module("c", "m2", "PARTIAL")},
+                 "current": {"module": None, "action": None, "attempt": 0}}
+        snapshot = json.dumps(state, sort_keys=True)
+
+        key, err = scheduler.resolve_score_module(state, None)
+        self.assertIsNone(key)
+        self.assertIn("请指定", err)
+        self.assertEqual(json.dumps(state, sort_keys=True), snapshot,
+                         "resolve must not mutate state")
+
+        self.assertEqual(scheduler.resolve_score_module(state, "m1"),
+                         ("c/m1", None))
 
     def test_score_stops_when_next_action_is_not_score(self):
         root = self._register_pending("req")

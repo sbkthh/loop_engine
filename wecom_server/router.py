@@ -67,7 +67,11 @@ _LLM_SYSTEM_PROMPT = (
     "scoring pass (评分/打分/重新评分, e.g. '先打一次分'、'评分 xxx'), emit "
     "action=score with the requirement (add module when the user names one). "
     "This runs ONLY the SCORE step — it needs no execution approval and makes "
-    "no code changes. score_view only displays an existing score.\n\n"
+    "no code changes. score_view only displays an existing score. It scores "
+    "exactly ONE module: if the user named none, check the requirement's "
+    "scorable modules in .loop/state.json first — with more than one, ask "
+    "which module (list them) instead of emitting action=score, and never "
+    "promise a whole-requirement score or multiple modules.\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
     "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
@@ -797,17 +801,25 @@ def _execute_score(name, module, registry, data_dir, user_id=None):
     if scheduler._has_pending_gray_drafts(root):
         return (f"需求「{name}」有待裁决的灰名单草稿，先裁决再评分"
                 f"（评分会把状态推进到待执行，绕过裁决恢复点）")
+    # Resolve the target HERE: the forked CLI writes its rejection to
+    # schedule.log only, which left the user waiting forever for a reply.
+    from state import StateManager
+    try:
+        st = StateManager(root).load()
+    except Exception as e:
+        return f"读取状态失败：{e}"
+    key, err = scheduler.resolve_score_module(st, module)
+    if err:
+        return f"无法评分：{err}"
     proc = subprocess.Popen(
-        scheduler._engine_cmd("score", name,
-                              *(["--module", module] if module else [])),
+        scheduler._engine_cmd("score", name, "--module", key),
         stdout=open(scheduler.LOG_PATH, "a"),
         stderr=subprocess.STDOUT, start_new_session=True)
     _log_line = getattr(scheduler, "_log", None)
     if callable(_log_line):
-        _log_line(f"wecom score: forked {name} {module or ''} "
-                  f"(pid {proc.pid})")
-    return (f"已开始评分：{name}" + (f" / {module}" if module else "")
-            + "（只跑 SCORE，不进实现）")
+        _log_line(f"wecom score: forked {name} {key} (pid {proc.pid})")
+    return (f"已开始评分：{name} / {key.rsplit('/', 1)[-1]}"
+            f"（只跑 SCORE 一步，完成后自动推送结果）")
 
 
 def _audit_line(text):

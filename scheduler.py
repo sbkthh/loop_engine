@@ -22,7 +22,7 @@ import requests  # noqa: E402 — used by notify_pending()
 
 import agent_cli
 from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE, SCORE,
-                       FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS)
+                       MAKER_STEP0, FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS)
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
                         compute_plan_hash, derive_plan_path,
                         discover_modules, coerce_roots)
@@ -1285,8 +1285,11 @@ def resolve_score_module(state, module):
         }.get(status, "")
         return None, f"模块 {module} 当前状态 {status}，不能评分（{hint}）"
     cur = state.get("current") or {}
+    # MAKER_STEP0 is where a passing SCORE parks the checkpoint (the next
+    # action), and a score-only run never touches code — re-scoring there
+    # must not read as overwriting real progress.
     if cur.get("module") == module and cur.get("action") not in (
-            None, SCORE, "CLASSIFY_CHANGE"):
+            None, SCORE, MAKER_STEP0, "CLASSIFY_CHANGE"):
         return None, (f"模块 {module} 停在上一步 {cur['action']}，"
                       f"请先用 run 续跑，避免覆盖进度")
     return module, None

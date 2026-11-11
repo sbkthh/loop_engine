@@ -888,6 +888,39 @@ class TestMachineFullRoundTrip(unittest.TestCase):
             state["modules"][self.key]["cross_consistency_detail"],
             "spec.md:342 依赖 callbackType，:338 未定义")
 
+    def test_score_pins_hash_and_appends_history(self):
+        """The score carries the exact spec hash it judged and keeps a
+        capped history — without both, "why did the score change" is
+        unanswerable (spec diff vs model noise)."""
+        from constants import SCORE_HISTORY_RETENTION
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        for _ in range(SCORE_HISTORY_RETENTION + 2):
+            machine.next()
+            self._write_score(score=75)
+            machine.commit()
+
+        module = StateManager(self.root).load()["modules"][self.key]
+        self.assertEqual(len(module["score_history"]),
+                         SCORE_HISTORY_RETENTION)
+        self.assertEqual(module["last_score_hash"], module["spec_hash"])
+
+    def test_score_history_records_hash_and_cross(self):
+        self._init_module_ready()
+        machine = StateMachine(self.root)
+
+        machine.next()
+        self._write_score(score=95, cross="FAIL", detail="a vs b")
+        machine.commit()
+
+        module = StateManager(self.root).load()["modules"][self.key]
+        entry = module["score_history"][-1]
+        self.assertEqual(entry["score"], 85)
+        self.assertEqual(entry["cross"], "FAIL")
+        self.assertEqual(entry["hash"], module["spec_hash"])
+        self.assertEqual(module["last_score_hash"], module["spec_hash"])
+
     def test_score_absent_detail_persists_none(self):
         """Written as None, not skipped: a conditional write would leave the
         previous cycle's FAIL detail behind on a later PASS."""

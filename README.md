@@ -426,6 +426,10 @@ loop_engine score strategic-stockup-system-upgrade --module ai-recommend
 - 可评分状态：PARTIAL / READY / NEEDS_REFINEMENT；DRAFT（未登记）、BLOCKED、SYNCED 会被拒绝
 - 同一需求有多个可评分模块时必须用 `--module` 指定（key 或裸模块名均可）
 - 不消耗、也不清除已有的「批准执行」授权；灰名单草稿未裁决时同样拒绝
+- **同 hash 复用**：spec 字节未变（`last_score_hash` == 磁盘 md5）时直接沿用上次评分、不再调用 LLM；
+  `--force`（聊天里「强制评分」）才重打。这保证同一份 spec 不会出现两个不同的分数
+- 每次评分把 `{hash, 分数, cross, 维度}` 追加到模块的 `score_history`（保留 10 条，`查看评分` 显示趋势）；
+  结项/阻塞时向 `~/.qoder/loop_engine/score_calibration.jsonl` 追加一行实现期指标，供评分等级校准
 
 > 有未裁决的灰名单草稿时 `run` 直接拒绝执行（与 `approve`/自动派发同一道闸）：
 > `machine.next()` 在草稿未裁决前拿不到 `_gray_resume`，硬跑会退回 SCORE 把整链
@@ -649,7 +653,7 @@ loop_engine close <name> --merge-existing
 loop_engine prune-worktrees <name>
 
 # 只跑 SCORE 一步（不需要"批准执行"；commit 后即停，不进 MAKER）
-loop_engine score <name> [--module <change_id>/<module_name>]
+loop_engine score <name> [--module <change_id>/<module_name>] [--force]
 
 # 重置模块到 DRAFT
 loop_engine reset --root <path> <change_id/module_name>

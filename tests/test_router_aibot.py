@@ -198,6 +198,83 @@ def test_score_action_reports_ambiguous_module_instead_of_silent_fork(
     assert "m1" in reply and "m2" in reply
 
 
+def test_score_action_returns_cached_verdict_without_forking(
+        tmp_path, monkeypatch):
+    """Unchanged spec bytes → reply with the recorded score; no second LLM
+    call, so the same bytes can never produce two different numbers."""
+    from wecom_server import router
+    import hashlib
+    import json as _json
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY"})
+    root = registry[0]["root"]
+    spec = (tmp_path / "req" / "openspec" / "changes" / "c" / "specs"
+            / "m1" / "spec.md")
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("spec body")
+    spec_hash = hashlib.md5(b"spec body").hexdigest()
+    state_path = tmp_path / "req" / ".loop" / "state.json"
+    state = _json.loads(state_path.read_text())
+    state["modules"]["c/m1"].update({
+        "last_score": 92, "score_cross": "PASS", "last_score_hash": spec_hash})
+    state_path.write_text(_json.dumps(state))
+
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts",
+                        lambda root: False)
+    monkeypatch.setattr(router.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not fork")))
+
+    reply = router._execute_score("req", "m1", registry, str(tmp_path))
+
+    assert "沿用上次评分 92/100" in reply
+    assert "强制评分" in reply
+
+
+def test_score_action_force_forks_even_when_cached(tmp_path, monkeypatch):
+    from wecom_server import router
+    import hashlib
+    import json as _json
+    import types
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY"})
+    spec = (tmp_path / "req" / "openspec" / "changes" / "c" / "specs"
+            / "m1" / "spec.md")
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("spec body")
+    spec_hash = hashlib.md5(b"spec body").hexdigest()
+    state_path = tmp_path / "req" / ".loop" / "state.json"
+    state = _json.loads(state_path.read_text())
+    state["modules"]["c/m1"].update({
+        "last_score": 92, "score_cross": "PASS", "last_score_hash": spec_hash})
+    state_path.write_text(_json.dumps(state))
+
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_has_pending_gray_drafts",
+                        lambda root: False)
+    monkeypatch.setattr(scheduler, "LOG_PATH", str(tmp_path / "schedule.log"))
+    spawned = []
+
+    def fake_engine_cmd(*args):
+        return ["loop_engine", *args]
+
+    def fake_popen(cmd, **kwargs):
+        spawned.append(list(cmd))
+        return types.SimpleNamespace(pid=43)
+
+    monkeypatch.setattr(scheduler, "_engine_cmd", fake_engine_cmd)
+    monkeypatch.setattr(router.subprocess, "Popen", fake_popen)
+
+    reply = router._execute_score("req", "m1", registry, str(tmp_path),
+                                  force=True)
+
+    assert "已开始评分" in reply
+    assert spawned and "--force" in spawned[0]
+
+
 def test_score_action_resolves_single_module_and_forks(tmp_path, monkeypatch):
     from wecom_server import router
     import types

@@ -14,7 +14,8 @@ from constants import (
     MAKER_STEP2_GREEN, CHECKER, MAKER_FIX, CODE_REVIEW, CODE_REVIEW_FIX,
     ALIGN_DOCS, STATUS_TABLE,
     SCORE_THRESHOLD, MAX_MAKER_ATTEMPTS, MAX_REVIEW_FIX_CYCLES,
-    TRACE_RETENTION, AUDIT_RETENTION, MAX_GRAY_DRAFTS, RESULT_FILE,
+    TRACE_RETENTION, AUDIT_RETENTION, SCORE_HISTORY_RETENTION,
+    MAX_GRAY_DRAFTS, RESULT_FILE,
     FINAL_TEST_TIMEOUT_SECONDS,
 )
 from state import StateManager
@@ -495,6 +496,19 @@ class StateMachine:
             "cross_consistency_detail")
         dims = parsed.get("dimensions")
         module["score_dimensions"] = dims if isinstance(dims, dict) else None
+        # Hash-pinned cache key + trend history: without the hash a later
+        # "why did it drop" is unanswerable (spec diff vs model noise).
+        module["last_score_hash"] = module.get("spec_hash")
+        history = [h for h in (module.get("score_history") or [])
+                   if isinstance(h, dict)]
+        history.append({
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "hash": module.get("spec_hash"),
+            "score": score,
+            "cross": cross,
+            "dims": dims if isinstance(dims, dict) else None,
+        })
+        module["score_history"] = history[-SCORE_HISTORY_RETENTION:]
         if score >= SCORE_THRESHOLD and cross != "FAIL":
             module["status"] = READY
             # new run cycle: clear fix-cycle counters left over from a run

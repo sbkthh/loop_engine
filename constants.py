@@ -128,6 +128,7 @@ MAX_GATE_REPOS = 3
 # Retention limits
 TRACE_RETENTION = 20
 AUDIT_RETENTION = 30
+SCORE_HISTORY_RETENTION = 10
 MAX_GRAY_DRAFTS = 100  # per state.json, total draft entries capped (archived trimmed first)
 
 # File names (relative to root dir)

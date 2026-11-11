@@ -2766,6 +2766,75 @@ class TestScoreOnly(SchedulerBase):
         self.assertEqual(scheduler.resolve_score_module(state, "m1"),
                          ("c/m1", None))
 
+    def test_score_reuses_recorded_score_for_identical_bytes(self):
+        """Same spec bytes must not hit the LLM twice (that is the only way
+        "同一份 spec 两次不同分" becomes impossible)."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        spec_hash = _make_spec(root, "c", "m")
+        module = _module("c", "m", "READY", spec_hash=spec_hash)
+        module.update({"last_score": 92, "score_cross": "PASS",
+                       "last_score_hash": spec_hash})
+        _make_state(root, {"c/m": module})
+
+        with mock.patch.object(scheduler.subprocess, "run") as run:
+            result = scheduler.run_requirement(
+                "req", module="m", only_action="SCORE")
+
+        run.assert_not_called()
+        self.assertEqual(result["end"], "score_cached")
+        self.assertIn("沿用上次评分 92/100", result["message"])
+        self.assertFalse(scheduler.is_locked(root))
+
+    def test_score_force_ignores_cache(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        spec_hash = _make_spec(root, "c", "m")
+        module = _module("c", "m", "READY", spec_hash=spec_hash)
+        module.update({"last_score": 92, "score_cross": "PASS",
+                       "last_score_hash": spec_hash})
+        _make_state(root, {"c/m": module})
+
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement(
+                "req", module="m", only_action="SCORE", force=True)
+
+        self.assertEqual(result["end"], "score_done")
+        self.assertEqual(result["steps"], 1)
+
+    def test_score_cache_miss_when_spec_edited(self):
+        """A registered hash is not proof the bytes still match — compare
+        against the file on disk, else an unregistered edit scores stale."""
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        stale = "0" * 32
+        module = _module("c", "m", "READY", spec_hash=stale)
+        module.update({"last_score": 92, "score_cross": "PASS",
+                       "last_score_hash": stale})
+        _make_state(root, {"c/m": module})
+
+        fake = self._fake_run(next_actions=["SCORE"])
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake):
+            result = scheduler.run_requirement(
+                "req", module="m", only_action="SCORE")
+
+        self.assertEqual(result["end"], "score_done")
+
+    def test_calibration_line_written_on_sync(self):
+        root = self._register_pending("req")
+        fake = self._fake_run(next_actions=["SCORE"], commit_next="_SYNCED_")
+        data_dir = os.path.join(self.tmp.name, "data")
+        os.makedirs(data_dir)
+        with mock.patch.object(scheduler.subprocess, "run", side_effect=fake), \
+                mock.patch.object(scheduler, "DATA_DIR", data_dir):
+            scheduler.run_requirement("req")
+
+        path = os.path.join(data_dir, "score_calibration.jsonl")
+        self.assertTrue(os.path.exists(path))
+        entry = json.loads(open(path).read().splitlines()[-1])
+        self.assertEqual(entry["outcome"], "synced")
+        self.assertEqual(entry["module"], "c/m")
+        self.assertEqual(entry["requirement"], "req")
+
     def test_score_stops_when_next_action_is_not_score(self):
         root = self._register_pending("req")
         fake = self._fake_run(next_actions=["CHECKER"])

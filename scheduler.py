@@ -24,7 +24,7 @@ import agent_cli
 from constants import (DATA_DIR, MAX_MAKER_ATTEMPTS, STATUS_TABLE, SCORE,
                        MAKER_STEP0, FINAL_TEST_TIMEOUT_SECONDS, MAX_GATE_REPOS)
 from spec_utils import (compute_spec_hash, compute_spec_norm_hash,
-                        compute_plan_hash, derive_plan_path,
+                        compute_plan_hash, derive_plan_path, derive_spec_path,
                         discover_modules, coerce_roots)
 from state import StateManager  # its atomic save only — no routing logic
 from wecom_server.wecom_api import md_bold, md_color
@@ -1295,28 +1295,85 @@ def resolve_score_module(state, module):
     return module, None
 
 
-def _prepare_only_action(root, module, action):
+def score_cache_entry(root, state, module_key):
+    """Cached score for the exact bytes on disk, or None.
+
+    Keyed by last_score_hash (written at SCORE commit) vs the spec's current
+    md5: identical bytes get the identical verdict with no second LLM call —
+    which is also the only way to make "same spec, two scores" impossible.
+    """
+    module = (state.get("modules") or {}).get(module_key) or {}
+    recorded = module.get("last_score_hash")
+    if not recorded or module.get("last_score") is None:
+        return None
+    spec_path = derive_spec_path(module.get("change_id", ""),
+                                 module.get("module_name", ""), root)
+    if compute_spec_hash(spec_path) != recorded:
+        return None
+    return {"score": module.get("last_score"),
+            "cross": module.get("score_cross"),
+            "hash": recorded[:8],
+            "module": module_key.rsplit("/", 1)[-1]}
+
+
+def score_cached_text(name, hit):
+    cross = "，cross FAIL" if hit.get("cross") == "FAIL" else ""
+    return (f"{name} / {hit['module']} 的 spec 未变化（hash {hit['hash']}），"
+            f"沿用上次评分 {hit['score']}/100{cross}。"
+            "需要重打请回复「强制评分」")
+
+
+def record_score_calibration(name, root, module_key, outcome):
+    """Append one implementation outcome so score bands can later be
+    calibrated against real rework (maker/review attempts)."""
+    module = ((_read_state(root) or {}).get("modules") or {}).get(
+        module_key) or {}
+    entry = {
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "requirement": name,
+        "module": module_key,
+        "outcome": outcome,
+        "score": module.get("last_score"),
+        "cross": module.get("score_cross"),
+        "spec_hash": module.get("spec_hash"),
+        "maker_attempt": module.get("maker_attempt"),
+        "review_fix_attempt": module.get("review_fix_attempt"),
+    }
+    try:
+        with open(os.path.join(DATA_DIR, "score_calibration.jsonl"), "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        _log(f"calibration write failed for {name} {module_key}")
+
+
+def _prepare_only_action(root, module, action, force=False):
     """Pin one module to `action` for a single-step run (score-only).
 
-    Validation lives in resolve_score_module; this only adds the checkpoint
-    write. Returns {"module": key} or {"error": ...}.
+    Validation lives in resolve_score_module; this adds the same-hash cache
+    check and the checkpoint write. Returns {"module": key}, {"module": key,
+    "cached": entry} or {"error": ...}.
     """
     sm = StateManager(root)
     state = sm.load()
     module, err = resolve_score_module(state, module)
     if err:
         return {"error": err}
+    if not force:
+        hit = score_cache_entry(root, state, module)
+        if hit:
+            return {"module": module, "cached": hit}
     StateManager.set_current(state, module, action)
     sm.save(state)
     return {"module": module}
 
 
-def run_requirement(name, module=None, only_action=None):
+def run_requirement(name, module=None, only_action=None, force=False):
     """Execute one requirement (or a single module) to completion:
     next → qodercli → commit.
 
     only_action pins the run to a single action (e.g. SCORE) and stops right
-    after its commit — no approval, no MAKER chain.
+    after its commit — no approval, no MAKER chain. force re-scores even when
+    the spec bytes are unchanged.
     """
     req = next((r for r in _read_registry() if r.get("name") == name), None)
     if not req:
@@ -1334,10 +1391,15 @@ def run_requirement(name, module=None, only_action=None):
     if not acquire_lock(root):
         return {"error": f"Requirement already running (lock held): {root}"}
     if only_action:
-        prep = _prepare_only_action(root, module, only_action)
+        prep = _prepare_only_action(root, module, only_action, force=force)
         if "error" in prep:
             release_lock(root)
             return prep
+        if prep.get("cached"):
+            release_lock(root)
+            return {"requirement": name, "steps": 0, "end": "score_cached",
+                    "message": score_cached_text(name, prep["cached"]),
+                    "cached": prep["cached"]}
         module = prep["module"]
     user_id = None
     try:
@@ -1548,11 +1610,15 @@ def run_requirement(name, module=None, only_action=None):
                 mkey = commit.get("module") or module_key
                 m = (_read_state(root) or {}).get("modules", {}).get(mkey, {})
                 _log(f"run {name}: module {mkey} BLOCKED, notifying")
+                record_score_calibration(name, root, mkey, "blocked")
                 notify_text(
                     f"[调度] {md_bold(name)} 第 {steps} 步 {action} 后进入阻塞\n"
                     + _blocked_module_lines(mkey, m), user_id)
                 end = "no_advance"
                 break
+            if commit.get("next_action") == "_SYNCED_":
+                record_score_calibration(
+                    name, root, commit.get("module") or module_key, "synced")
             if only_action:
                 # score < threshold commits with next_action=None; that is a
                 # finished score, not a stalled run

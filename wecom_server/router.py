@@ -73,7 +73,9 @@ _LLM_SYSTEM_PROMPT = (
     "which module (list them) instead of emitting action=score, and never "
     "promise a whole-requirement score or multiple modules. Do not "
     "pre-announce the outcome in your own text ('已开始'/'结果稍后推送') — "
-    "the backend appends the action's own result line.\n\n"
+    "the backend appends the action's own result line. Add \"force\": true "
+    "ONLY when the user explicitly asks to re-score an unchanged spec "
+    "(强制评分/重打一次).\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
     "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
@@ -462,6 +464,12 @@ def _execute_score_view(name, module, registry, data_dir):
                      f" [{m.get('status')}]")
         lines.append(scheduler._score_gap_text(
             m, dim_max=None, dim_text_max=None))
+        hist = [h for h in (m.get("score_history") or [])
+                if isinstance(h, dict)]
+        if len(hist) > 1:
+            lines.append("  历史：" + " → ".join(
+                f"{h.get('score')}({str(h.get('hash'))[:8]})"
+                for h in hist[-5:]))
         lines.append("")
     lines.append("修改 spec.md 后回复「完善spec」重新评分")
     return "\n".join(lines)
@@ -786,7 +794,7 @@ def _execute_run_spec(name, module, registry, data_dir, user_id=None):
     return f"已开始单独执行 spec：{name} / {key.split('/')[-1]}"
 
 
-def _execute_score(name, module, registry, data_dir, user_id=None):
+def _execute_score(name, module, registry, data_dir, user_id=None, force=False):
     """Run ONLY the SCORE step for one module — no approval, no MAKER.
 
     Lock and gray-draft gates are enforced by the forked CLI itself; the
@@ -813,8 +821,15 @@ def _execute_score(name, module, registry, data_dir, user_id=None):
     key, err = scheduler.resolve_score_module(st, module)
     if err:
         return f"无法评分：{err}"
+    if not force:
+        hit = scheduler.score_cache_entry(root, st, key)
+        if hit:
+            return scheduler.score_cached_text(name, hit)
+    cmd = scheduler._engine_cmd("score", name, "--module", key)
+    if force:
+        cmd.append("--force")
     proc = subprocess.Popen(
-        scheduler._engine_cmd("score", name, "--module", key),
+        cmd,
         stdout=open(scheduler.LOG_PATH, "a"),
         stderr=subprocess.STDOUT, start_new_session=True)
     _log_line = getattr(scheduler, "_log", None)
@@ -1089,7 +1104,8 @@ def _dispatch_json_action(payload, registry, data_dir, user_id,
         if not name:
             return "缺少参数：requirement"
         return _execute_score(name, payload.get("module"), registry,
-                              data_dir, user_id)
+                              data_dir, user_id,
+                              force=payload.get("force") is True)
     if action == "spec_result":
         name = payload.get("requirement")
         module = payload.get("module")

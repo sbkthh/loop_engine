@@ -880,7 +880,7 @@ def cmd_run(args):
 def cmd_score(args):
     result = scheduler.run_requirement(
         args.requirement, module=getattr(args, "module", None),
-        only_action=SCORE)
+        only_action=SCORE, force=getattr(args, "force", False))
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if "error" in result:
         sys.exit(1)
@@ -1480,6 +1480,8 @@ def main():
     p.add_argument("--module", default=None,
                    help="Module key or bare name; omitted = the single "
                         "scorable module")
+    p.add_argument("--force", action="store_true",
+                   help="Re-score even when the spec bytes are unchanged")
     p.set_defaults(func=cmd_score)
 
     p = sub.add_parser("manual-hold", parents=[common],

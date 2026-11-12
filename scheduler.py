@@ -1387,7 +1387,8 @@ def remove_module(name, module):
     StateManager.remove_module(state, key)
     sm.save(state)
     _log(f"module-remove {name} {key} backup={backup_path or 'none'}")
-    return {"module": key, "backup": backup_path}
+    return {"module": key, "backup": backup_path,
+            "was_synced": bool(m.get("ever_synced"))}
 
 
 def _prepare_only_action(root, module, action, force=False):

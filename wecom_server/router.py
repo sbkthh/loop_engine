@@ -77,6 +77,11 @@ _LLM_SYSTEM_PROMPT = (
     "the backend appends the action's own result line. Add \"force\": true "
     "ONLY when the user explicitly asks to re-score an unchanged spec "
     "(强制评分/重打一次).\n\n"
+    "Module remove rule: module_remove is DESTRUCTIVE (archives spec, drops "
+    "state). Emit it ONLY when the user explicitly says '删除模块 X' / "
+    "'移除 X' / '删掉 X'. If unsure which module or whether the user truly "
+    "wants deletion, ASK first — never guess. The backend also rejects the "
+    "action unless the user's own message contains delete intent.\n\n"
     "Workflow skills (read when relevant):\n"
     "- Requirement registration/PRD bootstrap → __SKILLS_DIR__/requirement-register/SKILL.md\n"
     "- Spec editing workflow → __SKILLS_DIR__/spec-session/SKILL.md\n"
@@ -850,7 +855,11 @@ def _execute_module_remove(name, module, registry, data_dir):
     short = result["module"].rsplit("/", 1)[-1]
     backup = result.get("backup")
     note = f"，spec 已归档到 {backup}" if backup else "（无 spec 文件）"
-    return f"已删除模块 {name} / {short}{note}"
+    warn = ""
+    if result.get("was_synced"):
+        warn = ("\n注意：该模块曾实现过代码，项目仓库中的代码不受影响，"
+                "如需清理请手动处理。")
+    return f"已删除模块 {name} / {short}{note}{warn}"
 
 
 def _audit_line(text):
@@ -1049,6 +1058,8 @@ def _classify_requirement(message, registry):
 
 _APPROVE_INTENT_RE = re.compile(r"批准|同意执行|可以执行|开始实现|执行吧|批了")
 _APPROVE_NEGATION_RE = re.compile(r"不批准|不要批准|别批准|不同意|取消批准")
+_REMOVE_INTENT_RE = re.compile(r"删除模块|移除模块|删掉模块|去掉模块|删除\s*\S+|移除\s*\S+")
+_REMOVE_NEGATION_RE = re.compile(r"不要删|别删|不删|不要移除|别移除|取消删除")
 
 
 def _user_intends_approve(message):
@@ -1063,6 +1074,15 @@ def _user_intends_approve(message):
     if _APPROVE_NEGATION_RE.search(message):
         return False
     return bool(_APPROVE_INTENT_RE.search(message))
+
+
+def _user_intends_remove(message):
+    """module_remove 必须由用户明确说出删除意图，防止 G 误判删模块。"""
+    if not message:
+        return False
+    if _REMOVE_NEGATION_RE.search(message):
+        return False
+    return bool(_REMOVE_INTENT_RE.search(message))
 
 
 _CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "score", "spec_result",
@@ -1729,6 +1749,12 @@ def _process_llm_reply(reply, message, requirement, registry, data_dir,
                 results.append(
                     f"无法自动批准：本条对话中未检测到你的『批准执行』确认。"
                     f"如需执行，请本人回复：批准执行 {name}")
+            elif payload.get("action") == "module_remove" and \
+                    not _user_intends_remove(approve_basis):
+                mod = payload.get("module") or ""
+                results.append(
+                    f"无法自动删除：本条对话中未检测到你的『删除模块』确认。"
+                    f"如需删除，请本人回复：删除模块 {mod}")
             elif allowed_actions is None:
                 results.append(_dispatch_json_action(
                     payload, registry, data_dir, user_id))

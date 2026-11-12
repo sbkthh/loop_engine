@@ -332,3 +332,37 @@ def test_module_remove_blocked_in_group(tmp_path, monkeypatch):
         [], str(tmp_path), "u1", router._GROUP_READONLY_ACTIONS)
 
     assert "群聊只读" in reply
+
+
+def test_module_remove_rejected_without_user_delete_intent(tmp_path, monkeypatch):
+    """G cannot delete a module on its own — the user must explicitly say
+    '删除模块' in their message, same safety pattern as approve."""
+    from wecom_server import router
+
+    reply = router._process_llm_reply(
+        '__JSON_ACTION__ {"action":"module_remove","requirement":"req","module":"m1"}',
+        "看看这个模块的状态", "req", [], str(tmp_path), "u1",
+        approve_text="看看这个模块的状态")
+
+    assert "无法自动删除" in reply
+    assert "删除模块" in reply
+
+
+def test_module_remove_allowed_with_explicit_intent(tmp_path, monkeypatch):
+    from wecom_server import router
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY"})
+    spec = (tmp_path / "req" / "openspec" / "changes" / "c" / "specs"
+            / "m1" / "spec.md")
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("spec body")
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_read_registry", lambda: registry)
+
+    reply = router._process_llm_reply(
+        '__JSON_ACTION__ {"action":"module_remove","requirement":"req","module":"m1"}',
+        "删除模块 m1", "req", registry, str(tmp_path), "u1",
+        approve_text="删除模块 m1")
+
+    assert "已删除模块" in reply

@@ -299,3 +299,36 @@ def test_score_action_resolves_single_module_and_forks(tmp_path, monkeypatch):
 
     assert "已开始评分" in reply and "m1" in reply
     assert forked and forked[0][-2:] == ("--module", "c/m1")
+
+
+def test_module_remove_dispatches_and_reports(tmp_path, monkeypatch):
+    from wecom_server import router
+    import scheduler
+
+    registry = _score_fixture(tmp_path, {"m1": "READY"})
+    root = registry[0]["root"]
+    spec = (tmp_path / "req" / "openspec" / "changes" / "c" / "specs"
+            / "m1" / "spec.md")
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("spec body")
+
+    monkeypatch.setattr(scheduler, "is_locked", lambda root: False)
+    monkeypatch.setattr(scheduler, "_read_registry", lambda: registry)
+
+    reply = router._dispatch_json_action(
+        {"action": "module_remove", "requirement": "req", "module": "m1"},
+        registry, str(tmp_path), "u1")
+
+    assert "已删除模块" in reply
+    assert "m1" in reply
+    assert not spec.exists()
+
+
+def test_module_remove_blocked_in_group(tmp_path, monkeypatch):
+    from wecom_server import router
+
+    reply = router._dispatch_json_action(
+        {"action": "module_remove", "requirement": "req", "module": "m1"},
+        [], str(tmp_path), "u1", router._GROUP_READONLY_ACTIONS)
+
+    assert "群聊只读" in reply

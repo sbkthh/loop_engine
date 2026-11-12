@@ -886,6 +886,13 @@ def cmd_score(args):
         sys.exit(1)
 
 
+def cmd_module_remove(args):
+    result = scheduler.remove_module(args.requirement, args.module)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if "error" in result:
+        sys.exit(1)
+
+
 def cmd_manual_hold(args):
     """(internal) Detached lock holder spawned by manual-begin."""
     if not scheduler.manual_hold(args.root):
@@ -1483,6 +1490,13 @@ def main():
     p.add_argument("--force", action="store_true",
                    help="Re-score even when the spec bytes are unchanged")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("module-remove", parents=[common],
+                       help="Remove a module: archive spec to .loop/backup/, "
+                            "drop state entry")
+    p.add_argument("requirement", help="Requirement name")
+    p.add_argument("module", help="Module key or bare name")
+    p.set_defaults(func=cmd_module_remove)
 
     p = sub.add_parser("manual-hold", parents=[common],
                        help="(internal) Hold the requirement lock (spawned by manual-begin)")

@@ -2673,6 +2673,71 @@ class TestNotify(SchedulerBase):
         self.assertIn("SYNCED", done[0])
 
 
+class TestModuleRemove(SchedulerBase):
+    def test_remove_archives_spec_and_drops_state(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")},
+                    current={"module": "c/m", "action": "SCORE", "attempt": 0})
+
+        result = scheduler.remove_module("req", "m")
+
+        self.assertEqual(result["module"], "c/m")
+        self.assertTrue(os.path.exists(result["backup"]))
+        state = json.load(open(os.path.join(root, ".loop", "state.json")))
+        self.assertNotIn("c/m", state["modules"])
+        self.assertIsNone(state["current"]["module"])
+        spec = os.path.join(root, "openspec", "changes", "c", "specs",
+                            "m", "spec.md")
+        self.assertFalse(os.path.exists(spec))
+
+    def test_remove_keeps_other_modules(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m1")
+        _make_spec(root, "c", "m2")
+        _make_state(root, {"c/m1": _module("c", "m1", "READY"),
+                           "c/m2": _module("c", "m2", "PARTIAL")})
+
+        scheduler.remove_module("req", "m1")
+
+        state = json.load(open(os.path.join(root, ".loop", "state.json")))
+        self.assertNotIn("c/m1", state["modules"])
+        self.assertIn("c/m2", state["modules"])
+
+    def test_remove_rejects_ambiguous_bare_name(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c1", "m")
+        _make_spec(root, "c2", "m")
+        _make_state(root, {"c1/m": _module("c1", "m", "READY"),
+                           "c2/m": _module("c2", "m", "READY")})
+
+        result = scheduler.remove_module("req", "m")
+
+        self.assertIn("error", result)
+        self.assertIn("多个模块", result["error"])
+
+    def test_remove_rejects_when_locked(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_spec(root, "c", "m")
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+        fd = _hold_flock(root)
+        try:
+            result = scheduler.remove_module("req", "m")
+            self.assertIn("error", result)
+            self.assertIn("执行中", result["error"])
+        finally:
+            os.close(fd)
+
+    def test_remove_missing_module(self):
+        root = self.register("req", os.path.join(self.tmp.name, "req"))
+        _make_state(root, {"c/m": _module("c", "m", "READY")})
+
+        result = scheduler.remove_module("req", "ghost")
+
+        self.assertIn("error", result)
+        self.assertIn("找不到模块", result["error"])
+
+
 class TestScoreOnly(SchedulerBase):
     """`loop_engine score`: one SCORE step, no approval, no MAKER chain."""
 

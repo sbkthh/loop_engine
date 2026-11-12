@@ -37,6 +37,7 @@ _LLM_SYSTEM_PROMPT = (
     "__JSON_ACTION__ {\"action\": \"<action>\", \"requirement\": \"<name>\", ...}\n"
     "Actions: approve | run_spec(requirement+module) | "
     "score(requirement[+module]) | "
+    "module_remove(requirement+module) | "
     "spec_result(requirement+module) | history | "
     "score_view(requirement[+module]) | "
     "gray_list | adjudicate(requirement+target+decision, "
@@ -839,6 +840,19 @@ def _execute_score(name, module, registry, data_dir, user_id=None, force=False):
             f"（只跑 SCORE 一步，完成后自动推送结果）")
 
 
+def _execute_module_remove(name, module, registry, data_dir):
+    """Remove one module: archive spec, drop state entry."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import scheduler
+    result = scheduler.remove_module(name, module)
+    if "error" in result:
+        return f"无法删除模块：{result['error']}"
+    short = result["module"].rsplit("/", 1)[-1]
+    backup = result.get("backup")
+    note = f"，spec 已归档到 {backup}" if backup else "（无 spec 文件）"
+    return f"已删除模块 {name} / {short}{note}"
+
+
 def _audit_line(text):
     """Append a line to the shared audit log (same file as audit_hook.sh)."""
     try:
@@ -1052,7 +1066,7 @@ def _user_intends_approve(message):
 
 
 _CLOSED_BLOCKED_ACTIONS = {"approve", "run_spec", "score", "spec_result",
-                           "adjudicate"}
+                           "adjudicate", "module_remove"}
 
 # Group chats are read-only: only these JSON actions may run there.
 _GROUP_READONLY_ACTIONS = frozenset({"history", "gray_list", "score_view"})
@@ -1106,6 +1120,12 @@ def _dispatch_json_action(payload, registry, data_dir, user_id,
         return _execute_score(name, payload.get("module"), registry,
                               data_dir, user_id,
                               force=payload.get("force") is True)
+    if action == "module_remove":
+        name = payload.get("requirement")
+        module = payload.get("module")
+        if not name or not module:
+            return "缺少参数：requirement/module"
+        return _execute_module_remove(name, module, registry, data_dir)
     if action == "spec_result":
         name = payload.get("requirement")
         module = payload.get("module")

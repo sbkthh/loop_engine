@@ -178,6 +178,14 @@ class StateManager:
         return state["modules"][key]
 
     @staticmethod
+    def remove_module(state, key):
+        """Remove a module entry; clear current if it pointed here."""
+        state["modules"].pop(key, None)
+        cur = state.get("current") or {}
+        if cur.get("module") == key:
+            StateManager.clear_current(state)
+
+    @staticmethod
     def find_mid_progress(state):
         current = state.get("current", {})
         module_key = current.get("module")

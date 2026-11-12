@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1344,6 +1345,49 @@ def record_score_calibration(name, root, module_key, outcome):
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         _log(f"calibration write failed for {name} {module_key}")
+
+
+def remove_module(name, module):
+    """Remove one module from a requirement: archive spec, drop state entry.
+
+    Returns {"module": key, "backup": path} or {"error": ...}.
+    """
+    req = next((r for r in _read_registry() if r.get("name") == name), None)
+    if not req:
+        return {"error": f"Requirement not registered: {name}"}
+    root = req["root"]
+    if is_locked(root):
+        return {"error": f"需求「{name}」正在执行中，请等结束后再删除模块"}
+    sm = StateManager(root)
+    state = sm.load()
+    modules = state.get("modules", {})
+    if module in modules:
+        key = module
+    else:
+        matches = [k for k in modules if k.rsplit("/", 1)[-1] == module]
+        if len(matches) == 1:
+            key = matches[0]
+        elif len(matches) > 1:
+            return {"error": (f"模块名 {module} 对应多个模块"
+                              f"（{'、'.join(sorted(matches))}），请用完整 key")}
+        else:
+            return {"error": (f"找不到模块 {module}（可用："
+                              + (", ".join(sorted(modules)) or "无") + "）")}
+    m = modules[key]
+    spec_path = derive_spec_path(m.get("change_id", ""),
+                                 m.get("module_name", ""), root)
+    backup_path = None
+    if os.path.exists(spec_path):
+        backup_dir = os.path.join(root, ".loop", "backup")
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = os.path.join(
+            backup_dir,
+            f"spec-{m.get('module_name', key)}-{int(time.time())}.md")
+        shutil.move(spec_path, backup_path)
+    StateManager.remove_module(state, key)
+    sm.save(state)
+    _log(f"module-remove {name} {key} backup={backup_path or 'none'}")
+    return {"module": key, "backup": backup_path}
 
 
 def _prepare_only_action(root, module, action, force=False):

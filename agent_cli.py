@@ -180,8 +180,9 @@ def _step_models(name, path):
         if known is None or model.lower() in known:
             return True
         _warn_once(f"model:{name}:{model}",
-                   f"型号 {model!r} 不在 {name} 的 --list-models 结果里，"
-                   f"整份每步模型配置不生效（写错不会报错，只会静默跑在 auto 上）")
+                   f"型号 {model!r} 不在 {name} 的 --list-models 结果里："
+                   f"配在步骤上则该步回退 default，配在 default 上则整段不生效"
+                   f"（写错不会报错；若 --list-models 也查不到，错名会传下去静默跑在 auto 上）")
         return False
 
     default = wanted.get("default", "")
